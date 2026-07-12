@@ -296,4 +296,60 @@ oracle. Needs to run on real hardware with a qwen35moe-family GGUF that has MTP 
    a cheap unspeculated decode step at the start of the next text generation — this
    second option requires no changes to the vision/embedding path at all, only a flag
    check in `process()` plus a one-time warm-up call site in the server's generation
-   loop.
+   loop. **Implemented below (option (b)).**
+
+---
+
+## Implementation: item 5's fix (invalidate + re-prime)
+
+Applied to `common/speculative.cpp`, `common_speculative_impl_draft_mtp`. Chose option
+(b) over (a) deliberately: (a) would require trusting that `t_h_nextn`/`embd_nextn`
+capture in `llama_context::decode()`/`encode()` (which is architecture-generic and
+looked plausible from static reading — the capture site itself doesn't branch on
+token-vs-embd input) is *also correct* for every model's graph when the input is raw
+image embeddings rather than token ids, for every arch this MTP mode covers. That's
+exactly the kind of thing the plan calls out as unsafe to assume without a runtime
+check (§8, "silently degraded... not a crash"). Option (b) only touches token-batch
+plumbing that was already proven correct, so it doesn't require that assumption.
+
+**Changes** (all in `common_speculative_impl_draft_mtp`):
+- New member `std::vector<bool> valid` (one per seq), initialized `true` in the ctor —
+  matches prior behavior (text-only sessions were already fine).
+- `process()`: the old unconditional skip (`// TODO: how to make it work with vision
+  tokens?` → bare `return true`) for embedding batches is replaced with: mark every seq
+  present in the batch as `valid[seq_id] = false`, then return. Still skips the ctx_dft
+  decode exactly as before — behavior for the image chunk itself is unchanged.
+- `process()`, token-batch path: computes `need_reprime` (true if any seq in this batch
+  is currently invalid). The existing catch-up decode block (`if (!is_mem_shared)`) now
+  also requires `!need_reprime` to run — for the whole batch, not per-seq, specifically
+  to avoid slicing rows out of the "shift the tgt embeddings right by one position"
+  block, which assumes tight row correspondence between `h_tgt` and the batch sent to
+  `ctx_dft`; partial-row filtering there was judged too easy to get subtly wrong to do
+  without a runtime test. Conservative for mixed-validity multi-seq batches (skips one
+  extra seq's catch-up unnecessarily in that rare case); exact for the plan's actual
+  scope (`-np 1`, single seq).
+- `process()`, capture tail (unconditional, always ran before): now also sets
+  `valid[seq_id] = true` after refreshing `pending_h[seq_id]` — this tail was already
+  reading only from `ctx_tgt`'s `h_nextn` output, independent of whether the ctx_dft
+  catch-up ran, so it's the correct place to revalidate.
+- `draft()`: added a `!valid[seq_id]` skip at the top of the per-seq loop, before
+  `pending_h[seq_id]` is used to seed the injected embedding row. A skipped seq
+  contributes no result; the existing wrapper (`common_speculative_draft()` in the same
+  file) already treats "no result produced" as "fall back to one un-speculated decode"
+  for that step — which is exactly the "run the first decode step un-speculated to
+  re-prime" behavior Phase 3 §1 asks for, achieved without adding a new call site.
+
+**Net effect:** after an image (or audio) chunk, MTP stops drafting for the affected
+seq(s) for exactly one generation step (an ordinary, correctness-safe decode happens
+instead), then resumes drafting from a `pending_h` that was captured from the target's
+real post-image hidden state — never from a stale pre-image row. No MTP draft-model KV
+cell is ever written using a hidden state that doesn't correspond to its position.
+
+**Verified:** `common/speculative.cpp` (and the rest of `common/`) compiles cleanly —
+`cmake --build build --target llama-common` — no new warnings. **Not verified:** no
+GPU/model available this session, so the actual runtime behavior (does drafting resume
+correctly, does the temp-0 identity hold, does acceptance rate look normal) is
+unconfirmed. That's item 7's determinism oracle plus a real image+MTP smoke test — still
+the blocking open item before this can be called done. The `begin()` heuristic warning
+mismatch noted above (item 5) was deliberately left alone: it's a non-blocking log-only
+warning, and fixing it isn't needed for the correctness fix above.

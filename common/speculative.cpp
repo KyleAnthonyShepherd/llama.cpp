@@ -1223,6 +1223,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     // call to pair with, so it's stashed here until that next call fires.
     std::vector<std::vector<float>> pending_h;   // [n_seq][n_embd]
 
+    // False after a non-text (image/audio) chunk has been decoded for a seq, until the
+    // next text-token batch for that seq flows through process(). While false, draft()
+    // skips the seq (the caller falls back to one un-speculated decode) and process()
+    // skips the ctx_dft catch-up decode for it, so no draft-model KV cell is ever
+    // written from a pending_h row that predates the non-text chunk.
+    std::vector<bool> valid;
+
     std::vector<int32_t> i_batch_beg;
     std::vector<int32_t> i_batch_end;
 
@@ -1304,6 +1311,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         }
 
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
+        valid.assign(n_seq, true);
 
         i_last.assign(n_seq, -1);
         i_batch_beg.assign(n_seq, -1);
@@ -1356,8 +1364,22 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             return true;
         }
 
-        // TODO: how to make it work with vision tokens?
+        // Vision/audio chunks are prefilled as embedding batches (batch_in.embd set, no
+        // token ids). The MTP draft model was never trained on non-text input and never
+        // drafts across such chunks (only text generation is ever speculated), so
+        // invalidate draft state for every seq in this batch and skip the ctx_dft
+        // catch-up decode entirely. draft() will not draft for an invalidated seq until
+        // a subsequent text-token batch flows back through here and revalidates it,
+        // which costs one un-speculated decode per invalidation (see draft() below).
         if (batch_in.token == nullptr || batch_in.embd != nullptr) {
+            for (int k = 0; k < batch_in.n_tokens; ++k) {
+                for (int s = 0; s < batch_in.n_seq_id[k]; ++s) {
+                    const llama_seq_id seq_id = batch_in.seq_id[k][s];
+                    if (seq_id >= 0 && seq_id < (llama_seq_id) n_seq) {
+                        valid[seq_id] = false;
+                    }
+                }
+            }
             return true;
         }
 
@@ -1366,6 +1388,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         // remember the frist and last batch index for each sequence
         std::fill(i_batch_beg.begin(), i_batch_beg.end(), -1);
         std::fill(i_batch_end.begin(), i_batch_end.end(), -1);
+
+        // true if any seq in this batch is still waiting to be re-primed after an
+        // earlier invalidation (see above) - see the catch-up skip below
+        bool need_reprime = false;
 
         for (int k = 0; k < n_tokens; ++k) {
             for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
@@ -1376,6 +1402,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     if (i_batch_beg[seq_id] < 0) {
                         i_batch_beg[seq_id] = k;
                     }
+                    if (!valid[seq_id]) {
+                        need_reprime = true;
+                    }
                 }
             }
         }
@@ -1385,8 +1414,16 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
 
-        // if kv is shared with target (e.g Gemma4), then we can skip this catch-up decode
-        if (!is_mem_shared) {
+        // if kv is shared with target (e.g Gemma4), then we can skip this catch-up
+        // decode. Likewise skip it (but not the hidden-state capture below) for one
+        // round right after any seq here was invalidated by a non-text chunk:
+        // pending_h still predates that chunk, so any embedding this decode would
+        // inject for that seq's row would be stale. The capture tail below refreshes
+        // pending_h from the target's own hidden state for this (real, text) batch and
+        // revalidates every seq present - conservatively for the whole batch, not just
+        // the invalidated seq, to avoid splitting the "shift by 1" row alignment below
+        // across a partial set of rows.
+        if (!is_mem_shared && !need_reprime) {
             common_batch_clear(batch);
 
             for (int k = 0; k < n_tokens; ++k) {
@@ -1464,6 +1501,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
             std::memcpy(pending_h[seq_id].data(),
                     verify_h[seq_id].data() + (size_t) (n_rows - 1) * n_embd, row_bytes);
+
+            // pending_h now holds a hidden-state row captured from this real text-token
+            // batch, so this seq is safe to draft/catch-up from again.
+            valid[seq_id] = true;
         }
 
         return true;
@@ -1484,6 +1525,15 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             auto & dp = dparams[seq_id];
 
             if (!dp.drafting) {
+                continue;
+            }
+
+            if (!valid[seq_id]) {
+                // draft state was invalidated by a non-text chunk and hasn't been
+                // re-primed yet (process() hasn't seen a text-token batch for this seq
+                // since). Skip drafting it this round instead of seeding from a
+                // pending_h row that predates the invalidation - the caller falls back
+                // to one un-speculated decode, which is what re-primes it.
                 continue;
             }
 
