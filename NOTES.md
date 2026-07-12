@@ -664,3 +664,286 @@ Corrections vs. the plan, summarized:
    `resize()` exists yet to run). Phase 0's baseline runs (build + `ctest` + reference
    token outputs) are still outstanding before Phase 2 work starts, per the plan's own
    sequencing.
+
+---
+
+## Part 2 Phase A discovery answers (auto placement / elastic redistribution)
+
+Read-only pass, no code changed. Covers the plan's eight discovery questions. Builds
+directly on the "Part 2's extension point already exists in more mature form" finding
+from the cross-cutting section at the top of this file — this pass goes deep on that
+finding plus the remaining seven items.
+
+### A.1 `llama_params_fit`
+
+Already located in the cross-cutting section: `common_fit_params()` (`common/fit.h:19-27`,
+implemented via `common_params_fit_impl()` in `common/fit.cpp:176-`). This pass traced the
+actual algorithm, which is **substantially more capable than the plan assumes** — not a
+simple heuristic, and already implements most of the plan's Phase A/B "insight" as a
+hardcoded (not `value_per_byte`-derived) policy:
+
+- **Step 1** (`:192-286`): loads the model with `no_alloc=true` (via
+  `common_get_device_memory_data_impl`, `:29-176`, which does a real `llama_model_load_from_file`
+  + `llama_init_from_model` + reads `llama_get_memory_breakdown(ctx)` per backend-buffer-type)
+  to get an accurate real per-device memory projection, not an estimate. Compares against
+  a per-device **margin** (the plan's "headroom constant") passed in as `margins_s`
+  — user-configurable per device via `-fitt`/`--fit-target MiB0,MiB1,...`
+  (`common/arg.cpp:2601-2625`). If projected free memory already clears the margin on
+  every device, returns immediately (no changes) — this *is* item 7 (free-VRAM probing)
+  answered too: `ggml_backend_dev_memory(dev, &free, &total)` (`common/fit.cpp:107,116`)
+  is the actual current-free-memory query, called once per device, per fit.
+- **Step 2** (`:288-`): if margins can't be met, first tries reducing context size —
+  **but only if `cparams->n_ctx == 0`** (i.e. the user let it auto-decide) — floored at
+  `n_ctx_min` (the `-fitc`/`--fit-ctx` flag, `common/arg.cpp:2626-2630`). This is directly
+  relevant to Part 1: the *existing* fitter already reduces ctx to fit VRAM at load time;
+  Part 1's growth feature is the complementary runtime-side of the same story (start
+  small, grow later) and should probably share the `n_ctx_min`/`--ctx-max` vocabulary
+  rather than introducing parallel flags.
+- **Step 3** (`:400-643`): fills devices back-to-front with "dense" layers. For a MoE
+  model, **this already implements the plan's central insight as a fixed rule**: comment
+  at `:402` — "for a MoE model, same as dense model but with all MoE tensors in system
+  memory." Concretely, `LAYER_FRACTION_MOE` (`:22`, "everything but sparse MoE weights")
+  is the default `overflow_type`, and its regex pattern
+  (`get_overflow_pattern`, `:405-442`) is
+  `blk\.<il>\.ffn_(up|down|gate_up|gate)_(ch|)exps` — i.e. routed-expert tensors
+  specifically (the `_exps` suffix), matching GGUF's per-tensor naming for MoE weights.
+  This is *exactly* `--n-cpu-moe`'s effect, generated automatically per-layer instead of
+  as a single N-layer cutoff.
+- **Step 4** (`:645-784`): once all dense-only layers fit, converts them front-to-back
+  into "full" layers (i.e. **promotes routed experts onto GPU**) via a bisection search
+  (`get_memory_for_layers`, binary-searching layer counts against the margin target)
+  until the device is full, then tries to fit one more partial layer using finer
+  fractions (`LAYER_FRACTION_UP` → `GATE` → `ATTN`, `:720-770` — attention/dense parts
+  promoted before routed experts within a partial layer, consistent with the plan's
+  value ordering even though it's not computed as one).
+- **Output**: writes directly into `llama_model_tensor_buft_override[]`
+  (`set_ngl_tensor_split_tbo`, `:460-498`) — **this is already the plan's "Plan format"
+  and "Solver" output** (§B.3-B.4), in the exact override-machinery shape Part 2 §B.4
+  says the loader should consume.
+- **What's genuinely missing** (confirms the real Part 2 gap): no cost model /
+  `t/s` prediction anywhere in this file — it fits to a static memory-margin target, not
+  a throughput objective. No calibration, no benchmarking, no profile cache, no runtime
+  elasticity. No MTP-awareness (not referenced anywhere in `fit.cpp` — confirmed via
+  grep). No expert-popularity/value_per_byte reasoning — the MoE-to-CPU rule is a fixed
+  heuristic, not derived from a per-token-read-probability model, so it can't express
+  "promote N experts because KV budget leaves room" trade-offs the plan wants from a
+  real cost model. **Part 2's actual net-new work is calibration + a throughput cost
+  model + elastic runtime migration (Phases C-G) layered on top of an already-solid
+  static load-time fitter — not building the fitter itself.**
+
+### A.2 Tensor override machinery
+
+Confirmed exactly as the plan describes, traced end to end:
+- `-ot`/`--override-tensor` and `--n-cpu-moe` (`-ncmoe`, `common/arg.cpp:2477-2481`)
+  both populate the same `llama_model_tensor_buft_override[]` array consumed by the
+  loader (same array type `common_fit_params` writes into — one shared mechanism for
+  manual and fitted placement).
+- Consumption site: `src/llama-model-loader.cpp:1162-1197`, inside the per-tensor buft
+  selection function. For each tensor, linearly scans `tensor_buft_overrides` (terminated
+  by a `nullptr` pattern sentinel), `std::regex_search`ing the tensor's GGUF name against
+  each `pattern` in order, first match wins (`:1167-1188`). If the matched override's
+  `buft` is the CPU buffer type, it additionally calls `select_weight_buft(...,
+  buft_list_cpu)` to pick among CPU-side buffer-type variants rather than assigning the
+  plain CPU buft directly (`:1170-1178`) — and **logs a warning if `use_mmap` is also
+  set** ("consider using --no-mmap for better performance", `:1173-1177`) — implying the
+  override+mmap combination is already a supported, exercised code path today (a
+  positive data point for item 4, below), just not the fastest one.
+- Falls back to `select_weight_buft(hparams, t_meta, op, buft_list)` (`:1192-1197`) when
+  no override matches — the "default" placement logic Part 2's fitter output competes
+  with/replaces.
+
+### A.3 Buffer granularity at load
+
+Confirmed: **one `ggml_context` (and thus one contiguous `ggml_backend_buffer`, via
+`ggml_backend_alloc_ctx_tensors_from_buft`) per distinct `ggml_backend_buffer_type_t`**,
+not per layer or per tensor. Grouping happens in `llama_model_loader::ctx_map` (built
+during tensor iteration, consumed at `src/llama-model.cpp:1499,1509-1597`): all tensors
+whose selected `buft` (item A.2) matches are collected into the same `ggml_context`, then
+one `ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft)` call allocates them all as a
+single buffer (`:1571`). This confirms the plan's assumption directly and identifies the
+"smallest change" question (Phase A.3's ask): **the elastic-groups change (Part 2 Phase
+D.1) is not a new mechanism, it's widening the grouping key** — today the key is `buft`
+alone; splitting a GPU device's tensors into independently-freeable per-`placement_group`
+buffers means the key needs to become `(buft, group_id)` (e.g., derived from which
+override pattern matched, or an explicit layer/tier tag threaded alongside the override
+array), so `ctx_map` naturally produces one buffer per group instead of one per device.
+This is a real but bounded change — confined to the loader's tensor-to-context grouping
+step, no allocator internals need touching, consistent with the plan's working-agreement
+rule about not touching ggml allocator internals.
+
+### A.4 mmap reality check
+
+Not fully settled at runtime (no GPU/model this session — same limitation as Parts 1 and
+3), but static evidence points the same direction as the plan's default assumption
+(mmap-on demote-without-copy should work):
+- The loader already anticipates and logs for the override-to-CPU + mmap combination
+  (`llama-model-loader.cpp:1173-1177`, item A.2) as a real, if suboptimal, path — it
+  doesn't special-case it as broken or unsupported.
+- Did not find, this pass, the specific place that decides whether a tensor's `data`
+  pointer becomes a raw mmap'd pointer vs. an owned/copied buffer for **GPU-destined**
+  tensors specifically (the actual "does a GPU-offloaded tensor's *host-side* shadow copy
+  stay mmap'd and addressable" question the plan's demote trick depends on) — this needs
+  a dedicated follow-up read of `llama_model_loader`'s tensor-upload path (`set_tensor_data`
+  callback machinery hinted at `llama-model-loader.cpp:531`, not traced this pass) and,
+  ideally, a runtime check with `--no-mmap` vs. default on a real GPU. **Flagged as the
+  single most important unresolved item before Phase D (elastic groups) can start** —
+  the plan already says as much in its own risk list.
+
+### A.5 Scheduler reaction to migration — mechanism located, not exhaustively enumerated
+
+`ggml_backend_sched` itself decides splits per graph build (not traced deeper this pass —
+its internals are outside `src/llama-*`, in `ggml/src/ggml-backend.cpp`, out of scope for
+a `src/`-focused discovery pass; flagged for Phase D). The **cache the plan worries about
+going stale is real and located**: `llama_context::gf_res_prev` /
+`llm_graph_result::can_reuse()` (`src/llama-context.ccp:1300`
+[`if (!graph_reuse_disable && res->can_reuse(gparams))`], gated by env
+`LLAMA_GRAPH_REUSE_DISABLE`, `:252-257`). This reuses a previously-built `ggml_cgraph`
+across decode calls when the new call's parameters match, to skip graph-build overhead.
+
+Traced what `can_reuse()` actually checks: it's a per-*input*-tensor virtual
+(`llm_graph_input_i::can_reuse`, `src/llama-graph.h:107-112`, default `false` — i.e.
+inputs opt in), implemented per input kind (`llm_graph_input_pos`, `llm_graph_input_out_ids`,
+the KQ-mask helper `can_reuse_kq_mask` in `src/llama-graph.cpp:45-62`, etc.) — these all
+check **shape/param** compatibility (e.g. `kq_mask->ne[0] == n_kv`), not weight-tensor
+identity. **This is exactly the gap the plan's A.5 item warns about**: nothing in this
+reuse-eligibility check inspects whether a *weight* tensor referenced inside the cached
+graph's nodes has had its `buffer`/`data` pointer changed since the graph was built (which
+is precisely what Demote/Promote, Part 2 Phase D.2-D.3, would do to a tensor mid-session).
+If graph reuse fires after a migration, the reused `ggml_cgraph`'s nodes would still
+reference whatever `ggml_tensor*` objects they were built with — **whether that's
+actually stale depends on whether Demote/Promote mutates the existing `ggml_tensor`
+struct in place (`buffer`/`data` fields on the same object migration keeps rewriting) or
+allocates a new tensor object** — not determined this pass; this is the load-bearing
+question the plan's Phase D.4 determinism test is designed to catch, and it should be
+answered by design (mutate in place) before relying on graph-reuse being safe, or the
+elastic controller should force `sched_need_reserve`-style invalidation of `gf_res_prev`
+(the same flag/pattern documented in the Part 1 discovery, item 5, above — `sched_reserve()`'s
+`sched_need_reserve` and `gf_res_prev`'s reuse check are two *different* caches, both
+need covering) on every migration, not just resize.
+
+**Enumeration is not exhaustive** — the plan's A.5 explicitly asks to "list every cache
+to invalidate," and this pass found the two real candidates (`sched_need_reserve` /
+worst-case buffers, and `gf_res_prev` / per-decode graph reuse) but did not do a full
+sweep for others (e.g. any KV-cache-side cell/mask caching, or backend-specific graph
+plans). Sufficient to unblock Phase B/C design; not sufficient to close out Phase D.1
+without a dedicated pass.
+
+### A.6 Per-token value table for the target arch
+
+Traced `src/models/qwen35moe.cpp`'s graph builder. Confirms the plan's value_per_byte
+intuition (dense/shared parts read every token, routed experts read with low
+probability) but surfaces **one nuance the plan's cost model doesn't account for**: the
+MTP module for this arch is not a small dense head — **it has its own MoE routing,
+structurally mirroring the main model's**:
+- Main-model FFN block: `build_moe_ffn(...)` (`:501-515`, "ffn_moe_out") plus a
+  shared-expert gate (`:532-536`, "shared_expert_gate"/"shared_expert_gate_sigmoid") —
+  standard dense-shared + sparse-routed split, matches the plan's value table exactly
+  (shared/dense = value 1.0, routed = value ≈ n_active/n_experts).
+- **MTP block, separately** (`:679-707`): its own `build_moe_ffn(...)` call
+  ("mtp_ffn_moe_out") and its own shared-expert gate
+  ("mtp_shared_expert_gate_sigmoid") — i.e. the MTP head reuses the *same*
+  `n_expert`/`n_expert_used`/`n_ff_exp` MoE structure as a main-model layer, not a
+  single dense projection.
+- **Consequence for Part 2 §8.2**: treating "the MTP module" as one placement_group with
+  value ≈ 1.0 is too coarse for this arch — it should itself be split into an
+  MTP-dense/shared part (value ≈ 1.0, read every drafted token) and an MTP-routed-expert
+  part (value ≈ n_active/n_experts, same low-value treatment as the main model's routed
+  experts) — otherwise the cost model will over-value pinning the whole MTP module in
+  VRAM, when in fact most of its bytes (the routed-expert tensors) are exactly the kind
+  of low-value_per_byte weight the rest of the model already excludes from GPU by
+  default.
+- Did not cross-check against `llama-bench` CPU-only t/s vs. theoretical RAM bandwidth
+  this pass (no GPU/hardware available) — the plan's acceptance bar for this item
+  ("cross-check with `llama-bench`") remains open.
+
+### A.7 Free-VRAM probing
+
+Answered directly under A.1: `ggml_backend_dev_memory(dev, &free, &total)`
+(`common/fit.cpp:107,116`), called once per device per `common_fit_params()` invocation.
+This is the standard ggml backend device-memory query — reports current free memory as
+the backend reports it (respecting other processes' usage, to whatever extent the
+backend's own query does — e.g. `cudaMemGetInfo` for CUDA). Did not verify OS/driver
+reservation skew on real hardware this pass (no GPU available) — the plan's acceptance
+bar here ("confirm... how OS/driver reserved memory skews it on this GPU") is unverified,
+carried forward as an open item same as Part 1/3's hardware-dependent items.
+
+### A.8 MTP internals
+
+Substantially pre-answered by the Part 1 (item 10) and Part 3 discovery passes above;
+this pass adds the plan's remaining specific sub-questions:
+
+- **Where MTP's tensors load from**: same GGUF as the main model for this arch family —
+  `n_layer_nextn > 0` (`src/llama-model.cpp:2172`, STEP35 check; qwen35moe similarly
+  gated) signals MTP layers are present in the same checkpoint, filtered into a
+  separate memory/graph by layer index (`il >= hparams.n_layer()`, item 10 above) — not
+  a companion file. Size at target quant not measured this pass (needs an actual GGUF).
+- **Own KV cache**: confirmed separate object (Part 1 item 10, Part 3 discovery) —
+  `LLAMA_CONTEXT_TYPE_MTP` gets its own plain `llama_kv_cache`, independent of
+  `ctx_tgt`'s memory.
+- **Acceptance statistics**: **already tracked**, more thoroughly than the plan assumes
+  — contrary to Part 2 §8.1's "seed a default (~0.7/draft-token), replace with measured
+  values" implying this needs building. `common_speculative_impl` (base class,
+  `common/speculative.cpp:140-149`) already tracks `n_gen_tokens`, `n_acc_tokens`, and
+  **`n_acc_tokens_per_pos`** (a full per-draft-position acceptance histogram, not just a
+  scalar rate) — updated at `:2649,2681-2691`, printed via `common_speculative_print_stats`
+  (`:2735-2774`, mean acceptance length + per-position rates). **Gap**: this is currently
+  only surfaced via `SPC_TRC` trace-level logging, not a queryable API. Per-request
+  acceptance *is* separately surfaced to API consumers already, though: `server-context.cpp`
+  tracks `slot.n_draft_total`/`n_draft_accepted` per slot and reports `draft_ratio` /
+  `mean_acc_len` in the completion response's `timings` object (`:614-630`). Part 2's
+  profile cache (§4.3) should read from the existing per-impl counters (extend
+  `common_speculative_print_stats`'s data into something machine-readable, e.g. a getter)
+  rather than adding new instrumentation from scratch.
+- **Verify-batch size vs. compute buffer**: not directly measured this pass (needs
+  runtime); structurally, `sched_reserve()`'s worst-case reservation (Part 1 item 5) uses
+  `n_seqs`/`n_tokens` derived from `cparams`, and does not appear (from the Part 1 pass)
+  to have any MTP/speculative-specific worst-case sizing — i.e. **the existing
+  `graph_reserve` machinery likely does not know to reserve for `n_draft+1`-sized verify
+  batches**, meaning enabling MTP after the fact (or increasing `--spec-draft-n-max`)
+  may need the same `sched_need_reserve = true` treatment as growth (Part 1 item 5) to
+  avoid a first-decode reallocation stall. Not confirmed; flagged for Phase C
+  calibration work to check empirically.
+- **`-np 1` / `--mmproj` constraints**: already answered in the Part 3 discovery pass
+  above — **no such guard exists in this tree** for either restriction (MTP's
+  implementation is sized by `n_seq` throughout, and no mmproj×spec guard was found).
+  Part 2 §8.6 ("delete/condition the MTP-mutually-exclusive-with-mmproj constraint")
+  is very likely a no-op here too, same conclusion as Part 3's discovery — nothing to
+  delete.
+
+---
+
+## Assessment against Part 2 Phase A's acceptance bar
+
+All eight items answered with file/line references. Two carried-forward hardware-
+dependent gaps (A.4's GPU-tensor-mmap confirmation, A.6's `llama-bench` cross-check, A.7's
+OS/driver skew) match the same "no GPU this session" limitation noted in the Part 1 and
+Part 3 passes — consistent pattern across all three plans' discovery phases.
+
+**Biggest scope correction vs. the plan**: Part 2 Phase A originally reads as "go find
+the fitter and understand its extension points." In reality the fitter
+(`common_fit_params`) already *is* most of what Phase A/B describes as net-new design —
+real per-device memory introspection, MoE-aware placement, override-array output format,
+even a two-tier bisection solver. The plan's genuinely-missing pieces are narrower and
+more clearly scoped than the plan's phase breakdown suggests:
+1. A throughput/`t/s` cost model (none exists — the fitter optimizes purely for fitting
+   within a memory margin, not for tokens/sec).
+2. Calibration + profile cache (none exists, though the acceptance-stats counters Phase C
+   would want for MTP calibration already exist, just not surfaced as an API).
+3. Elastic runtime migration (Phases D-E) — genuinely new; needs the buffer-grouping
+   change (A.3) and a resolved answer to the graph-reuse staleness question (A.5) before
+   it can be built safely.
+4. MTP-as-placement-group needs to be *finer-grained* than the plan's §8.2 assumes (its
+   own dense/shared vs. routed-expert split, per A.6), not coarser design work — an
+   easier fix than "build MTP awareness from scratch."
+
+## Open items before Part 2 Phase B (placement model) can start
+
+1. A.4's mmap-for-GPU-tensors confirmation — highest-priority unresolved item, blocks
+   Phase D's whole premise (demote-without-copy).
+2. A.5's graph-mutation-in-place question (does Demote/Promote need to reuse the same
+   `ggml_tensor*` object, or does migration inherently invalidate `gf_res_prev`
+   regardless) — needs a design decision, not just more reading.
+3. A.6's MTP-as-two-groups (dense/shared + routed) refinement to the plan's cost model
+   before Phase B's placement_group definition is finalized for this target arch.
+4. No GPU this session — A.4, A.6 (llama-bench cross-check), and A.7 (driver skew) all
+   need real hardware before they can be called closed, same caveat as Parts 1 and 3.
