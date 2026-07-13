@@ -363,11 +363,6 @@ extern "C" {
         uint32_t yarn_orig_ctx;    // YaRN original context size
         float    defrag_thold;     // [DEPRECATED] defragment the KV cache if holes/size > thold, <= 0 disabled (default)
 
-        // dynamic KV cache growth (see llama_set_n_ctx())
-        uint32_t n_ctx_max;       // upper bound the KV cache may grow to via llama_decode()'s automatic growth; 0 = disabled (default)
-        float    ctx_grow_factor; // growth multiplier applied to n_ctx when growing automatically (default: 1.5);
-                                  // the actual growth target is always at least large enough to fit the batch that triggered growth
-
         ggml_backend_sched_eval_callback cb_eval;
         void * cb_eval_user_data;
 
@@ -401,6 +396,12 @@ extern "C" {
         // a source/target/parent context
         // can be utilized in various ways, for example by sharing results or llama_memory between 2 contexts
         struct llama_context * ctx_other;
+
+        // dynamic KV cache growth (see llama_set_n_ctx()) - appended at the end, per the
+        // struct's own ABI convention (llama.cpp appends new fields rather than inserting)
+        uint32_t n_ctx_max;       // upper bound the KV cache may grow to via llama_decode()'s automatic growth; 0 = disabled (default)
+        float    ctx_grow_factor; // growth multiplier applied to n_ctx when growing automatically (default: 1.5);
+                                  // the actual growth target is always at least large enough to fit the batch that triggered growth
     };
 
     struct llama_model_tensor_override {

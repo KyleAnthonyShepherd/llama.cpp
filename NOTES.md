@@ -1482,3 +1482,82 @@ Results:
 3. MTP `ctx_dft` lockstep growth (carried over from Phase 3) is still unaddressed — a
    server session combining `--spec-type draft-mtp` with `--ctx-max` will grow `ctx_tgt`
    only; `ctx_dft` stays fixed-size. Not validated either way this pass.
+
+---
+
+## Real-hardware findings, round 2: struct layout fix + MTP lockstep growth
+
+### 1. Crash: `common/arg.cpp:2520: GGML_ASSERT(params.n_gpu_layers < 0) failed` on Windows
+
+Reported when starting `llama-server` with `--ctx-max` on the user's Windows/MSVC build.
+This assert is **pre-existing, unrelated to anything in this branch's diff** (confirmed via
+`git blame` — authored 2026-07-08, well before this branch existed) — it's a sanity check,
+evaluated once at flag-registration time, that `common_params::n_gpu_layers` still holds its
+compiled-in default (`-1`) at the point the `-ngl` flag's help text is generated. It firing
+means `n_gpu_layers` held a nonsensical value at that point — impossible under normal
+control flow (every call site either default-constructs `common_params` or passes one that
+hasn't been touched yet), which is the signature of a **struct-layout/ABI mismatch between
+separately-compiled translation units**, not a logic bug.
+
+**Likely root cause, self-inflicted**: both `n_ctx_max`/`ctx_grow_factor` fields (Phase 5)
+were inserted in the *middle* of `llama_context_params` (`include/llama.h`, between
+`defrag_thold` and `cb_eval`) and of `common_params` (`common/common.h`, between `n_ctx` and
+`n_batch`) — shifting the byte offset of every field declared after the insertion point
+(including `n_gpu_layers`, dozens of fields later in `common_params`). The project's own
+stated convention for `llama_context_params` (noted in the original plan itself: "llama.cpp
+appends new fields... keep struct ABI notes in mind") exists precisely to avoid this: on an
+incremental Windows/MSBuild build, if even one translation unit that reads/writes a shifted
+field doesn't get fully recompiled against the new header (stale `.obj`/`.lib`/`.dll`
+linked against a mix of old/new layouts), fields after the insertion point silently
+misalign — exactly the kind of "impossible" garbage this assert is designed to catch,
+just for an unrelated field.
+
+**Fix**: moved both fields to the very end of `llama_context_params` (after `ctx_other`)
+and of `common_params` (after `no_alloc`), matching the append-only convention, and moved
+the corresponding two initializer-list entries in `llama_context_default_params()`
+(`src/llama-context.cpp`) to match — that function uses **positional aggregate
+initialization** (the `/*.field_name =*/` comments are cosmetic; there is no C++20
+designated-initializer syntax in play, this project targets C++17), so the values and the
+struct declaration order must move together or every field after the insertion point reads
+the wrong initializer. Verified: full rebuild clean, and re-ran the same real-`llama-server`
+synthetic-model HTTP check from the Phase 5 pass (proactive growth firing, `256 -> 512`) —
+unaffected, as expected, since growth's own logic reads every field by name, not position.
+
+**User action needed**: pull this fix and do a **full rebuild**, not just an incremental
+one — if the theory above is right, an incremental build might not reliably clear whatever
+stale state caused the mismatch in the first place. If the crash recurs after a genuinely
+clean rebuild, this theory is wrong and needs to be revisited (open a fresh investigation
+rather than assuming the fix above was sufficient).
+
+### 2. Closed the MTP `ctx_dft` lockstep-growth gap
+
+`server_context_impl::refresh_n_ctx()` (`tools/server/server-context.cpp`) now also grows
+`ctx_dft` (the MTP draft context, when present) to match `ctx_tgt`'s current
+`llama_n_ctx_seq()` every time it runs — i.e. after both proactive growth
+(`maybe_grow_for_request()`) and reactive growth (the hook inside `llama_decode()` itself).
+Implementation: direct `llama_set_n_ctx(ctx_dft, n_ctx_seq_now)` call, guarded by
+`ctx_dft && ctx_dft != ctx_tgt` and only attempted when `ctx_dft` is actually behind. This
+matches the plan's own framing exactly ("growing `ctx_dft` in lockstep... is a call-site
+change in whatever wraps `llama_set_n_ctx`, not a `resize()` change") — no changes needed
+to `llama_set_n_ctx()`/`resize()` themselves, just one more grow call from the same place
+that already refreshes the server's own bookkeeping.
+
+Known rough edge, accepted rather than solved: for architectures where the draft head
+shares `ctx_tgt`'s memory instead of owning its own (gemma4's `is_mem_shared` mode —
+**not** the target qwen35(moe) family this whole effort is built around), `resize()`
+correctly refuses to touch a cache that shares cells with another
+(`[TAG_KV_CACHE_SHARE_CELLS]`, Phase 2), so the lockstep-growth call for `ctx_dft` would
+fail there — harmlessly, since growing `ctx_tgt`'s memory already covers the shared case,
+but `llama_set_n_ctx()`'s return code doesn't distinguish "harmless, already covered" from
+"a real allocation failure," so this logs a warning either way for that architecture family.
+Not fixed, since it doesn't affect the target model and a real fix would need a new way to
+ask "is this memory shared with another context" that doesn't exist yet.
+
+**Not verified this pass**: no MTP-capable model available in this sandbox (same limitation
+as every other pass) — the lockstep call was reviewed against the code (mirrors the
+already-working `maybe_grow_for_request`/`refresh_n_ctx` pattern exactly, using the same
+`llama_set_n_ctx` entry point Phase 3 already validated end-to-end) but not exercised at
+runtime with a real `ctx_dft`. This is the first thing to check on the user's hardware:
+`llama-server --spec-type draft-mtp --ctx-max ... -c ...`, grow past a boundary, confirm no
+MTP-related errors/crashes and that drafting continues (watch `-lv 4` trace output and the
+new `grew MTP draft context in lockstep` log line).

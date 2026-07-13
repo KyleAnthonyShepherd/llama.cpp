@@ -342,10 +342,9 @@ which growth is deliberately restricted away from for now).
 
 ### 3.4 What's explicitly *not* covered yet (don't be surprised)
 
-- MTP's own side context (`ctx_dft`, relevant if you combine this with §1's MTP setup)
-  does **not** grow in lockstep automatically — growing `ctx_tgt` alone leaves `ctx_dft`
-  at its original size. Combining growth with MTP is not yet wired up end-to-end; treat
-  that combination as untested until a later pass addresses it (tracked in `NOTES.md`).
+- MTP's own side context (`ctx_dft`) now **does** grow in lockstep with `ctx_tgt` (see §4.5
+  below) — reviewed against the code but not yet exercised with a real MTP-capable model in
+  this sandbox, so your run is the first real check of it.
 - `--cache-ram-mib` (the optional prompt-cache RAM feature) is sized once at load time and
   is not resized when the context grows. Untested combination; treat as unsupported until
   checked.
@@ -373,10 +372,10 @@ build\bin\Release\llama-server.exe -m your-qwen3.6-mtp-model.gguf ^
 - If you omit `-c` entirely, it defaults to `min(8192, --ctx-max)` automatically (logged at
   startup) rather than starting at the model's full training context — the whole point is
   to start small and grow.
-- Combine with `--spec-type draft-mtp` if you want MTP + growth together, but see the
-  caveat in §3.4 above: MTP's own side context doesn't grow in lockstep yet, so watch for
-  MTP-related errors specifically once the conversation grows past `ctx_dft`'s original
-  size (if that happens, it's the known gap, not a new bug).
+- Combine with `--spec-type draft-mtp` if you want MTP + growth together — `ctx_dft` (MTP's
+  own side context) now grows in lockstep with `ctx_tgt` automatically. This has not been
+  exercised with a real MTP-capable model yet (see §4.5), so watch closely the first time
+  a conversation grows past `ctx_dft`'s original size while MTP is active.
 
 ### 4.2 What to watch for
 
@@ -422,3 +421,27 @@ growth; confirmed the crash happens strictly after decode/growth already succeed
 means **your test on real hardware with a real tokenizer is the first time this will
 actually be exercised for real generated output**, not just log lines. See `NOTES.md`'s
 "Part 1 Phase 5 implementation" section for the full verification writeup.
+
+### 4.5 Testing MTP + growth together (the lockstep fix)
+
+Watch for this log line once a growth event fires while `--spec-type draft-mtp` is active:
+
+```
+slot maybe_grow_f: id  0 | task N | grew MTP draft context in lockstep: n_ctx 8192 -> 16384
+```
+
+If instead you see `failed to grow MTP draft context in lockstep`, that's worth reporting —
+it means `ctx_dft` didn't grow, so drafting is likely to degrade (garbled/lower-quality
+completions, or a possible error) once the conversation runs past `ctx_dft`'s old size.
+This is the first real-hardware exercise of this code path, so treat any MTP-specific
+weirdness right around a growth boundary as suspect and worth flagging.
+
+### 4.6 If the server crashes on startup with `GGML_ASSERT(params.n_gpu_layers < 0) failed`
+
+This was a real bug hit on the first Windows test of Phase 5 — a struct-layout issue caused
+by fields added earlier in this branch, now fixed (moved to the end of the affected
+structs, matching the codebase's own "append new fields" convention). If you still see this
+after pulling the latest commit: do a **full clean rebuild** (not just an incremental one —
+`rmdir /s build` and reconfigure, or at minimum rebuild every target, not just
+`llama-server`) before assuming it's still broken. See `NOTES.md`'s "Real-hardware
+findings, round 2" section for the full diagnosis.

@@ -3928,6 +3928,37 @@ private:
         for (auto & slot : slots) {
             slot.n_ctx = n_ctx_seq_now;
         }
+
+        // keep MTP's side context in lockstep: it needs to track roughly the same
+        // position range as ctx_tgt (begin() compares its own KV position against the
+        // prompt length - see NOTES.md's Part 1 discovery item 10). ctx_dft is a
+        // completely separate llama_context/memory object for the qwen35(moe) family
+        // (the target model this is written for), so growing ctx_tgt never grows it on
+        // its own. For architectures where the draft shares ctx_tgt's memory instead
+        // (e.g. gemma4's is_mem_shared mode), resize() already refuses to touch a cache
+        // that shares cells with another (Phase 2's [TAG_KV_CACHE_SHARE_CELLS] guard),
+        // so this is a harmless no-op there (growing ctx_tgt's memory already covers it).
+        if (ctx_dft && ctx_dft != ctx_tgt) {
+            const int32_t n_ctx_seq_dft = llama_n_ctx_seq(ctx_dft);
+
+            if (n_ctx_seq_dft < n_ctx_seq_now) {
+                const int32_t ret = llama_set_n_ctx(ctx_dft, (uint32_t) n_ctx_seq_now);
+
+                if (ret == 0) {
+                    SRV_INF("grew MTP draft context in lockstep: n_ctx %d -> %d\n",
+                            n_ctx_seq_dft, llama_n_ctx_seq(ctx_dft));
+                } else {
+                    // note: this also fires (harmlessly) for architectures where the draft
+                    // shares ctx_tgt's memory instead of owning its own (e.g. gemma4's
+                    // is_mem_shared mode) - resize() refuses to touch a shared cache, but
+                    // growing ctx_tgt's memory already covers it in that case, so there's
+                    // nothing actually wrong; the return code doesn't distinguish that from
+                    // a real allocation failure, so this stays a warning either way
+                    SRV_WRN("failed to grow MTP draft context in lockstep (ret = %d) - "
+                            "drafting may degrade near the new context boundary\n", ret);
+                }
+            }
+        }
     }
 
     // grow the KV cache once, right before prefill, sized directly to what this request
