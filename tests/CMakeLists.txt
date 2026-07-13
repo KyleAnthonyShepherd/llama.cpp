@@ -258,6 +258,10 @@ set_tests_properties(test-recurrent-state-rollback PROPERTIES FIXTURES_REQUIRED 
 llama_build_and_test(test-kv-resize.cpp LABEL "model" ARGS -m "${MODEL_DEST}")
 set_tests_properties(test-kv-resize PROPERTIES FIXTURES_REQUIRED test-download-model)
 
+# Test for llama_set_n_ctx() / llama_decode()'s automatic KV growth (dynamic context growth, Part 1)
+llama_build_and_test(test-ctx-grow.cpp LABEL "model" ARGS -m "${MODEL_DEST}")
+set_tests_properties(test-ctx-grow PROPERTIES FIXTURES_REQUIRED test-download-model)
+
 # Test state save/load functionality
 llama_build_and_test(test-save-load-state.cpp LABEL "model" ARGS -m "${MODEL_DEST}")
 set_tests_properties(test-save-load-state PROPERTIES FIXTURES_REQUIRED test-download-model)

@@ -363,6 +363,11 @@ extern "C" {
         uint32_t yarn_orig_ctx;    // YaRN original context size
         float    defrag_thold;     // [DEPRECATED] defragment the KV cache if holes/size > thold, <= 0 disabled (default)
 
+        // dynamic KV cache growth (see llama_set_n_ctx())
+        uint32_t n_ctx_max;       // upper bound the KV cache may grow to via llama_decode()'s automatic growth; 0 = disabled (default)
+        float    ctx_grow_factor; // growth multiplier applied to n_ctx when growing automatically (default: 1.5);
+                                  // the actual growth target is always at least large enough to fit the batch that triggered growth
+
         ggml_backend_sched_eval_callback cb_eval;
         void * cb_eval_user_data;
 
@@ -543,6 +548,7 @@ extern "C" {
     //       ref: https://github.com/ggml-org/llama.cpp/pull/17046#discussion_r2503085732
     LLAMA_API uint32_t llama_n_ctx      (const struct llama_context * ctx);
     LLAMA_API uint32_t llama_n_ctx_seq  (const struct llama_context * ctx);
+    LLAMA_API uint32_t llama_n_ctx_max  (const struct llama_context * ctx); // upper bound for automatic growth; 0 = disabled
     LLAMA_API uint32_t llama_n_batch    (const struct llama_context * ctx);
     LLAMA_API uint32_t llama_n_ubatch   (const struct llama_context * ctx);
     LLAMA_API uint32_t llama_n_seq_max  (const struct llama_context * ctx);
@@ -985,6 +991,18 @@ extern "C" {
     // Set whether to use causal attention or not
     // If set to true, the model will only attend to the past tokens
     LLAMA_API void llama_set_causal_attn(struct llama_context * ctx, bool causal_attn);
+
+    // Grow (never shrink) ctx's KV cache capacity to n_ctx_new cells (rounded up
+    // internally to whatever padding the underlying cache requires). Can be called at
+    // any time between llama_decode()/llama_encode() calls. llama_decode() will also
+    // call this automatically, when the cache runs out of room, up to the bound set by
+    // llama_context_params::n_ctx_max (0 = automatic growth disabled, the default).
+    // Returns:
+    //    0 = success
+    //   -1 = invalid request (n_ctx_new <= current llama_n_ctx(ctx), or the memory
+    //        topology does not support growth, e.g. multiple KV streams / n_seq_max > 1)
+    //   -2 = allocation failure; the context remains fully valid at its old size
+    LLAMA_API int32_t llama_set_n_ctx(struct llama_context * ctx, uint32_t n_ctx_new);
 
     // Set whether the model is in warmup mode or not
     // If true, all model tensors are activated during llama_decode() to load and cache their weights.

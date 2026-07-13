@@ -10,6 +10,8 @@
 struct llama_cparams {
     uint32_t n_ctx;           // context size used during inference
     uint32_t n_ctx_seq;       // context for a single sequence
+    uint32_t n_ctx_max;       // upper bound for automatic KV cache growth (see llama_set_n_ctx()); 0 = disabled
+    float    ctx_grow_factor; // growth multiplier used by automatic growth inside llama_decode()
     uint32_t n_batch;
     uint32_t n_ubatch;
     uint32_t n_seq_max;
