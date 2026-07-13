@@ -128,9 +128,20 @@ build\bin\Release\llama-server.exe -m your-model.gguf --mmproj your-mmproj.gguf 
 
 Send a plain text chat request (no image) via the web UI at `http://localhost:8080` or
 `curl`, twice: once with `--spec-type draft-mtp`, once with `--spec-type none` (both
-`--temp 0`). **The generated text must be token-for-token identical.** If it isn't, MTP
-correctness is broken independent of anything to do with images — file that as its own
-bug before going further.
+`--temp 0`). In principle **the generated text should be token-for-token identical** — but
+in practice, on real hardware (Qwen3.6-35B-A3B Q4_K_M, CUDA), **it wasn't**: output length
+differed (581 vs. 614 tokens) even though both were coherent, with a healthy-looking draft
+acceptance rate (`~0.52`, mean accepted length `2.57`). This is very unlikely to be caused
+by the Part 3 `--mmproj` fix specifically — no image is involved in this test, and that
+fix's code only ever runs on image/audio embedding batches — so it's most likely either a
+pre-existing gap in `draft-mtp`'s own accept/verify logic, or an inherent floating-point
+difference between the *batched* verify pass and *sequential* single-token decode (a known
+category of issue in speculative decoding generally, independent of any logic bug). See
+`NOTES.md`'s "Real-hardware findings" section for the fuller writeup. **Current status:
+treat this as a known, open, separately-tracked issue** (not a blocker for anything else in
+this guide) rather than a regression to chase down here — if the MTP-on output is
+*coherent* but simply different from MTP-off, that matches this known state; if it's
+*garbled/repeating*, that's a new, more concerning symptom worth reporting separately.
 
 ### 1.4 Test 2 — image + MTP generation (the actual fix)
 
@@ -192,6 +203,16 @@ This is the lower-level primitive: growing a live KV cache's capacity in place, 
 touching `llama_context` or the public `llama_decode()` path yet. There's no user-facing
 flag for this — it's tested via a dedicated unit test that calls the internal C++ API
 directly.
+
+> **If you hit `LNK2019: unresolved external symbol ... llama_kv_cache::...` when building
+> these tests on Windows**: pull the latest commit on this branch and rebuild. Windows DLLs
+> only export symbols explicitly marked for export, unlike Linux shared libraries which
+> export everything by default — the internal `llama_kv_cache` methods these tests call
+> directly weren't visible across the `llama.dll` boundary until this was fixed
+> (`src/CMakeLists.txt` now sets `WINDOWS_EXPORT_ALL_SYMBOLS` on the `llama` target). This
+> was found and fixed only after testing on a real Windows/MSVC build — the Linux sandbox
+> used to write these tests masked the problem entirely. See `NOTES.md`'s "Real-hardware
+> findings" section for the full story.
 
 ### 2.1 Run the unit test
 

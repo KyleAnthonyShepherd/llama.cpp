@@ -1249,3 +1249,89 @@ synthetic in-memory model instead of the download fixture.
    `llama_context_params`.
 4. The target model smoke test (Qwen3.6-35B-A3B GGUF, growth past 3 boundaries, VRAM/t/s
    table) from the plan's Phase 4 needs real hardware and is still fully open.
+
+---
+
+## Real-hardware findings (user's Windows/VS2022 + CUDA + 6 GB VRAM machine)
+
+First results from actual hardware, following `TESTING.md`. Two findings so far.
+
+### 1. Part 3's determinism oracle (Part 3 discovery item 7 / Part 1 §5.4's test-oracle
+### assumption): **MTP-on is not token-identical to MTP-off, text-only, no images involved**
+
+Real run: `unsloth`-style Qwen3.6-35B-A3B Q4_K_M quant (with its MTP heads and mmproj
+present, but **mmproj/images not exercised in this test** — this is the text-only check),
+`--spec-type draft-mtp` vs `--spec-type none`, both `--temp 0 --seed 1`, same prompt.
+Outputs diverge (581 vs. 614 final tokens across the two runs) but both are reported
+coherent, not degenerate/repeating. `draft acceptance = 0.524 (343/654), mean len = 2.57`
+for the MTP run — a plausible, healthy-looking acceptance rate, not a sign of something
+badly broken.
+
+**This is very unlikely to be caused by the Part 3 mmproj fix**: no image was ever sent in
+this test, and that fix's entire effect is gated behind `batch_in.embd != nullptr` (an
+image/audio embedding batch) — the `valid` flag it introduces starts `true` and is only
+ever set `false` on such a batch. A pure-text conversation never touches that code path, so
+the fix is provably a no-op for this specific test. The divergence must come from
+`draft-mtp`'s own draft/verify/accept logic (untouched by the Part 3 session), or from an
+inherent floating-point difference between the *batched* verify-pass computation and the
+*single-token sequential* baseline decode (a well-known category of issue in speculative
+decoding generally — different reduction order / kernel selection for batch>1 vs batch=1,
+especially on a quantized model, can flip an argmax at temp 0 without any logic bug being
+involved). Both explanations are consistent with what was actually observed (coherent but
+diverging output, healthy acceptance rate) rather than, say, garbage output or a crash,
+which would point more toward a real accept/reject logic bug.
+
+**Decision (user's call, recorded here for continuity):** treat "MTP-on token-identical to
+MTP-off" as **false** for now; do not chase this further in this line of sessions. Flagged
+for separate deeper investigation later. This means: the token-identity oracle Part 1 §5.4
+and Part 3 Phase 3's tests both assume ("Assert identical token output") **cannot be used
+as-is** for any MTP-enabled determinism testing — per both plans' own stated fallback
+("if [temp-0 identity] is not [available], use logit/perplexity comparison instead"), any
+future determinism harness that must cover MTP-enabled configurations needs to switch to a
+logit-distance or perplexity-based comparison, not exact token-identity. Note this does
+**not** block Part 1's own growth-determinism work (`test-kv-resize.cpp`/`test-ctx-grow.cpp`):
+those tests exclude MTP entirely and rely on non-speculative decode, where token/logit
+identity is expected to hold (and did, per the Phase 2/3 synthetic-model verification above).
+
+### 2. Real build bug found: `test-kv-resize`/`test-ctx-grow` failed to link on Windows (MSVC)
+
+```
+error LNK2019: unresolved external symbol "public: unsigned int __cdecl llama_kv_cache::get_size(void)const"
+error LNK2019: unresolved external symbol "... llama_kv_cache::get_k_storage(int)const"
+error LNK2019: unresolved external symbol "... llama_kv_cache::get_v_storage(int)const"
+```
+
+Root cause: Windows DLLs only export symbols explicitly marked `__declspec(dllexport)`
+(here, via the `LLAMA_API` macro) — unlike ELF shared libraries (Linux), which export
+*everything* with default visibility unless told otherwise. `llama_kv_cache` is an internal
+class with no `LLAMA_API` annotations (by design — it's not part of the public C API), so
+on a Windows shared (`BUILD_SHARED_LIBS=ON`, the default) build, its methods are invisible
+to any other executable linking against `llama.dll`, including the two internal-header-using
+test binaries added this session. This only ever surfaced now because this whole
+multi-session effort had no Windows testing until this point — the Linux sandbox used for
+every prior verification pass masked the problem entirely (ELF default-exports everything).
+
+**Fix**: `src/CMakeLists.txt` now sets `WINDOWS_EXPORT_ALL_SYMBOLS ON` on the `llama` target
+(under the existing `if (BUILD_SHARED_LIBS)` block), mirroring the *exact same* workaround
+`common/CMakeLists.txt` already applies to `llama-common` for the identical underlying
+reason (that file's own comment: `# TODO: make fine-grained exports in the future` — copied
+verbatim, since it's still exactly the caveat that applies here too). This is additive only
+(exports a strict superset of symbols; nothing that was exported before stops being
+exported), so it doesn't change behavior for any existing consumer of `llama.dll`
+(`llama-cli.exe`, `llama-server.exe`, etc.) — verified the Linux build stays unaffected too
+(`WINDOWS_EXPORT_ALL_SYMBOLS` is a documented no-op on non-Windows platforms).
+
+**Open question, not investigated**: `test-llama-archs.cpp` (pre-existing, not part of this
+session's work) also directly calls non-template `llama_model_saver` methods
+(`add_kv(uint32_t)` etc., implemented in `llama-model-saver.cpp`, part of the `llama` target)
+from outside the DLL — by the same logic, it's plausible that test *also* fails to link on a
+stock Windows shared build, independent of anything in this branch. Not confirmed (no Windows
+environment available to check upstream `master` directly); if true, this fix incidentally
+also resolves that latent issue, but that wasn't the goal and wasn't verified as a before/after
+comparison.
+
+### Next steps for the user's hardware
+
+1. Re-pull this branch (now includes the `WINDOWS_EXPORT_ALL_SYMBOLS` fix), rebuild, retry
+   `test-kv-resize` and `test-ctx-grow`.
+2. MTP-on/off determinism: parked per the decision above; separate investigation later.
