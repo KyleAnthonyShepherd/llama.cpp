@@ -340,44 +340,85 @@ find a memory slot"), growth either isn't enabled (`n_ctx_max` wasn't set, or wa
 is still `<= n_ctx`) or isn't supported for that context's topology (`n_seq_max > 1`,
 which growth is deliberately restricted away from for now).
 
-### 3.4 Exercising growth yourself, without CLI flags
+### 3.4 What's explicitly *not* covered yet (don't be surprised)
 
-Since there's no `--ctx-max` flag yet, the only way to actually *use* this feature today
-(as opposed to running the unit test) is to write a tiny program against the C API, or
-patch one in temporarily. Minimal example, adapted from `tools/cli`'s structure — this
-sets the two new fields directly on `llama_context_params`:
-
-```cpp
-#include "llama.h"
-
-llama_model_params mparams = llama_model_default_params();
-mparams.n_gpu_layers = 999; // or however many layers you're offloading
-
-llama_model * model = llama_model_load_from_file("your-model.gguf", mparams);
-
-llama_context_params cparams = llama_context_default_params();
-cparams.n_ctx          = 8192;   // start small
-cparams.n_ctx_max      = 131072; // ceiling for automatic growth
-cparams.ctx_grow_factor = 1.5f;  // default anyway, shown for clarity
-cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
-
-llama_context * ctx = llama_init_from_model(model, cparams);
-
-// decode normally; llama_decode() will call llama_set_n_ctx() internally and retry
-// once, automatically, the first time a batch doesn't fit
-```
-
-You can also call `llama_set_n_ctx(ctx, n_ctx_new)` directly yourself at any point
-between `llama_decode()` calls, if you want proactive growth ahead of a big prompt rather
-than waiting for the reactive in-`decode()` hook.
-
-### 3.5 What's explicitly *not* covered yet (don't be surprised)
-
-- No `--ctx-max`/`--ctx-grow-factor` CLI or server flags (Phase 5).
-- `llama-server`'s per-slot `n_ctx` isn't refreshed after growth (also Phase 5) — if you
-  hand-roll a server-style program using this API today, remember to re-read
-  `llama_n_ctx(ctx)` after any decode that might have grown it.
 - MTP's own side context (`ctx_dft`, relevant if you combine this with §1's MTP setup)
   does **not** grow in lockstep automatically — growing `ctx_tgt` alone leaves `ctx_dft`
   at its original size. Combining growth with MTP is not yet wired up end-to-end; treat
   that combination as untested until a later pass addresses it (tracked in `NOTES.md`).
+- `--cache-ram-mib` (the optional prompt-cache RAM feature) is sized once at load time and
+  is not resized when the context grows. Untested combination; treat as unsupported until
+  checked.
+
+---
+
+## 4. Testing `llama-server`/`llama-cli` with `--ctx-max` (Part 1, Phase 5)
+
+This is the layer that actually makes growth usable from the command line — the
+`--ctx-max`/`--ctx-grow-factor` flags, `llama-server`'s proactive per-request growth (grows
+once, ahead of prefill, sized to fit the whole request instead of waiting to get caught out
+mid-generation), and keeping the server's own bookkeeping (`slot.n_ctx`, `/props`) in sync
+with whatever the KV cache actually grew to.
+
+### 4.1 The command
+
+```bat
+build\bin\Release\llama-server.exe -m your-qwen3.6-mtp-model.gguf ^
+    -c 8192 --ctx-max 131072 -np 1 --temp 0 --seed 1
+```
+
+- `-np 1` (`--parallel 1`) is **required** whenever `--ctx-max` is set — growth only
+  supports a single sequence/slot for now. The server refuses to start with a clear error
+  if you set `--ctx-max` with `--parallel` anything else.
+- If you omit `-c` entirely, it defaults to `min(8192, --ctx-max)` automatically (logged at
+  startup) rather than starting at the model's full training context — the whole point is
+  to start small and grow.
+- Combine with `--spec-type draft-mtp` if you want MTP + growth together, but see the
+  caveat in §3.4 above: MTP's own side context doesn't grow in lockstep yet, so watch for
+  MTP-related errors specifically once the conversation grows past `ctx_dft`'s original
+  size (if that happens, it's the known gap, not a new bug).
+
+### 4.2 What to watch for
+
+A growth event logs a line like:
+
+```
+llama_kv_cache: resizing KV cache: 8192 -> 16384 cells
+llama_context: growing n_ctx: 8192 -> 16384 (n_ctx_seq: 8192 -> 16384)
+slot maybe_grow_f: id  0 | task N | grew KV cache ahead of prefill: n_ctx 8192 -> 16384 (prompt = ... tokens, n_predict = ...)
+```
+
+(the third line only appears for *proactive* growth, triggered by a request whose prompt +
+`n_predict` doesn't fit yet; growth triggered *reactively*, mid-generation, by
+`llama_decode()`'s own hook won't have that line, only the first two.)
+
+Check `/props` after a growth event — `n_ctx` there should reflect the new, larger size,
+not the value from server startup.
+
+### 4.3 Things to actually try
+
+- A single long multi-turn conversation that crosses at least one growth boundary — confirm
+  the conversation just keeps going with no restart, no error, and (this is the important
+  part) **the model doesn't seem to have "forgotten" or garbled earlier turns** right around
+  the growth point. That's the real-world version of the determinism check in §3.1.
+- A prompt long enough to need growth *beyond* `--ctx-max` — confirm you get the normal
+  "exceeds the available context size" error (referencing the current ceiling), not a
+  crash, and the server stays usable for the next request afterward.
+- Try `--ctx-max` with `--parallel 2` (or any value other than 1) — confirm the server
+  refuses to start with a clear error rather than silently ignoring `--ctx-max`.
+
+### 4.4 What was verified this session, and what wasn't
+
+I verified the mechanism end-to-end against a real `llama-server` **process** (not just a
+unit test) using a synthetic model with real (if randomly-initialized) weights written to
+an actual `.gguf` file, driven over real HTTP with `curl`: proactive growth fired and logged
+correctly for an oversized prompt, growth correctly clamped to `--ctx-max` and then
+correctly rejected a still-too-large request afterward (with the error referencing the
+*post-growth* ceiling), and the server correctly refused to start with `--ctx-max` +
+`--parallel 2`. What I could **not** verify in that pass: an actual multi-turn conversation
+generating real text across a growth boundary — the synthetic model has a placeholder
+tokenizer that crashes when formatting any *generated* token back into text (unrelated to
+growth; confirmed the crash happens strictly after decode/growth already succeeded). That
+means **your test on real hardware with a real tokenizer is the first time this will
+actually be exercised for real generated output**, not just log lines. See `NOTES.md`'s
+"Part 1 Phase 5 implementation" section for the full verification writeup.

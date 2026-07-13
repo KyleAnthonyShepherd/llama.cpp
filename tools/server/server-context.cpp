@@ -1013,6 +1013,12 @@ private:
         params_base = params;
         params_base.n_outputs_max = server_n_outputs_max(params_base);
 
+        if (params_base.n_ctx_max != 0 && params_base.n_parallel != 1) {
+            SRV_ERR("--ctx-max requires --parallel 1 (automatic KV cache growth is not "
+                    "supported with multiple slots); got --parallel %d\n", params_base.n_parallel);
+            return false;
+        }
+
         const bool has_mmproj = !params.mmproj.path.empty();
         const bool has_draft = params.speculative.has_dft();
         const bool spec_mtp = std::find(params_base.speculative.types.begin(),
@@ -3075,6 +3081,10 @@ private:
                             return;
                         }
 
+                        // grow ahead of prefill if this request needs more room than the
+                        // current KV cache has, so it doesn't stall mid-generation later
+                        maybe_grow_for_request(slot);
+
                         if (!slot.can_split()) {
                             if (slot.task->n_tokens() > n_ubatch) {
                                 send_error(slot,
@@ -3618,6 +3628,13 @@ private:
             return false; // retry with the updated n_batch
         }
 
+        // llama_decode() may have grown the KV cache transparently on its own (see
+        // llama_context_params::n_ctx_max) - keep the server's bookkeeping in sync so the
+        // next request's length checks and /props see the current size
+        if (params_base.n_ctx_max != 0) {
+            refresh_n_ctx();
+        }
+
         // TODO: avoid restoring the draft context and re-evaluating the drafted tokens when not needed [TAG_SPEC_AVOID_DRAFT_REEVAL]
         //       for now, always re-evaluate for simplicity
         //       ref: https://github.com/ggml-org/llama.cpp/pull/22728#issuecomment-4400925384
@@ -3898,6 +3915,53 @@ private:
 
     int get_slot_n_ctx() {
         return slots.back().n_ctx;
+    }
+
+    // keep the server's own n_ctx bookkeeping in sync with the underlying context - needed
+    // after any growth, whether triggered proactively (maybe_grow_for_request()) or
+    // transparently inside llama_decode() itself (see llama_context_params::n_ctx_max)
+    void refresh_n_ctx() {
+        const int32_t n_ctx_seq_now = llama_n_ctx_seq(ctx_tgt);
+
+        n_ctx = llama_n_ctx(ctx_tgt);
+
+        for (auto & slot : slots) {
+            slot.n_ctx = n_ctx_seq_now;
+        }
+    }
+
+    // grow the KV cache once, right before prefill, sized directly to what this request
+    // needs (prompt + n_predict) rather than stepped by ctx_grow_factor - that stepping is
+    // reserved for the reactive hook inside llama_decode() itself, which only sees one
+    // ubatch at a time and doesn't know the whole request's shape in advance
+    void maybe_grow_for_request(const server_slot & slot) {
+        if (params_base.n_ctx_max == 0) {
+            return;
+        }
+
+        const int32_t n_ctx_cur = llama_n_ctx_seq(ctx_tgt);
+        if (n_ctx_cur >= params_base.n_ctx_max) {
+            return; // already at the ceiling
+        }
+
+        const int32_t n_predict = slot.task->params.n_predict > 0 ? slot.task->params.n_predict : 0;
+        const int32_t n_needed  = slot.task->n_tokens() + n_predict;
+
+        if (n_needed <= n_ctx_cur) {
+            return;
+        }
+
+        const int32_t n_target = std::min(params_base.n_ctx_max, n_needed);
+
+        const int32_t ret = llama_set_n_ctx(ctx_tgt, (uint32_t) n_target);
+        if (ret == 0) {
+            SLT_INF(slot, "grew KV cache ahead of prefill: n_ctx %d -> %d (prompt = %d tokens, n_predict = %d)\n",
+                    n_ctx_cur, llama_n_ctx_seq(ctx_tgt), slot.task->n_tokens(), slot.task->params.n_predict);
+            refresh_n_ctx();
+        } else {
+            SLT_WRN(slot, "failed to grow KV cache ahead of prefill (ret = %d, target = %d) - request may hit the context limit\n",
+                    ret, n_target);
+        }
     }
 
     server_response_reader get_response_reader() {

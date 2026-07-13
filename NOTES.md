@@ -1365,3 +1365,120 @@ arbitrary user-supplied model (via `-m`) that may not support every {FA, KV-type
 the test tries, without weakening what they actually check when a scenario *is* supported.
 Verified this doesn't regress the two passing scenarios (rebuild only, still no reachable
 model-download host in this sandbox to re-run end-to-end).
+
+---
+
+## Part 1 Phase 5 implementation: CLI/server plumbing
+
+Implements the plan's §7. Scope: `--ctx-max`/`--ctx-grow-factor` CLI flags, `llama-server`
+proactive growth + `slot.n_ctx` refresh + startup validation. `llama-cli` needed **no
+separate work**: in this tree `llama-cli` spawns an embedded `llama-server` internally and
+talks to it over HTTP (`tools/cli/cli-server.h`, `llama_server()` called in a background
+thread) — it's the exact same `server_context_impl` code path, so once the flags exist in
+`common/`, `llama-cli` inherits growth for free. This directly satisfies the plan's own
+"llama-cli: wire the same flags for testability" bullet without any CLI-specific code.
+
+### `common/` flags
+
+- `common_params` gains `n_ctx_max` (`int32_t`, 0 = disabled) and `ctx_grow_factor`
+  (`float`, default 1.5) — `common/common.h`.
+- `--ctx-max N` / `--ctx-grow-factor N` registered in `common/arg.cpp`, no `.set_examples()`
+  restriction (same as `-c`/`--ctx-size`'s own registration) — available to every example
+  (cli, server, completion, etc.) uniformly.
+- `common_params_parse()` postprocess step (same place `--prompt-cache-all` +
+  `--interactive` incompatibility is already checked): if `--ctx-max` is set and `-c` was
+  left at its 0-default, start at `min(8192, ctx_max)` instead of the model's full training
+  context — exactly the plan's §7.1 instruction ("when `--ctx-max` is set and `-c` is
+  untouched, default the initial size to something small").
+- `common_context_params_to_llama()` forwards both fields into `llama_context_params`.
+
+### `llama-server` (`tools/server/server-context.cpp`)
+
+- **Startup validation** (`load_model()`, right after `params_base = params`): hard-refuses
+  to start (`return false`, clear `SRV_ERR`) if `--ctx-max` is set with `--parallel != 1` —
+  the plan's explicit v1 restriction, matching `resize()`'s own `n_stream == 1` scope.
+- **Proactive growth**: new `maybe_grow_for_request(slot)`, called once per new task right
+  before the existing prompt-length checks (`slot.state == SLOT_STATE_STARTED`, before the
+  `can_split()`/`n_ctx` too-long checks). Computes `needed = n_prompt_tokens + max(n_predict,
+  0)`, and if that exceeds the *current* `llama_n_ctx_seq(ctx_tgt)`, calls
+  `llama_set_n_ctx(ctx_tgt, min(ctx_max, needed))` directly — **not** stepped by
+  `ctx_grow_factor` (that stepping is reserved for the reactive in-`decode()` hook from
+  Phase 3, which only ever sees one ubatch at a time and has no visibility into the whole
+  request's shape; the server does, so it can size exactly once). On success, calls the new
+  `refresh_n_ctx()` immediately.
+- **Reactive refresh**: `refresh_n_ctx()` — sets `server_context_impl::n_ctx` (the
+  total-context member, from `llama_n_ctx()`) and every slot's `n_ctx` (from
+  `llama_n_ctx_seq()`) to the current live value. Called from two places: inside
+  `maybe_grow_for_request()` on success, and unconditionally (when growth is enabled) right
+  after every successful `llama_decode()` call in the low-level `decode()` method — covering
+  the case where Phase 3's *reactive* hook inside `llama_decode()` itself grew the cache
+  transparently, which the server has no other way to observe.
+- **`/props` and error messages**: needed **no code changes** — `get_slot_n_ctx()` already
+  reads `slots.back().n_ctx` live (not a cached snapshot), and the existing "prompt too
+  large" error messages already interpolate `slot.n_ctx` directly, so both automatically
+  reflect the current (possibly grown) value once `slot.n_ctx` itself is kept fresh.
+- **Context-shift/cache-reuse interplay (plan's §5.3 policy, "grow first, shift only at
+  ctx_max")**: also needed **no code changes**, for a subtler reason — both places that
+  gate context-shift (`process_token()`'s early stop, `pre_decode()`'s shift trigger) key
+  off `slot.n_ctx + 1 >= n_tokens`. Since `slot.n_ctx` now keeps growing (via the refresh
+  above) for as long as growth has room to give, those checks simply don't fire until
+  growth is truly exhausted (`slot.n_ctx` pinned at `ctx_max`) — the desired policy falls
+  out of keeping one value fresh, rather than needing new precedence logic in the shift path
+  itself.
+- **Known gap, not addressed**: `server_prompt_cache` (the optional `--cache-ram-mib`
+  prompt-caching subsystem, `tools/server/server-context.cpp:~1354`) is sized once at load
+  time from the *original* `n_ctx` and is not resized on growth. Likely low-impact (it's an
+  optional feature, off by default) but not verified either way — flagged for a follow-up
+  pass rather than investigated this session.
+
+### Empirical verification: real `llama-server` HTTP round-trip (not just unit tests)
+
+Went one step further than the synthetic in-process harnesses used for Phases 2–3: built a
+synthetic model **with real backend-allocated tensor data** (`get_gguf_ctx` +
+`llama_model_init_from_user`, then `llama_model_saver` — its "round-trip from a live model"
+constructor/`add_kv_from_model()`/`add_tensors_from_model()`/`save()` — to serialize that
+in-memory model out to an actual `.gguf` **file on disk**), then launched a genuine
+`llama-server` **process** against that file and drove it with real HTTP requests via
+`curl`. This is a materially stronger check than the earlier in-process harnesses: it
+exercises the actual CLI arg parsing, the actual server startup path, and the actual
+HTTP → task → slot → decode pipeline, not code called directly from a test binary.
+
+Results:
+- `llama-server ... --ctx-max 2048 -c 256`, prompt of 500 tokens (as a raw token-ID array
+  via `/completion`'s `prompt` field, sidestepping the synthetic model's placeholder
+  `no_vocab` tokenizer for the *input* side): log shows
+  `slot maybe_grow_f: ... grew KV cache ahead of prefill: n_ctx 256 -> 512 (prompt = 500
+  tokens, n_predict = 0)` — proactive growth fired correctly through the real request path.
+- `--ctx-max 512`, prompt of 1000 tokens: grew to the ceiling (`256 -> 512`, clamped
+  correctly to `ctx_max` even though the request needed more), then correctly rejected with
+  `"request (1000 tokens) exceeds the available context size (512 tokens)"` — note the
+  error message already reports the *post-growth* 512, not the pre-growth 256, confirming
+  `slot.n_ctx` was refreshed before the check ran. Server stayed healthy afterward (this
+  reject path returns before any decode/token-sampling, so it never touches the synthetic
+  model's vocab-crash limitation below).
+- `--ctx-max 2048 -np 2`: server refused to start with the expected
+  `--ctx-max requires --parallel 1` error, exit before any model load work.
+- **Caveat, not a growth bug**: any request that reaches actual *generation* (sampling ≥1
+  token) crashes this particular synthetic model, because `get_gguf_ctx()` sets
+  `tokenizer.ggml.model = "no_vocab"` and `common_token_to_piece()` unconditionally asserts
+  `type != LLAMA_VOCAB_TYPE_NONE` when formatting a sampled token back into response text
+  (`src/llama-vocab.cpp:3091`). This is a limitation of the synthetic model (no real
+  tokenizer), unrelated to growth — confirmed by checking exactly where each crash occurred
+  (`common_token_to_piece` → `post_decode()`'s per-token result callback, always *after*
+  `maybe_grow_for_request()`/`llama_decode()` had already run and succeeded). Building a
+  synthetic model with a real (even minimal) tokenizer, to get a full generate-and-verify
+  round trip, is a possible follow-up but wasn't pursued given the proactive-growth and
+  reject-path evidence already obtained is unambiguous.
+
+### Open items before Part 1 Phase 4 (Qwen3.6 hardware smoke test) / further polish
+
+1. `server_prompt_cache` resize-on-growth gap (above) — needs a decision: resize it too, or
+   document that `--cache-ram-mib` + `--ctx-max` together is untested/unsupported for now.
+2. A full real-model, real-generation `llama-server --ctx-max ... -c ...` session (the
+   user's own hardware, per `TESTING.md` §3) is the natural next real-world check — the
+   verification above proves the mechanism fires and clamps correctly via real HTTP, but
+   didn't (couldn't, in this sandbox) verify a full multi-turn conversation growing several
+   times while generating real tokens.
+3. MTP `ctx_dft` lockstep growth (carried over from Phase 3) is still unaddressed — a
+   server session combining `--spec-type draft-mtp` with `--ctx-max` will grow `ctx_tgt`
+   only; `ctx_dft` stays fixed-size. Not validated either way this pass.
