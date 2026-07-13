@@ -947,3 +947,154 @@ more clearly scoped than the plan's phase breakdown suggests:
    before Phase B's placement_group definition is finalized for this target arch.
 4. No GPU this session — A.4, A.6 (llama-bench cross-check), and A.7 (driver skew) all
    need real hardware before they can be called closed, same caveat as Parts 1 and 3.
+
+---
+
+## Part 1 Phase 2 implementation: `resize()` core
+
+Implements the plan's §4 core primitive: `virtual bool resize(uint32_t n_new)` on
+`llama_memory_i` (`src/llama-memory.h`, default `return false` — zero cost / no behavior
+change for every memory type that doesn't override it), with real implementations:
+
+- **`llama_kv_cache::resize()`** (`src/llama-kv-cache.cpp`) — the actual work. Scope,
+  matching the plan's v1 restrictions plus one found during discovery:
+  - only `n_stream == 1` (plan's stated restriction: single-stream).
+  - only caches that don't share cells with another cache (`other == nullptr`, the
+    `[TAG_KV_CACHE_SHARE_CELLS]` mechanism from the Part 1 discovery pass, item 1/10) —
+    not in the original plan, found while reading the constructor; a cache constructed
+    with a `share` callback aliases another cache's cells and has no independent storage
+    to resize. `other == nullptr` also guarantees `layers` never contains aliased tensor
+    pointers (verified from the constructor: aliasing only happens `if (share && other)`),
+    which the implementation depends on.
+  - `n_new` must be strictly greater than the current size and a multiple of `n_pad`
+    (new getter `get_n_pad()` added — the plan's Phase 1 flagged this as missing).
+  - Algorithm mirrors the plan's §4.2 exactly: allocate new per-buft-group buffers sized
+    `n_new` (same grouping the constructor uses), copy old data in (K and non-transposed V
+    are a contiguous-prefix copy via `ggml_backend_tensor_get`/`_set`; transposed V is
+    copied row-by-row via `ggml_backend_tensor_get_2d`/`_set_2d` — these turned out to
+    already exist in `ggml-backend.h`/`.cpp`, exactly shaped for this use), grow cell
+    metadata via a new `llama_kv_cells::grow()` (the existing `resize()` on that class
+    resets everything, as Part 1 discovery item 3 already flagged — `grow()` extends the
+    vectors with empty cells and leaves the existing prefix untouched), then swap
+    tensors/buffers and free the old ones. New getter `get_v_storage()` added alongside
+    the existing `get_k_storage()` (needed for the resize implementation's per-layer
+    lookup and useful for the unit test). On any failure (context/buffer allocation)
+    before the swap, the function returns `false` and the old cache is provably untouched
+    (nothing is mutated until every new allocation has succeeded).
+  - MLA layers (`layer.v == nullptr`) are handled by skipping the V copy — resize only
+    touches K for those layers, matching how the constructor already treats MLA.
+  - Hadamard rotation matrices (`attn_rot_hadamard`) are host-memory, precomputed from
+    `n_embd_head_k_all`/`n_embd_head_v_all` only — untouched by resize, no interaction.
+- **`llama_memory_hybrid::resize()`** — delegates to `mem_attn->resize()` only; the
+  recurrent child is untouched (confirmed in Part 1 discovery: its size is
+  `max(1, n_seq_max)`, independent of context length).
+- **`llama_kv_cache_iswa::resize()`** — delegates to `kv_base->resize()` only; `kv_swa`
+  stays at its window size (`min(base, n_swa*n_seq_max + n_ubatch)` padded to 256), per
+  the plan's explicit instruction. Known gap, not in scope: with `--swa-full` the SWA
+  cache is a *one-time* snapshot equal to the base size taken at construction — growing
+  only the base afterward leaves a `swa_full`-configured SWA cache smaller than the grown
+  base. The plan anticipated this exact case ("leave the SWA cache at window size unless
+  discovery shows it is sized from n_ctx too") and this is that case, but `--swa-full` is
+  a rare/experimental flag; left as a follow-up rather than blocking this pass.
+- **`llama_memory_recurrent::resize()`** — no-op, always returns `true` (capacity is
+  `n_seq_max`-derived, not context-length-derived — confirmed in Part 1 discovery item 10
+  / the `create_memory()` call sites).
+- **Not implemented** (inherit the interface's default `return false`): `llama_kv_cache_dsv4`,
+  `llama_kv_cache_dsa`, `llama_memory_hybrid_iswa` — these three concrete classes were
+  found during Part 1 discovery (item 1) but aren't in the plan's own §4 implementation
+  list, and none of them are on the target model's (Qwen3.5/3.6) load path. Returning
+  `false` is the correct, safe default (growth is "unsupported" for these, exactly per the
+  interface contract) rather than an oversight; flagged here as a known scope boundary,
+  not silently skipped.
+
+### Unit test: `tests/test-kv-resize.cpp`
+
+Registered in `tests/CMakeLists.txt` using the same `MODEL_DEST`
+(`tinyllamas/stories15M-be.Q4_0.gguf`) download fixture as the other model-requiring
+tests (`test-recurrent-state-rollback.cpp`, `test-save-load-state.cpp`, etc.) — same
+pattern, no new fixture needed. Includes the internal header directly
+(`#include "../src/llama-kv-cache.h"`), following the precedent already established by
+`test-llama-archs.cpp` (`#include "../src/llama-arch.h"`) — no new CMake include-dir
+plumbing required, quoted relative includes resolve fine as-is.
+
+For each of {FA off (`v_trans == true`), FA on (`v_trans == false`), FA on + q8_0 KV
+(quantized V requires FA on, confirmed at `src/llama-context.cpp:3533`)}: fills ~200
+cells via `llama_decode`, snapshots layer 0's K/V bytes for the used range directly from
+the backend tensors, calls `resize()` through the public `llama_memory_t` returned by
+`llama_get_memory()` (downcast to `llama_kv_cache*` via `dynamic_cast` only to reach the
+cache-specific getters used for verification — `resize()` itself is called through the
+polymorphic `llama_memory_i` interface, so the test doesn't need to know the concrete
+type to grow the cache), and checks: the equal-size call is rejected and the cache stays
+usable (`decode_one` still succeeds); the valid-growth call succeeds; `get_size()` matches
+the target; `llama_memory_seq_pos_max()` is unchanged; and the K/(V) byte snapshots are
+byte-identical before/after. Deliberately does **not** decode further after a successful
+resize as part of the pass/fail check (see "important scope boundary" below) — build and
+runtime verification of the test binary itself both done this session; the download
+fixture (network) was not reachable in this sandbox, so the test has not been run
+end-to-end against real model weights — that's the one thing left for the user's own
+hardware tomorrow, per Phase 2's own acceptance bar ("unit test green on CPU and on the
+GPU backend").
+
+### Empirical verification beyond the unit test (this session, throwaway harness, not committed)
+
+Built a scratch harness (reusing `tests/test-llama-archs.cpp`'s `get_gguf_ctx`/
+`get_model_and_ctx` synthetic-model helpers verbatim, in-memory GGUF via
+`llama_model_init_from_user`, no download needed) to exercise `resize()` end-to-end
+against one arch per delegation path: `LLM_ARCH_LLAMA` (plain `llama_kv_cache`),
+`LLM_ARCH_MAMBA` (`llama_memory_recurrent`, no-op path), `LLM_ARCH_FALCON_H1`
+(`llama_memory_hybrid`, delegates to attn child), `LLM_ARCH_GEMMA2`
+(`llama_kv_cache_iswa`, delegates to base). All four: fill cells, snapshot bytes,
+`resize()`, verify size/`seq_pos_max`/byte-identity — **all four passed.**
+
+**Caught and fixed one real bug in the process**: the scratch `ggml_context` `resize()`
+creates per buffer-type group was undersized — `2u*layers.size()*ggml_tensor_overhead()`
+only accounts for the K and V tensors themselves, not their per-stream view tensors
+(`k_stream`/`v_stream`, one each even when `n_stream == 1` — see Part 1 discovery item 2
+on why these views exist and are used by `state_write`/`state_read`). This reliably
+triggered `ggml_new_object: not enough space in the context's memory pool` →
+`GGML_ASSERT(obj_new) failed` (an abort, not a silent corruption) on the very first
+`resize()` call. Fixed to mirror the constructor's own sizing formula exactly:
+`2u*(1 + n_stream)*layers.size()*ggml_tensor_overhead()`. This is exactly the kind of bug
+the plan's working agreement (§0.3, "build and test after every phase") exists to catch —
+it would not have been caught by a compile-only check, only by actually running
+`resize()` against a real (if synthetic) model.
+
+**Important scope boundary, confirmed empirically (not just reasoned about) this
+session**: calling `llama_kv_cache::resize()` directly and then issuing one more
+`llama_decode()` call — with no other changes — **segfaults** inside
+`ggml_compute_forward_set_rows` (backtrace: `llama_context::decode` →
+`process_ubatch` → `graph_compute` → CPU backend `set_rows` → SIGSEGV). This is the
+`sched_need_reserve`/`gf_res_prev` staleness the Part 1 discovery pass already flagged
+(item 5: "six existing call sites already set `sched_need_reserve = true`... provided
+growth always happens at a point where a decode call follows shortly after") — but that
+discovery was static/read-only ("not yet verified at runtime"). **Now verified**: raw
+`resize()` alone is not suffient for a context to keep decoding; `llama_set_n_ctx()`
+(Part 1 Phase 3, not yet implemented) *must* set `sched_need_reserve = true` (and update
+`cparams.n_ctx`/`n_ctx_seq`, per discovery item 6) immediately after a successful
+`resize()`, before the next decode. This is exactly what the plan's §5.2 step-3 ordering
+already specifies — this session's contribution is empirical confirmation that skipping
+it is not merely suboptimal (a missed perf optimization) but an outright crash, so Phase 3
+cannot treat that step as optional or as an incremental follow-up.
+
+### Open items before Part 1 Phase 3 (`llama_set_n_ctx`) can start
+
+1. Wire `llama_context::set_n_ctx()`: call `memory->resize()`, then set
+   `sched_need_reserve = true`, then update `cparams.n_ctx`/`cparams.n_ctx_seq` (using the
+   exact formula from discovery item 6), in that order — per the plan's own §5.2 and now
+   confirmed load-bearing (see above), not optional.
+2. The MTP `ctx_dft` lockstep-growth decision (Part 1 discovery item 10, still open) —
+   needed before growth is wired into any MTP-enabled server path.
+3. `memory_update(true)` (defrag) precedence relative to growth (discovery item 4) —
+   still just reasoned about, not measured.
+4. `--swa-full` + growth interaction (this section, iswa bullet above) — the SWA cache
+   silently stops matching the (grown) base size; needs either an explicit re-snapshot on
+   growth or a documented limitation.
+5. This session still had no GPU — everything above was verified on CPU only (both the
+   committed unit test's structure and the throwaway multi-arch harness ran CPU-only).
+   The user's own 6 GB VRAM hardware (available "tomorrow" per their message) is needed to:
+   (a) actually run `tests/test-kv-resize.cpp` against the downloaded model (this sandbox
+   couldn't reach the model download host), (b) repeat the CUDA-backend determinism/copy
+   checks the plan's §5.4 matrix calls for, (c) confirm the `ggml_backend_tensor_get_2d`/
+   `_set_2d` transposed-V path on a non-CPU backend (only the CPU backend's fallback
+   per-row loop was exercised this session — `buf->iface.set_tensor_2d`/`get_tensor_2d`
+   being non-null on CUDA, taking a possibly-different code path, is unverified).

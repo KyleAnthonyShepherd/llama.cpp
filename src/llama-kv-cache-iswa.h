@@ -78,6 +78,10 @@ public:
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
 
+    // grow the base (non-SWA) cache's capacity to n_new cells; the SWA cache is left at
+    // its window size, since it doesn't grow with the context length
+    bool resize(uint32_t n_new) override;
+
     // state write/load
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;

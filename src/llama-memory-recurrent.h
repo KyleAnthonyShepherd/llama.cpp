@@ -54,6 +54,10 @@ public:
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
 
+    // no-op: this cache's capacity depends on n_seq_max, not the context length, so
+    // there is nothing to grow - always succeeds
+    bool resize(uint32_t n_new) override;
+
     bool prepare(const std::vector<llama_ubatch> & ubatches);
 
     // find a contiguous slot of memory cells and emplace the ubatch there

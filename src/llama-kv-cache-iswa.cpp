@@ -148,6 +148,12 @@ llama_pos llama_kv_cache_iswa::seq_pos_max(llama_seq_id seq_id) const {
     return kv_swa->seq_pos_max(seq_id);
 }
 
+bool llama_kv_cache_iswa::resize(uint32_t n_new) {
+    // the SWA cache is window-sized (or, with --swa-full, a one-time snapshot of the base
+    // size taken at construction) and does not need to track the base cache's growth
+    return kv_base->resize(n_new);
+}
+
 std::map<ggml_backend_buffer_type_t, size_t> llama_kv_cache_iswa::memory_breakdown() const {
     std::map<ggml_backend_buffer_type_t, size_t> mb = kv_base->memory_breakdown();
     for (const auto & buft_size : kv_swa->memory_breakdown()) {

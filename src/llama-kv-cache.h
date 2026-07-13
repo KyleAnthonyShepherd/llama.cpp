@@ -144,6 +144,12 @@ public:
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
 
+    // grow the cache capacity to n_new cells (already padded to n_pad by the caller).
+    // supported only for n_stream == 1 and caches that don't share cells with another
+    // cache (see [TAG_KV_CACHE_SHARE_CELLS]). on failure the cache remains fully usable
+    // at its old size - no partial state is applied.
+    bool resize(uint32_t n_new) override;
+
     // state write/load
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
@@ -155,6 +161,7 @@ public:
 
     uint32_t get_size()     const;
     uint32_t get_n_stream() const;
+    uint32_t get_n_pad()    const;
 
     bool get_has_shift() const;
 
@@ -163,6 +170,7 @@ public:
 
     std::vector<uint32_t> get_layer_ids() const;
     ggml_tensor * get_k_storage(int32_t il) const;
+    ggml_tensor * get_v_storage(int32_t il) const;
 
     //
     // graph_build API
