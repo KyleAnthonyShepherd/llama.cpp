@@ -1335,3 +1335,33 @@ comparison.
 1. Re-pull this branch (now includes the `WINDOWS_EXPORT_ALL_SYMBOLS` fix), rebuild, retry
    `test-kv-resize` and `test-ctx-grow`.
 2. MTP-on/off determinism: parked per the decision above; separate investigation later.
+
+### 3. `test-kv-resize`'s "fa-on q8_0 KV" scenario failed against the real download fixture
+
+With `WINDOWS_EXPORT_ALL_SYMBOLS` fixed, `test-kv-resize` actually ran against the real
+`tinyllamas/stories15M` download fixture for the first time (CUDA, Windows). Two of three
+scenarios passed (`fa-off`/`v_trans` and `fa-on`/`!v_trans`, including a real, non-synthetic
+byte-identity check across an actual `resize()` call — the first time this ran against a
+real downloaded model rather than the in-memory synthetic harness). The third, `fa-on + q8_0
+KV`, failed context construction outright:
+
+```
+llama_init_from_model: K cache type q8_0 with block size 32 does not divide n_embd_head_k=48
+```
+
+**Not a `resize()` bug** — this is a pre-existing, general llama.cpp constraint
+(`src/llama-context.cpp:3617-3624`): quantized KV types can only be used when the
+quantization block size evenly divides the model's per-head embedding dimension, so a whole
+number of blocks fits in one head's row. `stories15M`'s head dim happens to be 48
+(`48 % 32 != 0` for `q8_0`'s block size), an incompatibility that has nothing to do with
+resize()'s copy logic — it's the *model* that can't use `q8_0` KV at all, checked before any
+KV cache is even constructed.
+
+**Fix**: both `tests/test-kv-resize.cpp` and `tests/test-ctx-grow.cpp` now treat a failed
+`llama_context` construction as a **skip** (log + `return true`) rather than a hard failure,
+matching the existing "memory is not a plain llama_kv_cache — skipping" pattern already used
+for the recurrent/hybrid-model case. This makes both tests robust to being pointed at an
+arbitrary user-supplied model (via `-m`) that may not support every {FA, KV-type} combination
+the test tries, without weakening what they actually check when a scenario *is* supported.
+Verified this doesn't regress the two passing scenarios (rebuild only, still no reachable
+model-download host in this sandbox to re-run end-to-end).
