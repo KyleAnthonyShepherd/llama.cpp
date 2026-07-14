@@ -1561,3 +1561,89 @@ runtime with a real `ctx_dft`. This is the first thing to check on the user's ha
 `llama-server --spec-type draft-mtp --ctx-max ... -c ...`, grow past a boundary, confirm no
 MTP-related errors/crashes and that drafting continues (watch `-lv 4` trace output and the
 new `grew MTP draft context in lockstep` log line).
+
+---
+
+## Real-hardware findings, round 3: mid-generation growth was never actually reachable
+
+First real long-conversation test on the user's hardware (`-c 8192 --ctx-max 131072`,
+`--temp 0`, real multi-turn chat via slot/LCP-reuse) surfaced two things.
+
+### 1. `llama_kv_cache: resizing KV cache: ...` / `llama_context: growing n_ctx: ...` never
+### appear in the log — **not a bug**, a pre-existing log-verbosity mapping
+
+Both lines are emitted via `LLAMA_LOG_INFO` (`src/llama-kv-cache.cpp`,
+`src/llama-context.cpp`), which maps to `GGML_LOG_LEVEL_INFO`. `llama-server`'s own log
+plumbing (`common/log.cpp:common_get_verbosity()`) maps `GGML_LOG_LEVEL_INFO` →
+`LOG_LEVEL_TRACE` (verbosity 4) for messages coming from the `llama`/`ggml` library layer
+specifically — as opposed to `SRV_INF`/`SLT_INF` (used by the server's own
+`maybe_grow_for_request`/`refresh_n_ctx`/etc.), which pass `LOG_LEVEL_INFO` (verbosity 3)
+explicitly and are visible at the default verbosity. This is **general, pre-existing
+behavior**, not specific to growth — it also explains why the model's own load-time
+`llama_context: n_ctx = ...`/`llama_kv_cache: size = ... MiB` lines were already absent from
+every real-hardware log shared so far, growth-related or not. No code change; `-lv 4`
+(already documented for MTP trace debugging, §1.5) surfaces these too. Updated `TESTING.md`
+§4.2 to say so explicitly instead of implying they're always visible.
+
+### 2. Real bug: a long, open-ended generation truncated at the *original* `n_ctx` instead
+### of growing — `slot.n_ctx` was correct, but growth never got a chance to run
+
+Observed directly in the log: one turn ended with `stop processing: n_tokens = 8191,
+truncated = 1` (i.e. hit the original `-c 8192` ceiling and gave up) even though
+`--ctx-max 131072` was set and plenty of room remained. The **next** turn's proactive
+growth then fired fine (`grew KV cache ahead of prefill: n_ctx 8192 -> 8448`), confirming
+growth itself works — the bug was specifically about **generation never reaching the point
+where growth would be tried**.
+
+Root cause, found by tracing the exact call sequence: `process_token()` has its own
+long-standing check —
+
+```cpp
+if (!params_base.ctx_shift && slot.prompt.n_tokens() + 1 >= slot.n_ctx) {
+    slot.truncated = true;
+    slot.has_next_token = false; // stop generation
+    ...
+}
+```
+
+— that runs **after every generated token**, deciding whether to request the *next* one.
+Phase 3's reactive auto-grow hook lives entirely inside `llama_context::decode()`, triggered
+only when a `llama_decode()` call actually fails to find room
+(`LLAMA_MEMORY_STATUS_FAILED_PREPARE`). But this server-side check fires *before* that next
+`llama_decode()` call would ever happen — if it sets `has_next_token = false`, generation
+stops right there and **`llama_decode()` is never called again for this slot**, so its
+reactive hook never gets a chance to run at all. This was a genuine gap in the Phase 5
+design: I had reasoned (incorrectly, in the original Phase 5 notes above) that keeping
+`slot.n_ctx` fresh via `refresh_n_ctx()` would be sufficient for the shift/stop precedence
+to "fall out for free" — that reasoning only covers cases where growth *already happened*
+by some other path; it doesn't cover the case where this exact check is the *first and
+only* place that would ever notice more room is needed for an open-ended (`n_predict = -1`)
+generation that organically outgrows what `maybe_grow_for_request()` sized at prompt start.
+
+**Fix**: new `maybe_grow_mid_generation(slot)` (`tools/server/server-context.cpp`), called
+from `process_token()` right before the existing stop-check, whenever
+`slot.prompt.n_tokens() + 1 >= slot.n_ctx` — regardless of whether `ctx_shift` is enabled,
+so growing here also makes the *separate* `ctx_shift` trigger in `pre_decode()` (which reads
+the same `slot.n_ctx`) naturally skip shifting for as long as growth still has room, giving
+the plan's "grow first, shift only once `ctx_max` is reached" policy for free from one call
+site rather than needing precedence logic duplicated in the shift path. Sized with
+`ctx_grow_factor` stepping (`max(n_needed, n_ctx_cur * factor)`), matching the formula the
+in-`decode()` hook itself uses — appropriate here since, like that hook, this call site
+also doesn't know in advance how much more the generation will need (unlike
+`maybe_grow_for_request()`'s exact-fit sizing, which does know from `n_predict`).
+
+**Not verified at runtime this pass**: attempted to reproduce with the same
+`llama_model_saver`-round-tripped synthetic model used for earlier Phase 5 verification, but
+hit an even earlier limitation than expected — that model's placeholder `no_vocab` tokenizer
+crashes inside `post_decode()`'s token-to-text formatting on the *very first* generated
+token, before `process_token()`'s check (where the fix lives) is ever reached for a second
+token. Confirmed via the crash backtrace (`post_decode()` → `common_token_to_piece` →
+abort, called from `update_slots()` *before* my check would run again). Building a synthetic
+model with a real (even minimal) tokenizer to get past this would be needed for a true
+in-sandbox repro; not pursued given time spent already. The fix is a small, narrowly-scoped
+change reusing the exact same `llama_set_n_ctx()`/`refresh_n_ctx()` machinery Phase 5's
+proactive path already validated end-to-end via real HTTP — reviewed carefully but **this
+specific trigger path is unverified at runtime**. This is the top thing to check on the
+user's hardware: a long, open-ended (no explicit `n_predict`, or a large one) generation
+that runs past the initial `-c` size should now keep growing (`grew KV cache
+mid-generation: ...` in the log) instead of truncating.

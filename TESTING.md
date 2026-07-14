@@ -379,17 +379,27 @@ build\bin\Release\llama-server.exe -m your-qwen3.6-mtp-model.gguf ^
 
 ### 4.2 What to watch for
 
-A growth event logs a line like:
+At the **default log verbosity**, a growth event logs one of these `slot`-tagged lines
+(from the server's own logging, always visible):
 
 ```
-llama_kv_cache: resizing KV cache: 8192 -> 16384 cells
-llama_context: growing n_ctx: 8192 -> 16384 (n_ctx_seq: 8192 -> 16384)
 slot maybe_grow_f: id  0 | task N | grew KV cache ahead of prefill: n_ctx 8192 -> 16384 (prompt = ... tokens, n_predict = ...)
+slot maybe_grow_m: id  0 | task N | grew KV cache mid-generation: n_ctx 8192 -> 16384
 ```
 
-(the third line only appears for *proactive* growth, triggered by a request whose prompt +
-`n_predict` doesn't fit yet; growth triggered *reactively*, mid-generation, by
-`llama_decode()`'s own hook won't have that line, only the first two.)
+- The first (`maybe_grow_for_request`) fires *proactively*, right before prefill, when a
+  request's prompt + `n_predict` doesn't fit yet — sized exactly to what's needed.
+- The second (`maybe_grow_mid_generation`) fires *reactively*, mid-generation — e.g. an
+  open-ended request (no `n_predict`, or `-1`) that organically outgrows what the first one
+  sized at prompt time. This one steps by `--ctx-grow-factor` (1.5x by default), so expect
+  bigger jumps than the exact-fit proactive case.
+
+**You will *not* see** `llama_kv_cache: resizing KV cache: ...` or `llama_context: growing
+n_ctx: ...` at the default verbosity — those come from the `llama`/`ggml` library layer
+directly and are mapped to `TRACE` level by the server's own logging, regardless of growth;
+the same is true of other library-level messages like the model's own load-time `n_ctx =
+...` line. Run with `-lv 4` if you want to see those too (same flag as §1.5's MTP trace
+debugging).
 
 Check `/props` after a growth event — `n_ctx` there should reflect the new, larger size,
 not the value from server startup.
@@ -400,6 +410,14 @@ not the value from server startup.
   the conversation just keeps going with no restart, no error, and (this is the important
   part) **the model doesn't seem to have "forgotten" or garbled earlier turns** right around
   the growth point. That's the real-world version of the determinism check in §3.1.
+- An open-ended generation (no `n_predict`, or `n_predict: -1`) that runs long enough to
+  organically outgrow the initial `-c` size *without* a large prompt — this exercises
+  `maybe_grow_mid_generation` specifically (the proactive path only sizes for what the
+  request declares up front). Confirm you see `grew KV cache mid-generation` and the
+  conversation keeps going, rather than the turn ending early with `truncated = 1` in the
+  log at the original `-c` size — that was a real bug (fixed) where generation could stop
+  before growth ever got a chance to run; see `NOTES.md`'s "Real-hardware findings, round 3"
+  for the full diagnosis if you still see it.
 - A prompt long enough to need growth *beyond* `--ctx-max` — confirm you get the normal
   "exceeds the available context size" error (referencing the current ceiling), not a
   crash, and the server stays usable for the next request afterward.

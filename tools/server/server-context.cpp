@@ -1862,6 +1862,15 @@ private:
             slot.has_next_token = true;
         }
 
+        // try growing before giving up / shifting - this must run regardless of whether
+        // ctx_shift is enabled: growing here also makes the ctx_shift check in
+        // pre_decode() naturally skip shifting for as long as growth still has room,
+        // giving "grow first, shift only once ctx_max is reached" for free rather than
+        // needing separate precedence logic in the shift path itself
+        if (slot.prompt.n_tokens() + 1 >= slot.n_ctx) {
+            maybe_grow_mid_generation(slot);
+        }
+
         // if context shifting is disabled, make sure that we don't run out of context
         if (!params_base.ctx_shift && slot.prompt.n_tokens() + 1 >= slot.n_ctx) {
             slot.truncated      = true;
@@ -3991,6 +4000,44 @@ private:
             refresh_n_ctx();
         } else {
             SLT_WRN(slot, "failed to grow KV cache ahead of prefill (ret = %d, target = %d) - request may hit the context limit\n",
+                    ret, n_target);
+        }
+    }
+
+    // try to grow before running out of room mid-generation (e.g. an open-ended
+    // n_predict = -1 request that organically outgrows what maybe_grow_for_request()
+    // sized at prompt time). This must happen here, in process_token()'s "are we about
+    // to run out of context" check - not just inside llama_decode()'s own reactive
+    // auto-grow hook - because if that check decides to stop generation
+    // (has_next_token = false), llama_decode() is never called again for this slot, so
+    // its hook never gets a chance to run. Stepped by ctx_grow_factor (unlike
+    // maybe_grow_for_request()'s exact-fit sizing), matching the same formula the
+    // in-decode() hook uses, since this is the same "reactive, don't know how much more
+    // is coming" situation, just relocated to a place that actually executes.
+    void maybe_grow_mid_generation(server_slot & slot) {
+        if (params_base.n_ctx_max == 0) {
+            return;
+        }
+
+        const int32_t n_ctx_cur = llama_n_ctx_seq(ctx_tgt);
+        if (n_ctx_cur >= params_base.n_ctx_max) {
+            return; // already at the ceiling
+        }
+
+        const int32_t n_needed = slot.prompt.n_tokens() + 1;
+        if (n_needed <= n_ctx_cur) {
+            return;
+        }
+
+        const int32_t n_target = std::min(params_base.n_ctx_max,
+                std::max(n_needed, (int32_t) (n_ctx_cur * params_base.ctx_grow_factor)));
+
+        const int32_t ret = llama_set_n_ctx(ctx_tgt, (uint32_t) n_target);
+        if (ret == 0) {
+            SLT_INF(slot, "grew KV cache mid-generation: n_ctx %d -> %d\n", n_ctx_cur, llama_n_ctx_seq(ctx_tgt));
+            refresh_n_ctx();
+        } else {
+            SLT_WRN(slot, "failed to grow KV cache mid-generation (ret = %d, target = %d) - generation may stop/shift at the current limit\n",
                     ret, n_target);
         }
     }
