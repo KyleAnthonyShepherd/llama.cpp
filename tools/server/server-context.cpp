@@ -1013,6 +1013,12 @@ private:
         params_base = params;
         params_base.n_outputs_max = server_n_outputs_max(params_base);
 
+        if (params_base.n_ctx_max != 0 && params_base.n_parallel != 1) {
+            SRV_ERR("--ctx-max requires --parallel 1 (automatic KV cache growth is not "
+                    "supported with multiple slots); got --parallel %d\n", params_base.n_parallel);
+            return false;
+        }
+
         const bool has_mmproj = !params.mmproj.path.empty();
         const bool has_draft = params.speculative.has_dft();
         const bool spec_mtp = std::find(params_base.speculative.types.begin(),
@@ -1854,6 +1860,15 @@ private:
 
         if (incomplete) {
             slot.has_next_token = true;
+        }
+
+        // try growing before giving up / shifting - this must run regardless of whether
+        // ctx_shift is enabled: growing here also makes the ctx_shift check in
+        // pre_decode() naturally skip shifting for as long as growth still has room,
+        // giving "grow first, shift only once ctx_max is reached" for free rather than
+        // needing separate precedence logic in the shift path itself
+        if (slot.prompt.n_tokens() + 1 >= slot.n_ctx) {
+            maybe_grow_mid_generation(slot);
         }
 
         // if context shifting is disabled, make sure that we don't run out of context
@@ -3075,6 +3090,10 @@ private:
                             return;
                         }
 
+                        // grow ahead of prefill if this request needs more room than the
+                        // current KV cache has, so it doesn't stall mid-generation later
+                        maybe_grow_for_request(slot);
+
                         if (!slot.can_split()) {
                             if (slot.task->n_tokens() > n_ubatch) {
                                 send_error(slot,
@@ -3618,6 +3637,13 @@ private:
             return false; // retry with the updated n_batch
         }
 
+        // llama_decode() may have grown the KV cache transparently on its own (see
+        // llama_context_params::n_ctx_max) - keep the server's bookkeeping in sync so the
+        // next request's length checks and /props see the current size
+        if (params_base.n_ctx_max != 0) {
+            refresh_n_ctx();
+        }
+
         // TODO: avoid restoring the draft context and re-evaluating the drafted tokens when not needed [TAG_SPEC_AVOID_DRAFT_REEVAL]
         //       for now, always re-evaluate for simplicity
         //       ref: https://github.com/ggml-org/llama.cpp/pull/22728#issuecomment-4400925384
@@ -3898,6 +3924,122 @@ private:
 
     int get_slot_n_ctx() {
         return slots.back().n_ctx;
+    }
+
+    // keep the server's own n_ctx bookkeeping in sync with the underlying context - needed
+    // after any growth, whether triggered proactively (maybe_grow_for_request()) or
+    // transparently inside llama_decode() itself (see llama_context_params::n_ctx_max)
+    void refresh_n_ctx() {
+        const int32_t n_ctx_seq_now = llama_n_ctx_seq(ctx_tgt);
+
+        n_ctx = llama_n_ctx(ctx_tgt);
+
+        for (auto & slot : slots) {
+            slot.n_ctx = n_ctx_seq_now;
+        }
+
+        // keep MTP's side context in lockstep: it needs to track roughly the same
+        // position range as ctx_tgt (begin() compares its own KV position against the
+        // prompt length - see NOTES.md's Part 1 discovery item 10). ctx_dft is a
+        // completely separate llama_context/memory object for the qwen35(moe) family
+        // (the target model this is written for), so growing ctx_tgt never grows it on
+        // its own. For architectures where the draft shares ctx_tgt's memory instead
+        // (e.g. gemma4's is_mem_shared mode), resize() already refuses to touch a cache
+        // that shares cells with another (Phase 2's [TAG_KV_CACHE_SHARE_CELLS] guard),
+        // so this is a harmless no-op there (growing ctx_tgt's memory already covers it).
+        if (ctx_dft && ctx_dft != ctx_tgt) {
+            const int32_t n_ctx_seq_dft = llama_n_ctx_seq(ctx_dft);
+
+            if (n_ctx_seq_dft < n_ctx_seq_now) {
+                const int32_t ret = llama_set_n_ctx(ctx_dft, (uint32_t) n_ctx_seq_now);
+
+                if (ret == 0) {
+                    SRV_INF("grew MTP draft context in lockstep: n_ctx %d -> %d\n",
+                            n_ctx_seq_dft, llama_n_ctx_seq(ctx_dft));
+                } else {
+                    // note: this also fires (harmlessly) for architectures where the draft
+                    // shares ctx_tgt's memory instead of owning its own (e.g. gemma4's
+                    // is_mem_shared mode) - resize() refuses to touch a shared cache, but
+                    // growing ctx_tgt's memory already covers it in that case, so there's
+                    // nothing actually wrong; the return code doesn't distinguish that from
+                    // a real allocation failure, so this stays a warning either way
+                    SRV_WRN("failed to grow MTP draft context in lockstep (ret = %d) - "
+                            "drafting may degrade near the new context boundary\n", ret);
+                }
+            }
+        }
+    }
+
+    // grow the KV cache once, right before prefill, sized directly to what this request
+    // needs (prompt + n_predict) rather than stepped by ctx_grow_factor - that stepping is
+    // reserved for the reactive hook inside llama_decode() itself, which only sees one
+    // ubatch at a time and doesn't know the whole request's shape in advance
+    void maybe_grow_for_request(const server_slot & slot) {
+        if (params_base.n_ctx_max == 0) {
+            return;
+        }
+
+        const int32_t n_ctx_cur = llama_n_ctx_seq(ctx_tgt);
+        if (n_ctx_cur >= params_base.n_ctx_max) {
+            return; // already at the ceiling
+        }
+
+        const int32_t n_predict = slot.task->params.n_predict > 0 ? slot.task->params.n_predict : 0;
+        const int32_t n_needed  = slot.task->n_tokens() + n_predict;
+
+        if (n_needed <= n_ctx_cur) {
+            return;
+        }
+
+        const int32_t n_target = std::min(params_base.n_ctx_max, n_needed);
+
+        const int32_t ret = llama_set_n_ctx(ctx_tgt, (uint32_t) n_target);
+        if (ret == 0) {
+            SLT_INF(slot, "grew KV cache ahead of prefill: n_ctx %d -> %d (prompt = %d tokens, n_predict = %d)\n",
+                    n_ctx_cur, llama_n_ctx_seq(ctx_tgt), slot.task->n_tokens(), slot.task->params.n_predict);
+            refresh_n_ctx();
+        } else {
+            SLT_WRN(slot, "failed to grow KV cache ahead of prefill (ret = %d, target = %d) - request may hit the context limit\n",
+                    ret, n_target);
+        }
+    }
+
+    // try to grow before running out of room mid-generation (e.g. an open-ended
+    // n_predict = -1 request that organically outgrows what maybe_grow_for_request()
+    // sized at prompt time). This must happen here, in process_token()'s "are we about
+    // to run out of context" check - not just inside llama_decode()'s own reactive
+    // auto-grow hook - because if that check decides to stop generation
+    // (has_next_token = false), llama_decode() is never called again for this slot, so
+    // its hook never gets a chance to run. Stepped by ctx_grow_factor (unlike
+    // maybe_grow_for_request()'s exact-fit sizing), matching the same formula the
+    // in-decode() hook uses, since this is the same "reactive, don't know how much more
+    // is coming" situation, just relocated to a place that actually executes.
+    void maybe_grow_mid_generation(server_slot & slot) {
+        if (params_base.n_ctx_max == 0) {
+            return;
+        }
+
+        const int32_t n_ctx_cur = llama_n_ctx_seq(ctx_tgt);
+        if (n_ctx_cur >= params_base.n_ctx_max) {
+            return; // already at the ceiling
+        }
+
+        const int32_t n_needed = slot.prompt.n_tokens() + 1;
+        if (n_needed <= n_ctx_cur) {
+            return;
+        }
+
+        const int32_t n_target = std::min(params_base.n_ctx_max,
+                std::max(n_needed, (int32_t) (n_ctx_cur * params_base.ctx_grow_factor)));
+
+        const int32_t ret = llama_set_n_ctx(ctx_tgt, (uint32_t) n_target);
+        if (ret == 0) {
+            SLT_INF(slot, "grew KV cache mid-generation: n_ctx %d -> %d\n", n_ctx_cur, llama_n_ctx_seq(ctx_tgt));
+            refresh_n_ctx();
+        } else {
+            SLT_WRN(slot, "failed to grow KV cache mid-generation (ret = %d, target = %d) - generation may stop/shift at the current limit\n",
+                    ret, n_target);
+        }
     }
 
     server_response_reader get_response_reader() {

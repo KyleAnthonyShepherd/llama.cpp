@@ -104,6 +104,16 @@ struct llama_memory_i {
     // ops
     //
 
+    // grow the memory's capacity to n_new (already padded by the caller).
+    // returns false if growth is unsupported by this memory type/topology, or if
+    // allocation failed - on failure the object must remain fully usable at its old size.
+    // default: growth unsupported.
+    virtual bool resize(uint32_t n_new) {
+        GGML_UNUSED(n_new);
+
+        return false;
+    }
+
     // if data == true, the data buffers will also be cleared together with the metadata
     virtual void clear(bool data) = 0;
 

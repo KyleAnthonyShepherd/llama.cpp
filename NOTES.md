@@ -947,3 +947,703 @@ more clearly scoped than the plan's phase breakdown suggests:
    before Phase B's placement_group definition is finalized for this target arch.
 4. No GPU this session — A.4, A.6 (llama-bench cross-check), and A.7 (driver skew) all
    need real hardware before they can be called closed, same caveat as Parts 1 and 3.
+
+---
+
+## Part 1 Phase 2 implementation: `resize()` core
+
+Implements the plan's §4 core primitive: `virtual bool resize(uint32_t n_new)` on
+`llama_memory_i` (`src/llama-memory.h`, default `return false` — zero cost / no behavior
+change for every memory type that doesn't override it), with real implementations:
+
+- **`llama_kv_cache::resize()`** (`src/llama-kv-cache.cpp`) — the actual work. Scope,
+  matching the plan's v1 restrictions plus one found during discovery:
+  - only `n_stream == 1` (plan's stated restriction: single-stream).
+  - only caches that don't share cells with another cache (`other == nullptr`, the
+    `[TAG_KV_CACHE_SHARE_CELLS]` mechanism from the Part 1 discovery pass, item 1/10) —
+    not in the original plan, found while reading the constructor; a cache constructed
+    with a `share` callback aliases another cache's cells and has no independent storage
+    to resize. `other == nullptr` also guarantees `layers` never contains aliased tensor
+    pointers (verified from the constructor: aliasing only happens `if (share && other)`),
+    which the implementation depends on.
+  - `n_new` must be strictly greater than the current size and a multiple of `n_pad`
+    (new getter `get_n_pad()` added — the plan's Phase 1 flagged this as missing).
+  - Algorithm mirrors the plan's §4.2 exactly: allocate new per-buft-group buffers sized
+    `n_new` (same grouping the constructor uses), copy old data in (K and non-transposed V
+    are a contiguous-prefix copy via `ggml_backend_tensor_get`/`_set`; transposed V is
+    copied row-by-row via `ggml_backend_tensor_get_2d`/`_set_2d` — these turned out to
+    already exist in `ggml-backend.h`/`.cpp`, exactly shaped for this use), grow cell
+    metadata via a new `llama_kv_cells::grow()` (the existing `resize()` on that class
+    resets everything, as Part 1 discovery item 3 already flagged — `grow()` extends the
+    vectors with empty cells and leaves the existing prefix untouched), then swap
+    tensors/buffers and free the old ones. New getter `get_v_storage()` added alongside
+    the existing `get_k_storage()` (needed for the resize implementation's per-layer
+    lookup and useful for the unit test). On any failure (context/buffer allocation)
+    before the swap, the function returns `false` and the old cache is provably untouched
+    (nothing is mutated until every new allocation has succeeded).
+  - MLA layers (`layer.v == nullptr`) are handled by skipping the V copy — resize only
+    touches K for those layers, matching how the constructor already treats MLA.
+  - Hadamard rotation matrices (`attn_rot_hadamard`) are host-memory, precomputed from
+    `n_embd_head_k_all`/`n_embd_head_v_all` only — untouched by resize, no interaction.
+- **`llama_memory_hybrid::resize()`** — delegates to `mem_attn->resize()` only; the
+  recurrent child is untouched (confirmed in Part 1 discovery: its size is
+  `max(1, n_seq_max)`, independent of context length).
+- **`llama_kv_cache_iswa::resize()`** — delegates to `kv_base->resize()` only; `kv_swa`
+  stays at its window size (`min(base, n_swa*n_seq_max + n_ubatch)` padded to 256), per
+  the plan's explicit instruction. Known gap, not in scope: with `--swa-full` the SWA
+  cache is a *one-time* snapshot equal to the base size taken at construction — growing
+  only the base afterward leaves a `swa_full`-configured SWA cache smaller than the grown
+  base. The plan anticipated this exact case ("leave the SWA cache at window size unless
+  discovery shows it is sized from n_ctx too") and this is that case, but `--swa-full` is
+  a rare/experimental flag; left as a follow-up rather than blocking this pass.
+- **`llama_memory_recurrent::resize()`** — no-op, always returns `true` (capacity is
+  `n_seq_max`-derived, not context-length-derived — confirmed in Part 1 discovery item 10
+  / the `create_memory()` call sites).
+- **Not implemented** (inherit the interface's default `return false`): `llama_kv_cache_dsv4`,
+  `llama_kv_cache_dsa`, `llama_memory_hybrid_iswa` — these three concrete classes were
+  found during Part 1 discovery (item 1) but aren't in the plan's own §4 implementation
+  list, and none of them are on the target model's (Qwen3.5/3.6) load path. Returning
+  `false` is the correct, safe default (growth is "unsupported" for these, exactly per the
+  interface contract) rather than an oversight; flagged here as a known scope boundary,
+  not silently skipped.
+
+### Unit test: `tests/test-kv-resize.cpp`
+
+Registered in `tests/CMakeLists.txt` using the same `MODEL_DEST`
+(`tinyllamas/stories15M-be.Q4_0.gguf`) download fixture as the other model-requiring
+tests (`test-recurrent-state-rollback.cpp`, `test-save-load-state.cpp`, etc.) — same
+pattern, no new fixture needed. Includes the internal header directly
+(`#include "../src/llama-kv-cache.h"`), following the precedent already established by
+`test-llama-archs.cpp` (`#include "../src/llama-arch.h"`) — no new CMake include-dir
+plumbing required, quoted relative includes resolve fine as-is.
+
+For each of {FA off (`v_trans == true`), FA on (`v_trans == false`), FA on + q8_0 KV
+(quantized V requires FA on, confirmed at `src/llama-context.cpp:3533`)}: fills ~200
+cells via `llama_decode`, snapshots layer 0's K/V bytes for the used range directly from
+the backend tensors, calls `resize()` through the public `llama_memory_t` returned by
+`llama_get_memory()` (downcast to `llama_kv_cache*` via `dynamic_cast` only to reach the
+cache-specific getters used for verification — `resize()` itself is called through the
+polymorphic `llama_memory_i` interface, so the test doesn't need to know the concrete
+type to grow the cache), and checks: the equal-size call is rejected and the cache stays
+usable (`decode_one` still succeeds); the valid-growth call succeeds; `get_size()` matches
+the target; `llama_memory_seq_pos_max()` is unchanged; and the K/(V) byte snapshots are
+byte-identical before/after. Deliberately does **not** decode further after a successful
+resize as part of the pass/fail check (see "important scope boundary" below) — build and
+runtime verification of the test binary itself both done this session; the download
+fixture (network) was not reachable in this sandbox, so the test has not been run
+end-to-end against real model weights — that's the one thing left for the user's own
+hardware tomorrow, per Phase 2's own acceptance bar ("unit test green on CPU and on the
+GPU backend").
+
+### Empirical verification beyond the unit test (this session, throwaway harness, not committed)
+
+Built a scratch harness (reusing `tests/test-llama-archs.cpp`'s `get_gguf_ctx`/
+`get_model_and_ctx` synthetic-model helpers verbatim, in-memory GGUF via
+`llama_model_init_from_user`, no download needed) to exercise `resize()` end-to-end
+against one arch per delegation path: `LLM_ARCH_LLAMA` (plain `llama_kv_cache`),
+`LLM_ARCH_MAMBA` (`llama_memory_recurrent`, no-op path), `LLM_ARCH_FALCON_H1`
+(`llama_memory_hybrid`, delegates to attn child), `LLM_ARCH_GEMMA2`
+(`llama_kv_cache_iswa`, delegates to base). All four: fill cells, snapshot bytes,
+`resize()`, verify size/`seq_pos_max`/byte-identity — **all four passed.**
+
+**Caught and fixed one real bug in the process**: the scratch `ggml_context` `resize()`
+creates per buffer-type group was undersized — `2u*layers.size()*ggml_tensor_overhead()`
+only accounts for the K and V tensors themselves, not their per-stream view tensors
+(`k_stream`/`v_stream`, one each even when `n_stream == 1` — see Part 1 discovery item 2
+on why these views exist and are used by `state_write`/`state_read`). This reliably
+triggered `ggml_new_object: not enough space in the context's memory pool` →
+`GGML_ASSERT(obj_new) failed` (an abort, not a silent corruption) on the very first
+`resize()` call. Fixed to mirror the constructor's own sizing formula exactly:
+`2u*(1 + n_stream)*layers.size()*ggml_tensor_overhead()`. This is exactly the kind of bug
+the plan's working agreement (§0.3, "build and test after every phase") exists to catch —
+it would not have been caught by a compile-only check, only by actually running
+`resize()` against a real (if synthetic) model.
+
+**Important scope boundary, confirmed empirically (not just reasoned about) this
+session**: calling `llama_kv_cache::resize()` directly and then issuing one more
+`llama_decode()` call — with no other changes — **segfaults** inside
+`ggml_compute_forward_set_rows` (backtrace: `llama_context::decode` →
+`process_ubatch` → `graph_compute` → CPU backend `set_rows` → SIGSEGV). This is the
+`sched_need_reserve`/`gf_res_prev` staleness the Part 1 discovery pass already flagged
+(item 5: "six existing call sites already set `sched_need_reserve = true`... provided
+growth always happens at a point where a decode call follows shortly after") — but that
+discovery was static/read-only ("not yet verified at runtime"). **Now verified**: raw
+`resize()` alone is not suffient for a context to keep decoding; `llama_set_n_ctx()`
+(Part 1 Phase 3, not yet implemented) *must* set `sched_need_reserve = true` (and update
+`cparams.n_ctx`/`n_ctx_seq`, per discovery item 6) immediately after a successful
+`resize()`, before the next decode. This is exactly what the plan's §5.2 step-3 ordering
+already specifies — this session's contribution is empirical confirmation that skipping
+it is not merely suboptimal (a missed perf optimization) but an outright crash, so Phase 3
+cannot treat that step as optional or as an incremental follow-up.
+
+### Open items before Part 1 Phase 3 (`llama_set_n_ctx`) can start
+
+1. Wire `llama_context::set_n_ctx()`: call `memory->resize()`, then set
+   `sched_need_reserve = true`, then update `cparams.n_ctx`/`cparams.n_ctx_seq` (using the
+   exact formula from discovery item 6), in that order — per the plan's own §5.2 and now
+   confirmed load-bearing (see above), not optional.
+2. The MTP `ctx_dft` lockstep-growth decision (Part 1 discovery item 10, still open) —
+   needed before growth is wired into any MTP-enabled server path.
+3. `memory_update(true)` (defrag) precedence relative to growth (discovery item 4) —
+   still just reasoned about, not measured.
+4. `--swa-full` + growth interaction (this section, iswa bullet above) — the SWA cache
+   silently stops matching the (grown) base size; needs either an explicit re-snapshot on
+   growth or a documented limitation.
+5. This session still had no GPU — everything above was verified on CPU only (both the
+   committed unit test's structure and the throwaway multi-arch harness ran CPU-only).
+   The user's own 6 GB VRAM hardware (available "tomorrow" per their message) is needed to:
+   (a) actually run `tests/test-kv-resize.cpp` against the downloaded model (this sandbox
+   couldn't reach the model download host), (b) repeat the CUDA-backend determinism/copy
+   checks the plan's §5.4 matrix calls for, (c) confirm the `ggml_backend_tensor_get_2d`/
+   `_set_2d` transposed-V path on a non-CPU backend (only the CPU backend's fallback
+   per-row loop was exercised this session — `buf->iface.set_tensor_2d`/`get_tensor_2d`
+   being non-null on CUDA, taking a possibly-different code path, is unverified).
+
+---
+
+## Part 1 Phase 3 implementation: `llama_set_n_ctx()`, auto-grow hook, determinism harness
+
+Same session as Phase 2 above. Implements the plan's §5 in full for the topologies Phase 2
+covers, using the exact ordering the plan's §5.2 specifies (validate → `memory->resize()` →
+re-reserve → update `cparams`) — with one correction to the *mechanism* of the re-reserve
+step, found by actually running it (see below).
+
+### Public API (`include/llama.h`)
+
+- `llama_context_params` gains two fields (appended right after `defrag_thold`, before the
+  callback pointers — keeps the existing "primitives, then callbacks, then bools" grouping
+  intact rather than appending at the very end):
+  - `uint32_t n_ctx_max` — 0 = auto-grow disabled (default); else the ceiling.
+  - `float ctx_grow_factor` — growth multiplier (default 1.5, matches the plan).
+- `LLAMA_API int32_t llama_set_n_ctx(llama_context * ctx, uint32_t n_ctx_new)` — return
+  codes exactly as the plan's §5.1 specifies (`0` success, `-1` invalid/unsupported,
+  `-2` allocation-or-reserve failure). One deliberate simplification vs. the plan's own
+  two-code split: `llama_memory_i::resize()` only returns `bool`, so it can't itself
+  distinguish "unsupported topology" from "allocation failed" — `set_n_ctx()` catches the
+  cases it *can* tell apart before ever calling `resize()` (equal/smaller size, `n_seq_max`
+  making `n_ctx_seq` degenerate) as `-1`, and buckets everything `resize()` itself rejects
+  (including the multi-stream/cross-cache-sharing cases from Phase 2) under `-2`. Documented
+  as a known simplification, not silently glossed over.
+- `llama_n_ctx_max(const llama_context *)` — read-back accessor, mirrors `llama_n_ctx()`/
+  `llama_n_ctx_seq()`.
+- `src/llama-cparams.h` gets matching `n_ctx_max`/`ctx_grow_factor` fields.
+
+### `llama_context::set_n_ctx()` (`src/llama-context.cpp`)
+
+1. Validates `n_ctx_new > cparams.n_ctx` (padded to 256 first, matching how `cparams.n_ctx`
+   itself is padded at construction).
+2. Recomputes `n_ctx_seq` with the **exact same formula** the constructor uses
+   (`src/llama-context.cpp:261-277`, already flagged as easy-to-miss in the Phase 1
+   discovery, item 6) — `kv_unified ? n_ctx : GGML_PAD(n_ctx / n_seq_max, 256)` — and calls
+   `memory->resize()` with *that* value, not `n_ctx_new` directly.
+3. On success, updates `cparams.n_ctx`/`cparams.n_ctx_seq`.
+4. **Re-reserves immediately, not lazily.** The Phase 2 discovery pass (Part 1 discovery
+   item 5) concluded growth could just set the `sched_need_reserve` flag and let the next
+   `decode()`'s unconditional `sched_reserve()` call pick it up lazily, the same way six
+   existing mutators (`set_causal_attn`, etc.) do. **This is wrong for the in-decode
+   auto-grow case** (see below) and was caught only by actually running it: `sched_reserve()`
+   is called *once*, at the very top of `decode()`, before the retry loop that would call
+   `set_n_ctx()`. Setting the flag mid-loop only helps the *next* `llama_decode()` call: the
+   current call would still finish with a stale scheduler/`gf_res_prev`, sized for the old
+   (smaller) `n_kv`, and crash on `graph_compute()`. The actual fix, found by reading
+   `memory_update(true)`'s own tail block (`src/llama-context.cpp`, the "if the memory module
+   did any computation, we have to reserve a new worst-case graph" comment) — which is
+   itself invoked from the exact same call site (the `FAILED_PREPARE` retry chain in
+   `decode()`) for the pre-existing defrag/optimize retry — is to call `memory->init_full()`
+   + `graph_reserve(...)` **synchronously, right there**, mirroring that block exactly.
+   `graph_reserve()` already resets `gf_res_prev` and the scheduler internally
+   (`ggml_backend_sched_reset` + `gf_res_prev->reset()`, `src/llama-context.cpp:2348-2351`),
+   so nothing else needs touching. Failure policy for this step (plan §5.2 step 3's open
+   question): hard-fail (`-2`) without rolling back the already-grown KV cache — matches one
+   of the two policies the plan explicitly offered, chosen because rollback would require
+   re-growing backwards through machinery Phase 2 doesn't have (shrink is out of scope).
+
+**This correction is the single most load-bearing finding of this pass** — it's the reason
+the empirical multi-arch verification (below) passes where a naive lazy-flag implementation
+would have reproduced the exact SIGSEGV recorded at the end of the Phase 2 section.
+
+### Auto-grow hook (`llama_context::decode()`)
+
+Added inside the existing `LLAMA_MEMORY_STATUS_FAILED_PREPARE` case, **after** the
+pre-existing optimize/defrag retry (kept today's precedence: cheaper fix first; Part 1
+discovery item 2's open question about ordering is resolved this way — not measured against
+the alternative, but low-risk since it only changes behavior when optimize alone doesn't fix
+it), bounded to one attempt per `decode()` call via a `did_grow` flag (mirrors the existing
+`did_optimize` flag exactly):
+
+```cpp
+if (!did_grow && cparams.n_seq_max == 1 && cparams.n_ctx_max > cparams.n_ctx) {
+    did_grow = true;
+    const llama_pos pos_max  = memory->seq_pos_max(0); // -1 if seq 0 has no cells yet
+    const uint32_t  n_needed = (uint32_t) (pos_max + 1) + balloc->get_n_tokens();
+    const uint32_t  n_target = std::min(cparams.n_ctx_max,
+            std::max(n_needed, (uint32_t) (cparams.n_ctx * cparams.ctx_grow_factor)));
+    if (n_target > cparams.n_ctx && set_n_ctx(n_target) == 0) { continue; }
+}
+```
+
+- **Restricted to `n_seq_max == 1`** (the plan's own stated v1 scope: "Single sequence /
+  single slot"), checked explicitly in `decode()` rather than left to `resize()`'s own
+  `n_stream == 1` precondition — `n_stream` can be `1` even when `n_seq_max > 1` if
+  `kv_unified` is set, in which case `memory->seq_pos_max(0)` alone would *not* reliably
+  reflect how full the shared cache actually is (other sequences' cells aren't visible
+  through that one call). Explicitly out of scope rather than silently wrong.
+- Sizing formula matches the plan's §5.3 pseudocode exactly (`needed = cells_used +
+  n_tokens_in_batch`, `target = clamp(max(n_ctx * factor, needed), ..., n_ctx_max)`), using
+  `llama_memory_i::seq_pos_max()` (already public, cross-topology) instead of a
+  cache-specific "used cells" query — works uniformly across plain/hybrid/iswa without
+  needing a new getter.
+- If `resize()` is unsupported for the cache's topology (multi-stream, cross-cache-shared),
+  `set_n_ctx()` returns non-zero and this block is a no-op — falls through to the existing
+  "failed to find a memory slot" warning/`return 1`, i.e. **zero behavior change when growth
+  is disabled or unsupported**, satisfying the plan's working-agreement rule 4.
+
+### Empirical verification (throwaway harness, same technique as Phase 2, not committed)
+
+Reused the Phase 2 harness (`get_gguf_ctx`/`get_model_and_ctx` from `test-llama-archs.cpp`)
+to build two contexts per arch from the *same* synthetic model: one pre-allocated at a large
+`n_ctx`, one starting small with `n_ctx_max` set to that same large value. Fed both the
+identical 300-token sequence one token at a time and compared logits at every step.
+
+**All four archs tested — plain (`LLM_ARCH_LLAMA`, both `v_trans` states), hybrid
+(`LLM_ARCH_FALCON_H1`), iswa (`LLM_ARCH_GEMMA2`) — passed**: auto-grow fired exactly once
+per run (confirmed via `llama_n_ctx()` increasing mid-loop), and logits matched the
+pre-allocated reference context to float precision (`max abs diff` ≈ 0, well under the
+`1e-4` gate) at *every* step, including the exact step where growth happened. This is the
+first real evidence in this multi-session effort that grow-then-keep-decoding actually
+works end to end, not just "resize() doesn't crash by itself."
+
+### Unit test: `tests/test-ctx-grow.cpp`
+
+Registered against the same `MODEL_DEST` download fixture as `test-kv-resize.cpp`. Covers
+{FA off, FA on, FA on + q8_0 KV} the same way. For each: builds a static-`n_big` reference
+context and a `n_small`-start/`n_ctx_max = n_big` growing context from the same model, feeds
+both an identical 300-token sequence, asserts logits match at every step (`1e-4` abs-diff
+gate) and that growth actually fired. Not run end-to-end this session (no reachable model
+download host in this sandbox, same limitation as `test-kv-resize.cpp`) — build-verified
+only; the throwaway harness above is the real evidence this pass's logic works, using a
+synthetic in-memory model instead of the download fixture.
+
+### Deliberately not done this pass (out of scope, per the user's own phrasing: "Phase 3 —
+### `llama_set_n_ctx`, auto-grow hook, determinism harness")
+
+- **CLI/server plumbing** (`--ctx-max`, `--ctx-grow-factor` flags, `llama-server` proactive
+  growth, `slot.n_ctx` refresh) — this is the plan's own Phase 5 (§7), a separate, later
+  unit of work; `llama_context_params::n_ctx_max`/`ctx_grow_factor` exist but nothing in
+  `common/` or `tools/server/` sets them yet. A caller must currently set these two fields
+  directly to use growth.
+- **MTP `ctx_dft` lockstep growth** (Part 1 discovery item 10) — `set_n_ctx()` only grows
+  the `llama_context` it's called on; a server wrapping both `ctx_tgt` and `ctx_dft` would
+  need to call it on both, in some order, itself. Not addressed here.
+- **iSWA `--swa-full` re-snapshot** (Phase 2 section above) — still open, unchanged.
+
+## Open items before Part 1 Phase 4 (hybrid + SWA + Qwen3.6 smoke test) / Phase 5 (CLI/server)
+
+1. Real hardware run of `tests/test-kv-resize.cpp` and `tests/test-ctx-grow.cpp` against the
+   downloaded tinyllamas model — blocked on network access in this sandbox, first item for
+   the user's own machine.
+2. CUDA-backend verification of everything above (Phase 2's caveat still applies: only the
+   CPU backend's code paths have been exercised, including for the transposed-V row copy).
+3. Phase 5 CLI/server flags (`--ctx-max`, `--ctx-grow-factor`) are the natural next unit of
+   work to make growth reachable from `llama-cli`/`llama-server` without hand-writing
+   `llama_context_params`.
+4. The target model smoke test (Qwen3.6-35B-A3B GGUF, growth past 3 boundaries, VRAM/t/s
+   table) from the plan's Phase 4 needs real hardware and is still fully open.
+
+---
+
+## Real-hardware findings (user's Windows/VS2022 + CUDA + 6 GB VRAM machine)
+
+First results from actual hardware, following `TESTING.md`. Two findings so far.
+
+### 1. Part 3's determinism oracle (Part 3 discovery item 7 / Part 1 §5.4's test-oracle
+### assumption): **MTP-on is not token-identical to MTP-off, text-only, no images involved**
+
+Real run: `unsloth`-style Qwen3.6-35B-A3B Q4_K_M quant (with its MTP heads and mmproj
+present, but **mmproj/images not exercised in this test** — this is the text-only check),
+`--spec-type draft-mtp` vs `--spec-type none`, both `--temp 0 --seed 1`, same prompt.
+Outputs diverge (581 vs. 614 final tokens across the two runs) but both are reported
+coherent, not degenerate/repeating. `draft acceptance = 0.524 (343/654), mean len = 2.57`
+for the MTP run — a plausible, healthy-looking acceptance rate, not a sign of something
+badly broken.
+
+**This is very unlikely to be caused by the Part 3 mmproj fix**: no image was ever sent in
+this test, and that fix's entire effect is gated behind `batch_in.embd != nullptr` (an
+image/audio embedding batch) — the `valid` flag it introduces starts `true` and is only
+ever set `false` on such a batch. A pure-text conversation never touches that code path, so
+the fix is provably a no-op for this specific test. The divergence must come from
+`draft-mtp`'s own draft/verify/accept logic (untouched by the Part 3 session), or from an
+inherent floating-point difference between the *batched* verify-pass computation and the
+*single-token sequential* baseline decode (a well-known category of issue in speculative
+decoding generally — different reduction order / kernel selection for batch>1 vs batch=1,
+especially on a quantized model, can flip an argmax at temp 0 without any logic bug being
+involved). Both explanations are consistent with what was actually observed (coherent but
+diverging output, healthy acceptance rate) rather than, say, garbage output or a crash,
+which would point more toward a real accept/reject logic bug.
+
+**Decision (user's call, recorded here for continuity):** treat "MTP-on token-identical to
+MTP-off" as **false** for now; do not chase this further in this line of sessions. Flagged
+for separate deeper investigation later. This means: the token-identity oracle Part 1 §5.4
+and Part 3 Phase 3's tests both assume ("Assert identical token output") **cannot be used
+as-is** for any MTP-enabled determinism testing — per both plans' own stated fallback
+("if [temp-0 identity] is not [available], use logit/perplexity comparison instead"), any
+future determinism harness that must cover MTP-enabled configurations needs to switch to a
+logit-distance or perplexity-based comparison, not exact token-identity. Note this does
+**not** block Part 1's own growth-determinism work (`test-kv-resize.cpp`/`test-ctx-grow.cpp`):
+those tests exclude MTP entirely and rely on non-speculative decode, where token/logit
+identity is expected to hold (and did, per the Phase 2/3 synthetic-model verification above).
+
+### 2. Real build bug found: `test-kv-resize`/`test-ctx-grow` failed to link on Windows (MSVC)
+
+```
+error LNK2019: unresolved external symbol "public: unsigned int __cdecl llama_kv_cache::get_size(void)const"
+error LNK2019: unresolved external symbol "... llama_kv_cache::get_k_storage(int)const"
+error LNK2019: unresolved external symbol "... llama_kv_cache::get_v_storage(int)const"
+```
+
+Root cause: Windows DLLs only export symbols explicitly marked `__declspec(dllexport)`
+(here, via the `LLAMA_API` macro) — unlike ELF shared libraries (Linux), which export
+*everything* with default visibility unless told otherwise. `llama_kv_cache` is an internal
+class with no `LLAMA_API` annotations (by design — it's not part of the public C API), so
+on a Windows shared (`BUILD_SHARED_LIBS=ON`, the default) build, its methods are invisible
+to any other executable linking against `llama.dll`, including the two internal-header-using
+test binaries added this session. This only ever surfaced now because this whole
+multi-session effort had no Windows testing until this point — the Linux sandbox used for
+every prior verification pass masked the problem entirely (ELF default-exports everything).
+
+**Fix**: `src/CMakeLists.txt` now sets `WINDOWS_EXPORT_ALL_SYMBOLS ON` on the `llama` target
+(under the existing `if (BUILD_SHARED_LIBS)` block), mirroring the *exact same* workaround
+`common/CMakeLists.txt` already applies to `llama-common` for the identical underlying
+reason (that file's own comment: `# TODO: make fine-grained exports in the future` — copied
+verbatim, since it's still exactly the caveat that applies here too). This is additive only
+(exports a strict superset of symbols; nothing that was exported before stops being
+exported), so it doesn't change behavior for any existing consumer of `llama.dll`
+(`llama-cli.exe`, `llama-server.exe`, etc.) — verified the Linux build stays unaffected too
+(`WINDOWS_EXPORT_ALL_SYMBOLS` is a documented no-op on non-Windows platforms).
+
+**Open question, not investigated**: `test-llama-archs.cpp` (pre-existing, not part of this
+session's work) also directly calls non-template `llama_model_saver` methods
+(`add_kv(uint32_t)` etc., implemented in `llama-model-saver.cpp`, part of the `llama` target)
+from outside the DLL — by the same logic, it's plausible that test *also* fails to link on a
+stock Windows shared build, independent of anything in this branch. Not confirmed (no Windows
+environment available to check upstream `master` directly); if true, this fix incidentally
+also resolves that latent issue, but that wasn't the goal and wasn't verified as a before/after
+comparison.
+
+### Next steps for the user's hardware
+
+1. Re-pull this branch (now includes the `WINDOWS_EXPORT_ALL_SYMBOLS` fix), rebuild, retry
+   `test-kv-resize` and `test-ctx-grow`.
+2. MTP-on/off determinism: parked per the decision above; separate investigation later.
+
+### 3. `test-kv-resize`'s "fa-on q8_0 KV" scenario failed against the real download fixture
+
+With `WINDOWS_EXPORT_ALL_SYMBOLS` fixed, `test-kv-resize` actually ran against the real
+`tinyllamas/stories15M` download fixture for the first time (CUDA, Windows). Two of three
+scenarios passed (`fa-off`/`v_trans` and `fa-on`/`!v_trans`, including a real, non-synthetic
+byte-identity check across an actual `resize()` call — the first time this ran against a
+real downloaded model rather than the in-memory synthetic harness). The third, `fa-on + q8_0
+KV`, failed context construction outright:
+
+```
+llama_init_from_model: K cache type q8_0 with block size 32 does not divide n_embd_head_k=48
+```
+
+**Not a `resize()` bug** — this is a pre-existing, general llama.cpp constraint
+(`src/llama-context.cpp:3617-3624`): quantized KV types can only be used when the
+quantization block size evenly divides the model's per-head embedding dimension, so a whole
+number of blocks fits in one head's row. `stories15M`'s head dim happens to be 48
+(`48 % 32 != 0` for `q8_0`'s block size), an incompatibility that has nothing to do with
+resize()'s copy logic — it's the *model* that can't use `q8_0` KV at all, checked before any
+KV cache is even constructed.
+
+**Fix**: both `tests/test-kv-resize.cpp` and `tests/test-ctx-grow.cpp` now treat a failed
+`llama_context` construction as a **skip** (log + `return true`) rather than a hard failure,
+matching the existing "memory is not a plain llama_kv_cache — skipping" pattern already used
+for the recurrent/hybrid-model case. This makes both tests robust to being pointed at an
+arbitrary user-supplied model (via `-m`) that may not support every {FA, KV-type} combination
+the test tries, without weakening what they actually check when a scenario *is* supported.
+Verified this doesn't regress the two passing scenarios (rebuild only, still no reachable
+model-download host in this sandbox to re-run end-to-end).
+
+---
+
+## Part 1 Phase 5 implementation: CLI/server plumbing
+
+Implements the plan's §7. Scope: `--ctx-max`/`--ctx-grow-factor` CLI flags, `llama-server`
+proactive growth + `slot.n_ctx` refresh + startup validation. `llama-cli` needed **no
+separate work**: in this tree `llama-cli` spawns an embedded `llama-server` internally and
+talks to it over HTTP (`tools/cli/cli-server.h`, `llama_server()` called in a background
+thread) — it's the exact same `server_context_impl` code path, so once the flags exist in
+`common/`, `llama-cli` inherits growth for free. This directly satisfies the plan's own
+"llama-cli: wire the same flags for testability" bullet without any CLI-specific code.
+
+### `common/` flags
+
+- `common_params` gains `n_ctx_max` (`int32_t`, 0 = disabled) and `ctx_grow_factor`
+  (`float`, default 1.5) — `common/common.h`.
+- `--ctx-max N` / `--ctx-grow-factor N` registered in `common/arg.cpp`, no `.set_examples()`
+  restriction (same as `-c`/`--ctx-size`'s own registration) — available to every example
+  (cli, server, completion, etc.) uniformly.
+- `common_params_parse()` postprocess step (same place `--prompt-cache-all` +
+  `--interactive` incompatibility is already checked): if `--ctx-max` is set and `-c` was
+  left at its 0-default, start at `min(8192, ctx_max)` instead of the model's full training
+  context — exactly the plan's §7.1 instruction ("when `--ctx-max` is set and `-c` is
+  untouched, default the initial size to something small").
+- `common_context_params_to_llama()` forwards both fields into `llama_context_params`.
+
+### `llama-server` (`tools/server/server-context.cpp`)
+
+- **Startup validation** (`load_model()`, right after `params_base = params`): hard-refuses
+  to start (`return false`, clear `SRV_ERR`) if `--ctx-max` is set with `--parallel != 1` —
+  the plan's explicit v1 restriction, matching `resize()`'s own `n_stream == 1` scope.
+- **Proactive growth**: new `maybe_grow_for_request(slot)`, called once per new task right
+  before the existing prompt-length checks (`slot.state == SLOT_STATE_STARTED`, before the
+  `can_split()`/`n_ctx` too-long checks). Computes `needed = n_prompt_tokens + max(n_predict,
+  0)`, and if that exceeds the *current* `llama_n_ctx_seq(ctx_tgt)`, calls
+  `llama_set_n_ctx(ctx_tgt, min(ctx_max, needed))` directly — **not** stepped by
+  `ctx_grow_factor` (that stepping is reserved for the reactive in-`decode()` hook from
+  Phase 3, which only ever sees one ubatch at a time and has no visibility into the whole
+  request's shape; the server does, so it can size exactly once). On success, calls the new
+  `refresh_n_ctx()` immediately.
+- **Reactive refresh**: `refresh_n_ctx()` — sets `server_context_impl::n_ctx` (the
+  total-context member, from `llama_n_ctx()`) and every slot's `n_ctx` (from
+  `llama_n_ctx_seq()`) to the current live value. Called from two places: inside
+  `maybe_grow_for_request()` on success, and unconditionally (when growth is enabled) right
+  after every successful `llama_decode()` call in the low-level `decode()` method — covering
+  the case where Phase 3's *reactive* hook inside `llama_decode()` itself grew the cache
+  transparently, which the server has no other way to observe.
+- **`/props` and error messages**: needed **no code changes** — `get_slot_n_ctx()` already
+  reads `slots.back().n_ctx` live (not a cached snapshot), and the existing "prompt too
+  large" error messages already interpolate `slot.n_ctx` directly, so both automatically
+  reflect the current (possibly grown) value once `slot.n_ctx` itself is kept fresh.
+- **Context-shift/cache-reuse interplay (plan's §5.3 policy, "grow first, shift only at
+  ctx_max")**: also needed **no code changes**, for a subtler reason — both places that
+  gate context-shift (`process_token()`'s early stop, `pre_decode()`'s shift trigger) key
+  off `slot.n_ctx + 1 >= n_tokens`. Since `slot.n_ctx` now keeps growing (via the refresh
+  above) for as long as growth has room to give, those checks simply don't fire until
+  growth is truly exhausted (`slot.n_ctx` pinned at `ctx_max`) — the desired policy falls
+  out of keeping one value fresh, rather than needing new precedence logic in the shift path
+  itself.
+- **Known gap, not addressed**: `server_prompt_cache` (the optional `--cache-ram-mib`
+  prompt-caching subsystem, `tools/server/server-context.cpp:~1354`) is sized once at load
+  time from the *original* `n_ctx` and is not resized on growth. Likely low-impact (it's an
+  optional feature, off by default) but not verified either way — flagged for a follow-up
+  pass rather than investigated this session.
+
+### Empirical verification: real `llama-server` HTTP round-trip (not just unit tests)
+
+Went one step further than the synthetic in-process harnesses used for Phases 2–3: built a
+synthetic model **with real backend-allocated tensor data** (`get_gguf_ctx` +
+`llama_model_init_from_user`, then `llama_model_saver` — its "round-trip from a live model"
+constructor/`add_kv_from_model()`/`add_tensors_from_model()`/`save()` — to serialize that
+in-memory model out to an actual `.gguf` **file on disk**), then launched a genuine
+`llama-server` **process** against that file and drove it with real HTTP requests via
+`curl`. This is a materially stronger check than the earlier in-process harnesses: it
+exercises the actual CLI arg parsing, the actual server startup path, and the actual
+HTTP → task → slot → decode pipeline, not code called directly from a test binary.
+
+Results:
+- `llama-server ... --ctx-max 2048 -c 256`, prompt of 500 tokens (as a raw token-ID array
+  via `/completion`'s `prompt` field, sidestepping the synthetic model's placeholder
+  `no_vocab` tokenizer for the *input* side): log shows
+  `slot maybe_grow_f: ... grew KV cache ahead of prefill: n_ctx 256 -> 512 (prompt = 500
+  tokens, n_predict = 0)` — proactive growth fired correctly through the real request path.
+- `--ctx-max 512`, prompt of 1000 tokens: grew to the ceiling (`256 -> 512`, clamped
+  correctly to `ctx_max` even though the request needed more), then correctly rejected with
+  `"request (1000 tokens) exceeds the available context size (512 tokens)"` — note the
+  error message already reports the *post-growth* 512, not the pre-growth 256, confirming
+  `slot.n_ctx` was refreshed before the check ran. Server stayed healthy afterward (this
+  reject path returns before any decode/token-sampling, so it never touches the synthetic
+  model's vocab-crash limitation below).
+- `--ctx-max 2048 -np 2`: server refused to start with the expected
+  `--ctx-max requires --parallel 1` error, exit before any model load work.
+- **Caveat, not a growth bug**: any request that reaches actual *generation* (sampling ≥1
+  token) crashes this particular synthetic model, because `get_gguf_ctx()` sets
+  `tokenizer.ggml.model = "no_vocab"` and `common_token_to_piece()` unconditionally asserts
+  `type != LLAMA_VOCAB_TYPE_NONE` when formatting a sampled token back into response text
+  (`src/llama-vocab.cpp:3091`). This is a limitation of the synthetic model (no real
+  tokenizer), unrelated to growth — confirmed by checking exactly where each crash occurred
+  (`common_token_to_piece` → `post_decode()`'s per-token result callback, always *after*
+  `maybe_grow_for_request()`/`llama_decode()` had already run and succeeded). Building a
+  synthetic model with a real (even minimal) tokenizer, to get a full generate-and-verify
+  round trip, is a possible follow-up but wasn't pursued given the proactive-growth and
+  reject-path evidence already obtained is unambiguous.
+
+### Open items before Part 1 Phase 4 (Qwen3.6 hardware smoke test) / further polish
+
+1. `server_prompt_cache` resize-on-growth gap (above) — needs a decision: resize it too, or
+   document that `--cache-ram-mib` + `--ctx-max` together is untested/unsupported for now.
+2. A full real-model, real-generation `llama-server --ctx-max ... -c ...` session (the
+   user's own hardware, per `TESTING.md` §3) is the natural next real-world check — the
+   verification above proves the mechanism fires and clamps correctly via real HTTP, but
+   didn't (couldn't, in this sandbox) verify a full multi-turn conversation growing several
+   times while generating real tokens.
+3. MTP `ctx_dft` lockstep growth (carried over from Phase 3) is still unaddressed — a
+   server session combining `--spec-type draft-mtp` with `--ctx-max` will grow `ctx_tgt`
+   only; `ctx_dft` stays fixed-size. Not validated either way this pass.
+
+---
+
+## Real-hardware findings, round 2: struct layout fix + MTP lockstep growth
+
+### 1. Crash: `common/arg.cpp:2520: GGML_ASSERT(params.n_gpu_layers < 0) failed` on Windows
+
+Reported when starting `llama-server` with `--ctx-max` on the user's Windows/MSVC build.
+This assert is **pre-existing, unrelated to anything in this branch's diff** (confirmed via
+`git blame` — authored 2026-07-08, well before this branch existed) — it's a sanity check,
+evaluated once at flag-registration time, that `common_params::n_gpu_layers` still holds its
+compiled-in default (`-1`) at the point the `-ngl` flag's help text is generated. It firing
+means `n_gpu_layers` held a nonsensical value at that point — impossible under normal
+control flow (every call site either default-constructs `common_params` or passes one that
+hasn't been touched yet), which is the signature of a **struct-layout/ABI mismatch between
+separately-compiled translation units**, not a logic bug.
+
+**Likely root cause, self-inflicted**: both `n_ctx_max`/`ctx_grow_factor` fields (Phase 5)
+were inserted in the *middle* of `llama_context_params` (`include/llama.h`, between
+`defrag_thold` and `cb_eval`) and of `common_params` (`common/common.h`, between `n_ctx` and
+`n_batch`) — shifting the byte offset of every field declared after the insertion point
+(including `n_gpu_layers`, dozens of fields later in `common_params`). The project's own
+stated convention for `llama_context_params` (noted in the original plan itself: "llama.cpp
+appends new fields... keep struct ABI notes in mind") exists precisely to avoid this: on an
+incremental Windows/MSBuild build, if even one translation unit that reads/writes a shifted
+field doesn't get fully recompiled against the new header (stale `.obj`/`.lib`/`.dll`
+linked against a mix of old/new layouts), fields after the insertion point silently
+misalign — exactly the kind of "impossible" garbage this assert is designed to catch,
+just for an unrelated field.
+
+**Fix**: moved both fields to the very end of `llama_context_params` (after `ctx_other`)
+and of `common_params` (after `no_alloc`), matching the append-only convention, and moved
+the corresponding two initializer-list entries in `llama_context_default_params()`
+(`src/llama-context.cpp`) to match — that function uses **positional aggregate
+initialization** (the `/*.field_name =*/` comments are cosmetic; there is no C++20
+designated-initializer syntax in play, this project targets C++17), so the values and the
+struct declaration order must move together or every field after the insertion point reads
+the wrong initializer. Verified: full rebuild clean, and re-ran the same real-`llama-server`
+synthetic-model HTTP check from the Phase 5 pass (proactive growth firing, `256 -> 512`) —
+unaffected, as expected, since growth's own logic reads every field by name, not position.
+
+**User action needed**: pull this fix and do a **full rebuild**, not just an incremental
+one — if the theory above is right, an incremental build might not reliably clear whatever
+stale state caused the mismatch in the first place. If the crash recurs after a genuinely
+clean rebuild, this theory is wrong and needs to be revisited (open a fresh investigation
+rather than assuming the fix above was sufficient).
+
+### 2. Closed the MTP `ctx_dft` lockstep-growth gap
+
+`server_context_impl::refresh_n_ctx()` (`tools/server/server-context.cpp`) now also grows
+`ctx_dft` (the MTP draft context, when present) to match `ctx_tgt`'s current
+`llama_n_ctx_seq()` every time it runs — i.e. after both proactive growth
+(`maybe_grow_for_request()`) and reactive growth (the hook inside `llama_decode()` itself).
+Implementation: direct `llama_set_n_ctx(ctx_dft, n_ctx_seq_now)` call, guarded by
+`ctx_dft && ctx_dft != ctx_tgt` and only attempted when `ctx_dft` is actually behind. This
+matches the plan's own framing exactly ("growing `ctx_dft` in lockstep... is a call-site
+change in whatever wraps `llama_set_n_ctx`, not a `resize()` change") — no changes needed
+to `llama_set_n_ctx()`/`resize()` themselves, just one more grow call from the same place
+that already refreshes the server's own bookkeeping.
+
+Known rough edge, accepted rather than solved: for architectures where the draft head
+shares `ctx_tgt`'s memory instead of owning its own (gemma4's `is_mem_shared` mode —
+**not** the target qwen35(moe) family this whole effort is built around), `resize()`
+correctly refuses to touch a cache that shares cells with another
+(`[TAG_KV_CACHE_SHARE_CELLS]`, Phase 2), so the lockstep-growth call for `ctx_dft` would
+fail there — harmlessly, since growing `ctx_tgt`'s memory already covers the shared case,
+but `llama_set_n_ctx()`'s return code doesn't distinguish "harmless, already covered" from
+"a real allocation failure," so this logs a warning either way for that architecture family.
+Not fixed, since it doesn't affect the target model and a real fix would need a new way to
+ask "is this memory shared with another context" that doesn't exist yet.
+
+**Not verified this pass**: no MTP-capable model available in this sandbox (same limitation
+as every other pass) — the lockstep call was reviewed against the code (mirrors the
+already-working `maybe_grow_for_request`/`refresh_n_ctx` pattern exactly, using the same
+`llama_set_n_ctx` entry point Phase 3 already validated end-to-end) but not exercised at
+runtime with a real `ctx_dft`. This is the first thing to check on the user's hardware:
+`llama-server --spec-type draft-mtp --ctx-max ... -c ...`, grow past a boundary, confirm no
+MTP-related errors/crashes and that drafting continues (watch `-lv 4` trace output and the
+new `grew MTP draft context in lockstep` log line).
+
+---
+
+## Real-hardware findings, round 3: mid-generation growth was never actually reachable
+
+First real long-conversation test on the user's hardware (`-c 8192 --ctx-max 131072`,
+`--temp 0`, real multi-turn chat via slot/LCP-reuse) surfaced two things.
+
+### 1. `llama_kv_cache: resizing KV cache: ...` / `llama_context: growing n_ctx: ...` never
+### appear in the log — **not a bug**, a pre-existing log-verbosity mapping
+
+Both lines are emitted via `LLAMA_LOG_INFO` (`src/llama-kv-cache.cpp`,
+`src/llama-context.cpp`), which maps to `GGML_LOG_LEVEL_INFO`. `llama-server`'s own log
+plumbing (`common/log.cpp:common_get_verbosity()`) maps `GGML_LOG_LEVEL_INFO` →
+`LOG_LEVEL_TRACE` (verbosity 4) for messages coming from the `llama`/`ggml` library layer
+specifically — as opposed to `SRV_INF`/`SLT_INF` (used by the server's own
+`maybe_grow_for_request`/`refresh_n_ctx`/etc.), which pass `LOG_LEVEL_INFO` (verbosity 3)
+explicitly and are visible at the default verbosity. This is **general, pre-existing
+behavior**, not specific to growth — it also explains why the model's own load-time
+`llama_context: n_ctx = ...`/`llama_kv_cache: size = ... MiB` lines were already absent from
+every real-hardware log shared so far, growth-related or not. No code change; `-lv 4`
+(already documented for MTP trace debugging, §1.5) surfaces these too. Updated `TESTING.md`
+§4.2 to say so explicitly instead of implying they're always visible.
+
+### 2. Real bug: a long, open-ended generation truncated at the *original* `n_ctx` instead
+### of growing — `slot.n_ctx` was correct, but growth never got a chance to run
+
+Observed directly in the log: one turn ended with `stop processing: n_tokens = 8191,
+truncated = 1` (i.e. hit the original `-c 8192` ceiling and gave up) even though
+`--ctx-max 131072` was set and plenty of room remained. The **next** turn's proactive
+growth then fired fine (`grew KV cache ahead of prefill: n_ctx 8192 -> 8448`), confirming
+growth itself works — the bug was specifically about **generation never reaching the point
+where growth would be tried**.
+
+Root cause, found by tracing the exact call sequence: `process_token()` has its own
+long-standing check —
+
+```cpp
+if (!params_base.ctx_shift && slot.prompt.n_tokens() + 1 >= slot.n_ctx) {
+    slot.truncated = true;
+    slot.has_next_token = false; // stop generation
+    ...
+}
+```
+
+— that runs **after every generated token**, deciding whether to request the *next* one.
+Phase 3's reactive auto-grow hook lives entirely inside `llama_context::decode()`, triggered
+only when a `llama_decode()` call actually fails to find room
+(`LLAMA_MEMORY_STATUS_FAILED_PREPARE`). But this server-side check fires *before* that next
+`llama_decode()` call would ever happen — if it sets `has_next_token = false`, generation
+stops right there and **`llama_decode()` is never called again for this slot**, so its
+reactive hook never gets a chance to run at all. This was a genuine gap in the Phase 5
+design: I had reasoned (incorrectly, in the original Phase 5 notes above) that keeping
+`slot.n_ctx` fresh via `refresh_n_ctx()` would be sufficient for the shift/stop precedence
+to "fall out for free" — that reasoning only covers cases where growth *already happened*
+by some other path; it doesn't cover the case where this exact check is the *first and
+only* place that would ever notice more room is needed for an open-ended (`n_predict = -1`)
+generation that organically outgrows what `maybe_grow_for_request()` sized at prompt start.
+
+**Fix**: new `maybe_grow_mid_generation(slot)` (`tools/server/server-context.cpp`), called
+from `process_token()` right before the existing stop-check, whenever
+`slot.prompt.n_tokens() + 1 >= slot.n_ctx` — regardless of whether `ctx_shift` is enabled,
+so growing here also makes the *separate* `ctx_shift` trigger in `pre_decode()` (which reads
+the same `slot.n_ctx`) naturally skip shifting for as long as growth still has room, giving
+the plan's "grow first, shift only once `ctx_max` is reached" policy for free from one call
+site rather than needing precedence logic duplicated in the shift path. Sized with
+`ctx_grow_factor` stepping (`max(n_needed, n_ctx_cur * factor)`), matching the formula the
+in-`decode()` hook itself uses — appropriate here since, like that hook, this call site
+also doesn't know in advance how much more the generation will need (unlike
+`maybe_grow_for_request()`'s exact-fit sizing, which does know from `n_predict`).
+
+**Not verified at runtime this pass**: attempted to reproduce with the same
+`llama_model_saver`-round-tripped synthetic model used for earlier Phase 5 verification, but
+hit an even earlier limitation than expected — that model's placeholder `no_vocab` tokenizer
+crashes inside `post_decode()`'s token-to-text formatting on the *very first* generated
+token, before `process_token()`'s check (where the fix lives) is ever reached for a second
+token. Confirmed via the crash backtrace (`post_decode()` → `common_token_to_piece` →
+abort, called from `update_slots()` *before* my check would run again). Building a synthetic
+model with a real (even minimal) tokenizer to get past this would be needed for a true
+in-sandbox repro; not pursued given time spent already. The fix is a small, narrowly-scoped
+change reusing the exact same `llama_set_n_ctx()`/`refresh_n_ctx()` machinery Phase 5's
+proactive path already validated end-to-end via real HTTP — reviewed carefully but **this
+specific trigger path is unverified at runtime**. This is the top thing to check on the
+user's hardware: a long, open-ended (no explicit `n_predict`, or a large one) generation
+that runs past the initial `-c` size should now keep growing (`grew KV cache
+mid-generation: ...` in the log) instead of truncating.

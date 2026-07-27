@@ -697,6 +697,13 @@ bool llama_memory_recurrent::get_can_shift() const {
     return true;
 }
 
+bool llama_memory_recurrent::resize(uint32_t n_new) {
+    GGML_UNUSED(n_new);
+
+    // capacity is sized from n_seq_max, not the context length - nothing to grow
+    return true;
+}
+
 size_t llama_memory_recurrent::total_size() const {
     size_t size = 0;
     for (const auto & [_, buf] : ctxs_bufs) {

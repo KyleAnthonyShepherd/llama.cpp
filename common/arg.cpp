@@ -710,6 +710,14 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
         throw std::invalid_argument("error: --prompt-cache-all not supported in interactive mode yet\n");
     }
 
+    if (params.n_ctx_max != 0 && params.n_ctx == 0) {
+        // --ctx-max enables automatic growth starting from a small initial context; without
+        // this, -c's own default (0 = whatever the model was trained with) would just start
+        // at the ceiling and never actually need to grow
+        params.n_ctx = std::min<int32_t>(8192, params.n_ctx_max);
+        LOG_INF("%s: --ctx-max set without an explicit -c/--ctx-size - starting at n_ctx = %d\n", __func__, params.n_ctx);
+    }
+
     const bool skip_model_download =
         // server will call common_params_handle_models() later, so we skip it here
         ctx_arg.ex == LLAMA_EXAMPLE_SERVER ||
@@ -1418,6 +1426,25 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
         }
     ).set_env("LLAMA_ARG_CTX_SIZE"));
+    add_opt(common_arg(
+        {"--ctx-max"}, "N",
+        string_format(
+            "upper bound the KV cache may grow to automatically as needed during generation "
+            "(default: %d, 0 = disabled). When set without an explicit -c/--ctx-size, the "
+            "initial context defaults to a small size and grows from there; requests/prompts "
+            "larger than --ctx-max are still rejected as too long, same as today",
+            params.n_ctx_max),
+        [](common_params & params, int value) {
+            params.n_ctx_max = value;
+        }
+    ).set_env("LLAMA_ARG_CTX_MAX"));
+    add_opt(common_arg(
+        {"--ctx-grow-factor"}, "N",
+        string_format("growth multiplier used when --ctx-max automatically grows the KV cache (default: %.1f)", (double) params.ctx_grow_factor),
+        [](common_params & params, const std::string & value) {
+            params.ctx_grow_factor = std::stof(value);
+        }
+    ).set_env("LLAMA_ARG_CTX_GROW_FACTOR"));
     add_opt(common_arg(
         {"-n", "--predict", "--n-predict"}, "N",
         string_format(

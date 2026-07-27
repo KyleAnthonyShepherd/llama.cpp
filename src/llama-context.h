@@ -64,6 +64,7 @@ struct llama_context {
 
     uint32_t n_ctx()     const;
     uint32_t n_ctx_seq() const;
+    uint32_t n_ctx_max() const;
     uint32_t n_batch()   const;
     uint32_t n_ubatch()  const;
     uint32_t n_seq_max() const;
@@ -118,6 +119,10 @@ struct llama_context {
     void set_nextn_layer_offset(int32_t offset);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
+
+    // grow the KV cache to n_ctx_new cells; see llama_set_n_ctx() in llama.h for the
+    // return code semantics
+    int32_t set_n_ctx(uint32_t n_ctx_new);
 
     void set_adapters_lora(llama_adapter_lora ** adapters, size_t n_adapters, float * scales);
 
