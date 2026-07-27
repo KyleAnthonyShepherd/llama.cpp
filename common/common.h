@@ -724,6 +724,11 @@ struct common_params {
     llama_progress_callback load_progress_callback = NULL;
     void *                  load_progress_callback_user_data = NULL;
     bool no_alloc = false; // Don't allocate model buffers
+
+    // dynamic KV cache growth (see llama_set_n_ctx()); appended at the end for the same
+    // reason llama_context_params appends new fields rather than inserting them
+    int32_t n_ctx_max       =     0; // upper bound for automatic KV cache growth; 0 = disabled
+    float   ctx_grow_factor =  1.5f; // growth multiplier used by automatic growth inside llama_decode()
 };
 
 // call once at the start of a program if it uses libcommon

@@ -69,6 +69,21 @@ public:
         reset();
     }
 
+    // extend the cells to hold n cells total, preserving the existing prefix as-is
+    // (used, positions, seq membership, seq_pos bookkeeping) - unlike resize(), this
+    // does not reset anything; the newly appended cells are empty
+    // note: n must be >= size()
+    void grow(uint32_t n) {
+        assert(n >= pos.size());
+
+        pos.resize(n, -1);
+        ext.resize(n);
+        shift.resize(n, 0);
+        seq.resize(n);
+
+        // used, seq_pos are unaffected: they only reference existing (now still valid) indices
+    }
+
     bool is_empty(uint32_t i) const {
         assert(i < pos.size());
         assert((pos[i] < 0 && pos[i] == -1) || pos[i] >= 0);

@@ -276,9 +276,19 @@ llama_context::llama_context(
         }
     }
 
+    cparams.n_ctx_max       = params.n_ctx_max == 0 ? 0 : GGML_PAD(params.n_ctx_max, 256);
+    cparams.ctx_grow_factor = params.ctx_grow_factor <= 0.0f ? 1.5f : params.ctx_grow_factor;
+
+    if (cparams.n_ctx_max != 0 && cparams.n_ctx_max < cparams.n_ctx) {
+        LLAMA_LOG_WARN("%s: n_ctx_max (%u) is smaller than n_ctx (%u) - disabling automatic growth\n",
+                __func__, cparams.n_ctx_max, cparams.n_ctx);
+        cparams.n_ctx_max = 0;
+    }
+
     LLAMA_LOG_INFO("%s: n_seq_max     = %u\n",   __func__, cparams.n_seq_max);
     LLAMA_LOG_INFO("%s: n_ctx         = %u\n",   __func__, cparams.n_ctx);
     LLAMA_LOG_INFO("%s: n_ctx_seq     = %u\n",   __func__, cparams.n_ctx_seq);
+    LLAMA_LOG_INFO("%s: n_ctx_max     = %u\n",   __func__, cparams.n_ctx_max);
     LLAMA_LOG_INFO("%s: n_batch       = %u\n",   __func__, cparams.n_batch);
     LLAMA_LOG_INFO("%s: n_ubatch      = %u\n",   __func__, cparams.n_ubatch);
     LLAMA_LOG_INFO("%s: causal_attn   = %d\n",   __func__, cparams.causal_attn);
@@ -717,6 +727,10 @@ uint32_t llama_context::n_ctx_seq() const {
     return cparams.n_ctx_seq;
 }
 
+uint32_t llama_context::n_ctx_max() const {
+    return cparams.n_ctx_max;
+}
+
 uint32_t llama_context::n_batch() const {
     return cparams.n_batch;
 }
@@ -795,6 +809,76 @@ bool llama_context::memory_update(bool optimize) {
     }
 
     return true;
+}
+
+int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
+    n_ctx_new = GGML_PAD(n_ctx_new, 256);
+
+    if (n_ctx_new <= cparams.n_ctx) {
+        LLAMA_LOG_WARN("%s: n_ctx_new (%u) must be greater than the current n_ctx (%u)\n", __func__, n_ctx_new, cparams.n_ctx);
+        return -1;
+    }
+
+    if (!memory) {
+        LLAMA_LOG_WARN("%s: no memory module - nothing to grow\n", __func__);
+        return -1;
+    }
+
+    // recompute n_ctx_seq with the exact formula the constructor uses (this is the value
+    // actually sized by create_memory(), not n_ctx itself)
+    uint32_t n_ctx_seq_new = n_ctx_new;
+    if (!cparams.kv_unified) {
+        n_ctx_seq_new = GGML_PAD(n_ctx_new / cparams.n_seq_max, 256);
+        if (n_ctx_seq_new == 0) {
+            LLAMA_LOG_WARN("%s: n_ctx_new (%u) is too small for n_seq_max (%u)\n", __func__, n_ctx_new, cparams.n_seq_max);
+            return -1;
+        }
+        n_ctx_new = n_ctx_seq_new * cparams.n_seq_max;
+    }
+
+    if (!memory->resize(n_ctx_seq_new)) {
+        LLAMA_LOG_WARN("%s: memory->resize(%u) failed (unsupported memory topology or allocation failure)\n", __func__, n_ctx_seq_new);
+        return -2;
+    }
+
+    const uint32_t n_ctx_old     = cparams.n_ctx;
+    const uint32_t n_ctx_seq_old = cparams.n_ctx_seq;
+
+    cparams.n_ctx     = n_ctx_new;
+    cparams.n_ctx_seq = n_ctx_seq_new;
+
+    LLAMA_LOG_INFO("%s: growing n_ctx: %u -> %u (n_ctx_seq: %u -> %u)\n",
+            __func__, n_ctx_old, n_ctx_new, n_ctx_seq_old, n_ctx_seq_new);
+
+    // re-reserve the worst-case graph and invalidate the scheduler/graph-reuse caches
+    // right away - mirrors the tail of memory_update() above (same category of change:
+    // the memory object's structure changed under the scheduler's feet). This must
+    // happen synchronously here (not via the lazy sched_need_reserve flag some other
+    // mutators use) because set_n_ctx() can be called mid-decode() (the auto-grow hook),
+    // after sched_reserve() already ran once at the top of this decode() call - setting
+    // the flag alone would only take effect on the *next* llama_decode() call.
+    {
+        const auto mctx = memory->init_full();
+        if (!mctx) {
+            LLAMA_LOG_ERROR("%s: failed to initialize memory context after growth\n", __func__);
+            return -2;
+        }
+
+        const uint32_t n_seqs         = cparams.n_seq_max;
+        const uint32_t n_tokens       = std::min(cparams.n_ctx, cparams.n_ubatch);
+        const uint32_t n_outputs_max  = std::min(n_tokens, cparams.n_outputs_max);
+
+        if (!graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get())) {
+            // per-plan policy: hard-fail without rolling back the (already grown) KV
+            // cache - the context is still usable, just reserve-degraded until the next
+            // successful reserve (e.g. from a subsequent growth or an explicit mutator)
+            LLAMA_LOG_ERROR("%s: failed to reserve graph after growing n_ctx - context remains usable at the new KV size "
+                    "but compute buffers are not pre-reserved for it\n", __func__);
+            return -2;
+        }
+    }
+
+    return 0;
 }
 
 enum llama_pooling_type llama_context::pooling_type() const {
@@ -1743,6 +1827,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
     sched_reserve();
 
     bool did_optimize = false;
+    bool did_grow     = false;
 
     // handle any pending shifts/copies
     memory_update(false);
@@ -1772,6 +1857,26 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
                         if (memory_update(true)) {
                             LLAMA_LOG_DEBUG("%s: retrying batch size %d after cache optimization\n", __func__, balloc->get_n_tokens());
+
+                            continue;
+                        }
+                    }
+
+                    // auto-grow: only for the single-sequence topology growth supports (see
+                    // llama_kv_cache::resize()); if unsupported, memory->resize() inside
+                    // set_n_ctx() simply fails and this falls through to the existing error
+                    // path below, so this is safe to attempt unconditionally when enabled.
+                    if (!did_grow && cparams.n_seq_max == 1 && cparams.n_ctx_max > cparams.n_ctx) {
+                        did_grow = true;
+
+                        const llama_pos pos_max  = memory->seq_pos_max(0); // -1 if seq 0 has no cells yet
+                        const uint32_t  n_needed = (uint32_t) (pos_max + 1) + balloc->get_n_tokens();
+
+                        const uint32_t n_target = std::min(cparams.n_ctx_max,
+                                std::max(n_needed, (uint32_t) (cparams.n_ctx * cparams.ctx_grow_factor)));
+
+                        if (n_target > cparams.n_ctx && set_n_ctx(n_target) == 0) {
+                            LLAMA_LOG_INFO("%s: retrying batch size %d after growing n_ctx\n", __func__, balloc->get_n_tokens());
 
                             continue;
                         }
@@ -3468,6 +3573,8 @@ llama_context_params llama_context_default_params() {
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
         /*.ctx_other                   =*/ nullptr,
+        /*.n_ctx_max                   =*/ 0,
+        /*.ctx_grow_factor             =*/ 1.5f,
     };
 
     return result;
@@ -3576,6 +3683,10 @@ uint32_t llama_n_ctx_seq(const llama_context * ctx) {
     return ctx->n_ctx_seq();
 }
 
+uint32_t llama_n_ctx_max(const llama_context * ctx) {
+    return ctx->n_ctx_max();
+}
+
 uint32_t llama_n_batch(const llama_context * ctx) {
     return ctx->n_batch();
 }
@@ -3633,6 +3744,10 @@ void llama_set_embeddings(llama_context * ctx, bool embeddings) {
 
 void llama_set_causal_attn(llama_context * ctx, bool causal_attn) {
     ctx->set_causal_attn(causal_attn);
+}
+
+int32_t llama_set_n_ctx(llama_context * ctx, uint32_t n_ctx_new) {
+    return ctx->set_n_ctx(n_ctx_new);
 }
 
 void llama_set_warmup(llama_context * ctx, bool warmup) {

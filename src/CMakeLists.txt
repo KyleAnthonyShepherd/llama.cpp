@@ -59,4 +59,12 @@ if (BUILD_SHARED_LIBS)
     set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_compile_definitions(llama PRIVATE LLAMA_BUILD)
     target_compile_definitions(llama PUBLIC  LLAMA_SHARED)
+
+    # only LLAMA_API-marked symbols are exported on Windows by default (unlike ELF shared
+    # libs, which export everything unless told otherwise) - internal classes like
+    # llama_kv_cache are invisible to a separate executable linking against llama.dll
+    # unless this is set. matches the same workaround already used for llama-common
+    # (common/CMakeLists.txt) for the same underlying reason.
+    # TODO: make fine-grained exports in the future
+    set_target_properties(llama PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
