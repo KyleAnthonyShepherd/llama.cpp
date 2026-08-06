@@ -35,8 +35,14 @@ probe() {
     local name="$1"; shift
     echo
     echo "=== $name : $* ==="
+    # -lv 4 is REQUIRED. common_get_verbosity maps GGML_LOG_LEVEL_INFO to
+    # LOG_LEVEL_TRACE (4), not LOG_LEVEL_INFO (common/log.cpp:444), and the default
+    # threshold is 3 - so every library INFO line, including the "model buffer size"
+    # lines this whole script exists to read, is dropped unless verbosity >= 4.
+    # -fit off skips the fitter, which would only abort anyway once -ngl is explicit
+    # (common/fit.cpp:377) after wasting a probe load.
     local rc=0
-    "$RUNNER" -m "$MODEL" -c "$CTX" -ngl "$NGL" -n 1 -no-cnv -p hi "$@" \
+    "$RUNNER" -m "$MODEL" -c "$CTX" -ngl "$NGL" -n 1 -no-cnv -p hi -lv 4 -fit off "$@" \
         > "$OUT/$name.log" 2>&1 < /dev/null || rc=$?
     echo "  exit code: $rc"
 

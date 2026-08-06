@@ -456,4 +456,15 @@ actually measure:
    `"n_gpu_layers already set by user, abort"` (`common/fit.cpp:377-378`), caught and
    downgraded to a warning (`common/fit.cpp:805-807`). Useful for controlled sweeps, but it
    means "`-ngl 99` plus `--fit`" is not a safe default on a 6 GB card - the fitter bails
-   and all 65 layers are attempted on the GPU.
+   and all 65 layers are attempted on the GPU. Pair explicit `-ngl` with `-fit off` to skip
+   the wasted probe load.
+4. **Library INFO logs are invisible at default verbosity.** `common_get_verbosity` maps
+   `GGML_LOG_LEVEL_INFO` to `LOG_LEVEL_TRACE` (4), not `LOG_LEVEL_INFO`
+   (`common/log.cpp:441-451`), against a default threshold of 3 (`common/common.h:523`).
+   Everything the loader prints - `llama_model_loader:`, `print_info:`, `load_tensors:`,
+   the per-buffer sizes, and `common_memory_breakdown_print`'s table - needs `-lv 4`.
+   Only WARN and ERROR appear by default, so a run that logs nothing looks identical to a
+   run that succeeded quietly.
+5. **`llama-cli` is the interactive TUI client**, not the old one-shot tool. It forces
+   `params.verbosity = LOG_LEVEL_ERROR` (`tools/cli/cli.cpp:36`) and does not act on
+   `-no-cnv`. Use `llama-completion` for anything scripted.

@@ -40,8 +40,16 @@ record_env "$OUT/env.txt"
 NGL="${NGL:-}"
 NGL_ARGS=()
 if [ -n "$NGL" ]; then
-    NGL_ARGS=(-ngl "$NGL")
+    # -fit off: with -ngl explicit the fitter aborts anyway (common/fit.cpp:377), so
+    # skip its probe load rather than pay for it and log a confusing warning.
+    NGL_ARGS=(-ngl "$NGL" -fit off)
 fi
+
+# -lv 4 is REQUIRED to see any library INFO output. common_get_verbosity maps
+# GGML_LOG_LEVEL_INFO to LOG_LEVEL_TRACE (4), not LOG_LEVEL_INFO (common/log.cpp:444),
+# and the default threshold is 3 - so the loader's "model buffer size" lines and the
+# memory breakdown table are both invisible without it.
+LOG_ARGS=(-lv 4)
 
 PROMPT="${PROMPT:-Explain in detail how a memory-mapped file differs from a heap allocation.}"
 
@@ -61,7 +69,7 @@ run_case() {
     local t_start
     t_start=$(date +%s)
 
-    "$bin" -m "$MODEL" -c "$N_CTX" -n "$N_GEN" -no-cnv -st \
+    "$bin" -m "$MODEL" -c "$N_CTX" -n "$N_GEN" -no-cnv -st "${LOG_ARGS[@]}" \
         -p "$PROMPT" "$@" > "$OUT/$name.log" 2>&1 < /dev/null &
     local pid=$!
 
@@ -111,7 +119,7 @@ run_case "mmap-mlock"    "$RUNNER" "${NGL_ARGS[@]}" -lm mmap+mlock || true
 # C. MTP. --spec-type is registered for cli/server/speculative but NOT completion
 # (common/arg.cpp:4102), so this one case has to go through llama-cli. Pass -v to undo
 # the TUI's LOG_LEVEL_ERROR default (tools/cli/cli.cpp:36) or the log is empty.
-MTP_ARGS=(-nr --spec-type draft-mtp -v)
+MTP_ARGS=(-nr --spec-type draft-mtp)
 if [ -n "$MTP_MODEL" ]; then
     MTP_ARGS+=(-md "$MTP_MODEL")
 fi

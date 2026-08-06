@@ -65,6 +65,19 @@ free win.
 If `rss_anon` is small in *both* runs, my section 1.2 analysis is wrong and the
 swap you predicted comes from somewhere else. Send me the CSVs either way.
 
+## Two logging gotchas that will silently give you empty results
+
+**1. `-lv 4` is mandatory to see any library log line.** `common_get_verbosity` maps
+`GGML_LOG_LEVEL_INFO` to `LOG_LEVEL_TRACE` (4), *not* `LOG_LEVEL_INFO`
+(`common/log.cpp:441-451`), and the default threshold is 3 (`common/common.h:523`). So
+every `LLAMA_LOG_INFO` from the library - the whole `llama_model_loader:` /
+`print_info:` / `load_tensors:` block, including the per-buffer "model buffer size"
+lines and the memory breakdown table - is dropped by default. Only WARN and ERROR get
+through, which is why a failing run looks like a silent one. All the scripts here pass
+`-lv 4`.
+
+**2. `llama-cli` is worse still** - see below.
+
 ## Use `llama-completion`, never `llama-cli`, for measurement
 
 `llama-cli` is the interactive TUI client. It sets `params.verbosity = LOG_LEVEL_ERROR`
