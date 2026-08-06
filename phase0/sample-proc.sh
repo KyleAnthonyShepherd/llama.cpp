@@ -12,6 +12,11 @@
 #   vm_swap   - actually swapped out. Should stay at ~0 on the mmap path.
 #   majflt    - major faults, cumulative. This is the real cost signal once the
 #               CPU-side working set exceeds page cache.
+#
+# Note on host_avail_mb: MemAvailable counts reclaimable page cache as available, and
+# the mmap'd weights ARE reclaimable page cache. So it stays high precisely when those
+# weights are about to be evicted, and it is NOT a useful pressure signal here. Watch
+# majflt instead.
 set -euo pipefail
 
 PID="${1:?usage: sample-proc.sh <pid> <out.csv> [interval]}"

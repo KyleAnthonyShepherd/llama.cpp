@@ -142,11 +142,16 @@ done
 
 echo
 echo "read it like this:"
-echo "  default vs norepack: a large peak_anon in 'default' that moves to peak_file"
-echo "    in 'norepack' confirms PLAN section 1.2 - repack is what makes the CPU-side"
-echo "    weights swappable."
-echo "  swap_mb > 0 anywhere means we are genuinely paging, not just evicting."
-echo "  the mtp case's gpu_mb minus the default case's gpu_mb is the VRAM that"
-echo "    llama-fit-params cannot see (PLAN section 3.2)."
+echo "  peak_anon staying small (well under 1 GiB) in every case means the host-side"
+echo "    weights are on the mmap path, not copied - that is the good outcome, and it is"
+echo "    what was measured on 2026-08-06. A multi-GiB peak_anon would mean repack or a"
+echo "    pinned-host buffer took over (PLAN section 1.2)."
+echo "  swap_mb identical across cases is baseline swap from other processes, not"
+echo "    something llama.cpp caused. Watch whether it GROWS with the case, not whether"
+echo "    it is nonzero."
+echo "  majflt is the real pressure signal - MemAvailable is not, because clean mmap'd"
+echo "    weights count as reclaimable and keep it looking healthy."
+echo "  the mtp case is expected to be FASTER despite fewer GPU layers, and to show a"
+echo "    much larger recurrent-state allocation (n_rs_seq goes 0 -> 3)."
 echo
 echo "results in $OUT"

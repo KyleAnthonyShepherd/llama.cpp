@@ -87,9 +87,13 @@ echo "================================================================"
 echo "verdict"
 echo "================================================================"
 for f in "$OUT"/*.log; do
+    [ "$(basename "$f")" = "version.txt" ] && continue
     n=$(basename "$f" .log)
-    types=$(grep 'model buffer size' "$f" | awk '{print $2}' | sort -u | tr '\n' ' ')
-    printf "  %-18s %s\n" "$n" "${types:-<none>}"
+    # The log line is "<ts> I load_tensors:   <BUFT> model buffer size = N MiB", so the
+    # buffer-type name is the token immediately before "model buffer size".
+    types=$(grep -o '[A-Za-z0-9_]* model buffer size' "$f" | awk '{print $1}' | sort -u | tr '\n' ' ')
+    host=$(awk '/model buffer size/ && !/CUDA[0-9]/ {s+=$(NF-1)} END{printf "%.0f", s}' "$f")
+    printf "  %-18s host=%6s MiB   %s\n" "$n" "$host" "${types:-<none>}"
 done
 echo
 echo "Carry whichever configuration shows CPU_Mapped for the bulk of the host-side"

@@ -53,9 +53,108 @@ Corrected, a 5000 MiB weight budget buys **`-ngl 17`** (output + the last 16 blo
 4897 MiB), not the "20 trailing layers" the first run printed.
 
 Resulting split at `-ngl 17`: ~4.9 GiB of weights on the GPU, ~11.8 GiB on the CPU. On
-16 GiB of RAM that leaves roughly 3 GiB of headroom - **this fits without swapping, as
-long as the CPU-side weights stay on the mmap path.** Which is exactly what section 1.2
-is about, and is now the single load-bearing unknown.
+16 GiB of RAM that leaves roughly 3 GiB of headroom.
+
+**Measured and confirmed**, `-ngl 17`, no MTP: `CUDA0` 4643.69 MiB + `CPU_Mapped`
+12171.07 MiB. The prediction above was 4897.5 MiB for the GPU including the MTP block;
+subtract the 254.2 MiB MTP block that is skipped without `--spec-type draft-mtp` and the
+prediction is 4643.3 MiB against 4643.69 measured - **a 0.4 MiB error**. The byte model
+in `02-gguf-layout.py` can be trusted for planning.
+
+And the host side is entirely `CPU_Mapped`, i.e. clean file-backed pages. **It fits, and
+it does not swap.** See the verdict box in section 1.2.
+
+### Full run, default fitter, `-c 8192` (`phase0/04-residency.sh`, case `default`)
+
+Hardware turned out smaller than assumed: **GTX 1660 Ti, 5748 MiB total, 5522 MiB free**
+at fit time - not 6144. Turing (`ARCHS = 750`), no tensor cores.
+
+The fitter chose **`-ngl 13`** (output layer + 12 blocks) under the default 1024 MiB
+margin: `offloaded 13/66 layers`, `CPU_Mapped 13157.83` + `CUDA0 3656.93` MiB.
+
+Final breakdown: `CUDA0 5748 = 1354 free + (4290 = 3656 model + 120 context + 513
+compute) + 102 unaccounted`.
+
+**Three predictions confirmed to the megabyte:**
+
+| quantity | predicted | measured |
+|---|---|---|
+| KV total at `n_ctx=8192` | 4.0 KiB/tok/layer x 16 layers x 8192 = 512 MiB | `llama_kv_cache: size = 512.00 MiB (8192 cells, 16 layers)` |
+| KV on GPU | 3 attention layers in blocks 52-63 x 32 MiB = 96 MiB | `CUDA0 KV buffer size = 96.00 MiB` (CPU 416.00) |
+| recurrent state, 1 seq | 3.12 MiB x 48 GDN layers = ~150 MiB, constant in ctx | `llama_memory_recurrent: size = 149.62 MiB`, `S (f32) 144.00` + `R (f32) 5.62` |
+
+**Section 0.2 confirmed directly from the fitter's own trace.** Every probe logs
+`n_part= 0`, the header reads `filling dense layers back-to-front`, and step 4 never
+runs. The fitter emitted zero tensor overrides. Whole-layer granularity, as predicted.
+
+Measured residency, matching the section 1.2 verdict: `peak_rss_anon 722 MiB`,
+`peak_rss_file 14869 MiB`, `peak_vm_swap 132 MiB`. Nothing large is anonymous.
+
+Throughput baseline: **pp 4.07 t/s, tg 2.02 t/s.**
+
+### Two new findings from this run
+
+1. **The default margin is stranding ~1.3 GiB of VRAM.** The fitter stopped at 13 layers
+   with `1354 MiB free`; its target was `4498 = 5522 free - 1024 margin`, and it used
+   4290, so 208 MiB was stranded *inside* the target on top of the 1024 MiB margin
+   itself. Layer 14 needed only 230 MiB more. On a headless box the margin is far larger
+   than necessary - `-fitt` is now the highest-value zero-code knob, worth roughly four
+   more layers.
+
+2. **`graph splits = 851 (with bs=512), 82 (with bs=1)`.** Placement is *contiguous*
+   (blocks 52-63 on GPU), so a naive expectation is a handful of splits. 851 means the
+   scheduler is offloading individual large-batch ops to the GPU and streaming
+   CPU-resident weights across PCIe per op. That is very likely what caps prompt
+   processing at 4.07 t/s on a 1660 Ti. `-nopo`/`--no-op-offload` and `-ub` are the
+   levers, and neither was in the original plan. Added to the sweep.
+
+### MTP is the headline result: +70% generation, for free
+
+`--spec-type draft-mtp`, same `-c 8192`, fitter left to choose:
+
+| | default | `--spec-type draft-mtp` |
+|---|---|---|
+| chosen `-ngl` | 13 (output + 12 blocks) | **11** (output + 10 blocks) |
+| GPU model weights | 3656.93 MiB | 3424.06 MiB |
+| host weights | 13157.83 MiB | 13644.91 MiB |
+| prompt eval | 4.07 t/s | **4.41 t/s** |
+| **generation** | **2.02 t/s** | **3.43 t/s (+70%)** |
+
+It wins *despite* having two fewer layers on the GPU. Draft acceptance was **0.800**
+(44 accepted / 55 generated), mean accepted length **3.32**, per-position
+`(0.947, 0.737, 0.632)`.
+
+That makes sense for this configuration: 13 GiB of weights sit in host RAM and
+generation is bandwidth-bound, so verifying ~3.3 tokens per pass over those weights is
+close to a 3x reduction in the dominant cost. **`--spec-type draft-mtp` should be the
+default configuration on this box**, and it moves MTP from "question 3, nice to have" to
+the single largest win found so far.
+
+Three memory effects worth knowing, all measured:
+
+- **MTP quadruples the target context's recurrent state.** `n_rs_seq` goes 0 -> 3 (extra
+  slots for draft rollback), and `llama_memory_recurrent` grows 149.62 -> **598.50 MiB**
+  (S 576.00 + R 22.50). On a hybrid arch with 48 GDN layers this is the single biggest
+  MTP cost - far larger than the 162 MiB draft context itself. It is fitted correctly,
+  but it is why the fitter dropped from 13 layers to 11.
+- **The compute buffer shrinks, partly offsetting it**: `CUDA0 compute` 513.01 ->
+  **183.55 MiB**, because the server sets `n_outputs_max = 4` instead of 2048.
+- The draft context is cheap and lands entirely on the GPU: `CUDA0 KV 32.00 MiB` over
+  1 layer, plus 130.02 MiB compute.
+
+### `mmap+mlock` is not viable, as expected
+
+`failed to mlock 216412160-byte buffer (after previously locking 2064384000 bytes):
+Cannot allocate memory` - `RLIMIT_MEMLOCK` caps out around 2 GiB, so only ~2 of the
+13.2 GiB got locked. It also produced the worst load time (43.6 s) and worst prompt eval
+(3.80 t/s). Do not use it; raising `ulimit -l` to cover 13 GiB on a 16 GiB box would be
+actively harmful anyway, since locked pages cannot be reclaimed.
+
+**Caveat on `MemAvailable`:** it read 14171 MiB at peak, which looks like plenty of
+headroom but is misleading - clean mmap'd page cache counts as "available", so the metric
+stays high precisely when the weights are about to be evicted. The signal to watch is
+`majflt`, which hit **20060** for this run (system-wide `pgmajfault` delta 23672). That
+is real re-reading from disk during generation.
 
 ---
 
@@ -130,10 +229,52 @@ split is only meaningful once you know which bytes are file-backed and which are
 
 There is no whole-model host staging step on any path. Good.
 
-### 1.2 The real trap: `--repack` silently converts your CPU-side weights into anonymous RAM
+### 1.2 The repack trap - MEASURED, and it does not fire by default
 
-This is the mechanism that produces the ~2 GB swap hit you predicted, and it is not the
-pipeline - it is buffer-type selection.
+> **VERDICT (2026-08-06, measured on the target machine): this section's central
+> hypothesis is refuted for the default configuration.** `phase0/03b-buftypes.sh` at
+> `-ngl 17`, `-c 4096`:
+>
+> | config | buffer types | host-side |
+> |---|---|---|
+> | *(default)* | `CPU_Mapped` 12171.07 + `CUDA0` 4643.69 | **12171 MiB, all mmap** |
+> | `-nr` | identical | 12171 MiB |
+> | `-nr --no-host` | identical | 12171 MiB |
+> | `--no-host` | `CPU_Mapped` 12171.07 + **`CPU_REPACK` 7036.88** + `CUDA0` 4643.69 | **19208 MiB** |
+>
+> The default already takes the mmap path for 100% of the host-side weights.
+> `CPU_Mapped` + `CUDA0` = 16815 MiB against 16827 MiB of loadable weights (file total
+> minus the 254 MiB MTP block, which is skipped without `--spec-type draft-mtp`) - a
+> 12 MiB residual. Nothing is being copied.
+>
+> Consequences:
+> - **Do nothing.** The default configuration is the correct one. There is no Phase 1a
+>   repack tuning to do.
+> - **`-nr` is a no-op here**, so the repack-vs-throughput trade this section agonised
+>   over never arises.
+> - **`--no-host` is actively harmful and my earlier recommendation to try it was
+>   wrong.** On its own it adds 7037 MiB of `CPU_REPACK` - a real, anonymous copy - on
+>   top of the unchanged 12171 MiB mapping, for 19.2 GiB of host-side demand on a 16 GiB
+>   box. That is the swap scenario, manufactured by the flag meant to avoid it.
+>
+> **Unexplained, and left open:** why removing the pinned-host entry from `cpu_buft_list`
+> causes the repack buft to win, when no `CUDA_Host` buffer is ever allocated in the
+> default case either. Both runs should reach the repack entry by the same path
+> (`common/fit.cpp` is not involved; `select_weight_buft` just walks the list). Since the
+> default is already optimal this does not block anything, but the flag's help text
+> ("bypass host buffer allowing extra buffers to be used") suggests the interaction is
+> intentional and I do not yet understand the mechanism.
+>
+> The remaining live item in section 1 is **1.4 (`MAP_POPULATE`)**, which is untested.
+
+The reasoning that led to the hypothesis is kept below, because the buffer-type
+priority it documents is real and still governs what happens under `--no-host`, `-ot`,
+and on machines where the mmap path is unavailable.
+
+---
+
+This is the mechanism that *could* produce a swap hit, and it is not the pipeline - it is
+buffer-type selection.
 
 > **Correction (2026-08-06):** an earlier draft of this section framed the trap as
 > *override*-triggered. That was too narrow. Every CPU-resident layer uses
@@ -316,20 +457,35 @@ and its own compute/scheduler buffers (`NOTES.md` Part 1 item 10, confirmed inde
 from both the `create_memory` and `common/speculative.cpp` sides). None of that appears in
 that breakdown.
 
-So `--fit` will over-commit the 6 GB card whenever MTP is in play. On a card with slack this
-is invisible; at 6 GB it is the difference between running and OOM.
+> **CORRECTION (2026-08-06, measured): this section was wrong, and Phase 3 is mostly
+> already done in-tree.** The server path - which `llama-cli` uses - *does* account for
+> the MTP context. `tools/server/server-context.cpp:1150-1198` runs a **second**
+> `common_get_device_memory_data` probe against the draft/MTP config and adds
+> `model + context + compute` per device into `params_base.fit_params_target[i]`, i.e. it
+> inflates the fitter's margin by the MTP context's measured cost.
+>
+> Observed on the target machine: margin went `1024 -> 1186 MiB`, exactly
+> `1024 + 162.02`, matching the logged `[spec] estimated memory usage of MTP context is
+> 162.02 MiB`. And that estimate was accurate: the draft context actually allocated
+> `KV 32.00 MiB (8192 cells, 1 layer)` + `compute 130.02 MiB` = 162 MiB.
+>
+> The extra recurrent state MTP forces on the *target* context is seen too, because the
+> probe uses the same cparams: the initial probe reported `context = 1110 MiB` with MTP
+> vs `661 MiB` without, and the measured `llama_memory_recurrent` grew from 149.62 to
+> 598.50 MiB - a 449 MiB delta that matches `1110 - 661` exactly.
+>
+> **What remains is only a tooling gap, not a correctness gap:** the standalone
+> `llama-fit-params` binary still cannot be asked to model MTP, because `--mtp` is
+> registered only for `LLAMA_EXAMPLE_DOWNLOAD` (`common/arg.cpp:3009`) and `--spec-type`
+> only for speculative/server/cli (`common/arg.cpp:4102`), and options outside the
+> current example are never registered (`common/arg.cpp:1385`) so their env vars are not
+> consulted either. Low value - registering `--spec-type` for `LLAMA_EXAMPLE_FIT_PARAMS`
+> would be a one-line change, but the server already does the right thing.
 
-**It is worse than an under-count: `llama-fit-params` cannot be asked about MTP at all.**
-`--mtp` is registered only for `LLAMA_EXAMPLE_DOWNLOAD` (`common/arg.cpp:3009`) and
-`--spec-type` only for speculative/server/cli (`common/arg.cpp:4102`). Options outside the
-current example are never registered (`common/arg.cpp:1385`), and since env-var application
-iterates the registered option list, `LLAMA_ARG_SPEC_TYPE` does not work around it either.
-So there is no invocation of the fitting tool that models an MTP run.
+The original (incorrect) reasoning follows, kept for the record.
 
-Phase 3 therefore has two parts: register `--spec-type` for `LLAMA_EXAMPLE_FIT_PARAMS`, and
-make the probe build the MTP context. Until then, MTP VRAM has to be measured empirically -
-`phase0/04-residency.sh` does this by diffing `nvidia-smi` peak usage between a plain
-`llama-cli` run and a `--spec-type draft-mtp` run.
+`--fit` would over-commit the card whenever MTP is in play, if nothing compensated. On a
+card with slack this is invisible; at 6 GB it is the difference between running and OOM.
 
 ### 3.3 Carried-over open item, now on the critical path
 
@@ -393,11 +549,16 @@ order. Get the real GGUF onto the server and capture:
 
 ### Phase 1 - cheap wins
 
-- **1a (config only):** `-nr`, tuned `-fitt`, tuned `-fitc`. Measure.
-- **1b (~30 lines):** bounded prefetch. Add a `--prefetch` / `--no-prefetch` arg and thread
-  the byte count through `init_mappings` instead of the hardcoded `true` at
-  `src/llama-model.cpp:1532`. Best version prefetches only the CPU-resident byte ranges,
-  which the loader already tracks in `mmaps_used` (`src/llama-model-loader.cpp:1565`).
+- ~~**1a (config only):** `-nr`, tuned `-fitt`, tuned `-fitc`.~~ **Mostly dropped.**
+  Measured: the default is already fully on the mmap path, `-nr` is a no-op, and
+  `--no-host` is harmful (section 1.2 verdict). What survives is `-fitt`/`-fitc` tuning,
+  which is about the margin, not about residency.
+- **1b (~30 lines):** bounded prefetch - **now the main Phase 1 item.** Add a
+  `--prefetch` / `--no-prefetch` arg and thread the byte count through `init_mappings`
+  instead of the hardcoded `true` at `src/llama-model.cpp:1532`. Best version prefetches
+  only the CPU-resident byte ranges, which the loader already tracks in `mmaps_used`
+  (`src/llama-model-loader.cpp:1565`). With 12.17 GiB mapped on a 16 GiB box,
+  `MAP_POPULATE` over the full 16.68 GiB file is exactly the wrong startup behaviour.
 
 ### Phase 2 - dense sub-layer fitting
 
@@ -408,10 +569,15 @@ names. Recovers up to a full layer of stranded VRAM.
 Touches shared upstream code and changes behavior for every dense model, so it needs care
 and its own before/after benchmark.
 
-### Phase 3 - MTP-aware fit probe
+### ~~Phase 3 - MTP-aware fit probe~~ - ALREADY DONE IN-TREE
 
-Have `common_get_device_memory_data_impl` also construct an MTP context when
-`mparams->load_mtp` is set, and sum both memory breakdowns. Contained to `common/fit.cpp`.
+Measured 2026-08-06: the server already runs a second memory probe for the MTP context and
+folds it into `fit_params_target` (`tools/server/server-context.cpp:1150-1198`), and the
+target context's extra recurrent state is fitted correctly too. See the correction box in
+section 3.2.
+
+All that remains is registering `--spec-type` for `LLAMA_EXAMPLE_FIT_PARAMS` so the
+standalone tool can model MTP - a one-line convenience, not a correctness fix.
 
 ### Phase 4 - growth headroom guard
 
