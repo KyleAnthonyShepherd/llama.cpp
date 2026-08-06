@@ -172,6 +172,8 @@ public:
     ggml_tensor * get_k_storage(int32_t il) const;
     ggml_tensor * get_v_storage(int32_t il) const;
 
+    const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
+
     //
     // graph_build API
     //
