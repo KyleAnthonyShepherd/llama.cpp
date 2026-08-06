@@ -108,6 +108,35 @@ Throughput baseline: **pp 4.07 t/s, tg 2.02 t/s.**
    processing at 4.07 t/s on a 1660 Ti. `-nopo`/`--no-op-offload` and `-ub` are the
    levers, and neither was in the original plan. Added to the sweep.
 
+### Build flags: +135% prompt processing on this card
+
+The GTX 1660 Ti is TU116 - Turing *without* tensor cores. The default build compiles the
+Turing MMA path anyway, and llama.cpp says so at startup
+(`ggml/src/ggml-cuda/ggml-cuda.cu:375-383`). Taking its advice:
+
+```
+cmake -B build-mmq -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CUDA_ARCHITECTURES="61-virtual;80-virtual" -DGGML_CUDA_FORCE_MMQ=ON
+```
+
+| build | pp256 |
+|---|---|
+| default | 32.24 +/- 2.78 t/s |
+| `GGML_CUDA_FORCE_MMQ`, Pascal arch | **75.82 +/- 2.62 t/s** |
+
+**+135%, a 2.35x speedup on prompt processing.** The tensor-core warning also disappears,
+confirming the arch selection took effect.
+
+Caveat: the two builds were at different commits (10314 vs 10319), so this is not a
+perfectly controlled A/B. The magnitude and the mechanism both make the flag the obvious
+cause, but a same-commit rebuild would close it properly if it ever matters.
+
+Expect **no material effect on generation**: at `bs=1` only ~13 ms of the ~495 ms token
+time is GPU-side (section above), so faster GPU matmul cannot move it. This is a
+prompt-processing win, which is exactly the half `-ngl` could not touch - pp was flat at
+32-34 t/s across ngl 13/15/17 because op-offload streams host weights to the GPU
+regardless of residency.
+
 ### MTP is the headline result: +70% generation, for free
 
 `--spec-type draft-mtp`, same `-c 8192`, fitter left to choose:

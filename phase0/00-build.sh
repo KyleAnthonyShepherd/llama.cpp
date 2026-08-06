@@ -20,13 +20,30 @@ if [ -z "$CUDA_ARCH" ]; then
     fi
 fi
 
-echo "=== configuring (CUDA arch: ${CUDA_ARCH:-native}) ==="
+# GTX 16xx (TU116/TU117) is Turing WITHOUT tensor cores, so the default Turing MMA
+# kernels perform badly. Forcing the Pascal MMQ path measured +135% on prompt processing
+# (32.24 -> 75.82 t/s) on a 1660 Ti. llama.cpp prints this advice itself at startup
+# (ggml/src/ggml-cuda/ggml-cuda.cu:375-383). Auto-enable it for those cards; set
+# FORCE_MMQ=0 to opt out or FORCE_MMQ=1 to force it on anything else.
+GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+FORCE_MMQ="${FORCE_MMQ:-}"
+if [ -z "$FORCE_MMQ" ]; then
+    case "$GPU_NAME" in
+        *"GTX 16"*) FORCE_MMQ=1 ;;
+        *)          FORCE_MMQ=0 ;;
+    esac
+fi
+
+echo "=== configuring (GPU: ${GPU_NAME:-unknown}, CUDA arch: ${CUDA_ARCH:-native}) ==="
 CMAKE_ARGS=(
     -B "$BUILD_DIR"
     -DGGML_CUDA=ON
     -DCMAKE_BUILD_TYPE=Release
 )
-if [ -n "$CUDA_ARCH" ]; then
+if [ "$FORCE_MMQ" = "1" ]; then
+    echo "  tensor-core-less Turing detected -> forcing the Pascal MMQ path"
+    CMAKE_ARGS+=(-DCMAKE_CUDA_ARCHITECTURES="61-virtual;80-virtual" -DGGML_CUDA_FORCE_MMQ=ON)
+elif [ -n "$CUDA_ARCH" ]; then
     CMAKE_ARGS+=(-DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH")
 fi
 

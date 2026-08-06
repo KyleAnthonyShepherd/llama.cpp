@@ -38,9 +38,20 @@ fi
 N_MAX_LIST="${N_MAX_LIST:-0 2 3 4 5 6}"
 PROMPT="${PROMPT:-Explain in detail how a memory-mapped file differs from a heap allocation.}"
 
-echo "model : $MODEL"
-echo "n_ctx : $N_CTX   n_gen: $N_GEN"
-echo "n_max : $N_MAX_LIST   (0 = MTP disabled, the baseline)"
+# Threads matter here for the same reason they matter in 05: the verify pass runs the
+# host-resident weights on the CPU. Measured on the 1660 Ti box, tg rose monotonically
+# 4 -> 12 threads without MTP, so the two levers should compose.
+THREADS="${THREADS:-}"
+THREAD_ARGS=()
+if [ -n "$THREADS" ]; then
+    THREAD_ARGS=(-t "$THREADS")
+fi
+
+echo "model   : $MODEL"
+echo "n_ctx   : $N_CTX   n_gen: $N_GEN"
+echo "n_max   : $N_MAX_LIST   (0 = MTP disabled, the baseline)"
+echo "threads : ${THREADS:-default}"
+echo "ngl     : ${NGL:-fitter chooses}"
 echo
 
 run_one() {
@@ -58,7 +69,7 @@ run_one() {
     drop_caches
 
     "$CLI" -m "$MODEL" -c "$N_CTX" -n "$N_GEN" -no-cnv -st -lv 4 \
-        "${NGL_ARGS[@]}" "${args[@]}" \
+        "${NGL_ARGS[@]}" "${THREAD_ARGS[@]}" "${args[@]}" \
         -p "$PROMPT" > "$OUT/$name.log" 2>&1 < /dev/null || echo "  (exited non-zero)"
 
     # llama-cli goes through the server path, so timings come from slot print_timing.
