@@ -22,6 +22,12 @@ NGL_LIST=0,4,8,12,16,20,24 ./05-ngl-sweep.sh
 Shared settings live in `config.sh` - model path, `N_CTX`, prompt sizes, and
 `DROP_CACHES`. Override by exporting before the call, e.g. `N_CTX=4096 ./03-fit.sh`.
 
+`02-gguf-layout.py` needs **no third-party packages** - not even numpy. It parses the
+GGUF metadata and tensor-info blocks itself with `struct`, and pulls the block-size
+table from the repo's own `gguf-py/gguf/constants.py` (which has no third-party
+imports) so the sizes cannot drift from the rest of the tree. The tensor data is
+never read, so it is fast even on an 18 GiB file.
+
 **Set `DROP_CACHES=1` if you have passwordless sudo.** Without dropping the page
 cache between runs, run 2 inherits run 1's cached weights and the residency
 comparison in `04` loses most of its meaning.
@@ -56,6 +62,15 @@ free win.
 
 If `rss_anon` is small in *both* runs, my section 1.2 analysis is wrong and the
 swap you predicted comes from somewhere else. Send me the CSVs either way.
+
+## A note on the `UD-Q4_K_XL` quant
+
+Unsloth's UD quants are mixed-precision - different tensors get different types.
+That does not weaken the repack concern in `PLAN` section 1.2, because the CPU
+repack path covers essentially the whole spread: `Q4_0`, `Q4_K`, `Q2_K`, `Q5_K`,
+`Q6_K`, `IQ4_NL`, `MXFP4` and `Q8_0` all have repack traits
+(`ggml/src/ggml-cpu/repack.cpp:4573-4699`), gated on `ne[1] % 8 == 0` for the AVX2
+path. So expect most large 2D weights to be repack-eligible regardless of the mix.
 
 ## Known tool limitations found while writing these
 

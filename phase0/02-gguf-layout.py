@@ -10,28 +10,144 @@ not answer from source alone:
     n_layer" is wrong)
   - how many trailing layers fit in a given VRAM budget (this is the quantum the
     fitter is stuck with for dense models)
-  - how big is the MTP module, and does it live in this file or a sidecar?
+  - are the MTP layers inside this file, or in a sidecar?
 
 Usage:
-    python3 02-gguf-layout.py /path/to/model.gguf [--vram-mib 5000]
+    python3 02-gguf-layout.py /path/to/model.gguf [--vram-mib 5000] [--json out.json]
 
-Requires the repo's gguf-py on the path; the script adds it automatically.
+No third-party dependencies. It parses the GGUF header itself (only the metadata and
+tensor-info blocks - the tensor data is never touched) and pulls the block-size table
+from the repo's own gguf-py/gguf/constants.py, which is numpy-free, so the sizes
+cannot drift from the rest of the tree.
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
+import struct
 import sys
 from collections import defaultdict
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO_ROOT, "gguf-py"))
-
-from gguf.gguf_reader import GGUFReader  # noqa: E402
-
 MIB = 1024 * 1024
 GIB = 1024 * 1024 * 1024
+
+
+def load_repo_constants():
+    """Load gguf-py/gguf/constants.py directly, bypassing the package __init__.
+
+    The package __init__ imports .lazy, which imports numpy. constants.py itself has
+    no third-party imports, so loading it by path keeps this script dependency-free.
+    """
+    path = os.path.join(REPO_ROOT, "gguf-py", "gguf", "constants.py")
+    if not os.path.isfile(path):
+        sys.exit(f"error: cannot find {path} - run this from inside the repo checkout")
+    spec = importlib.util.spec_from_file_location("_gguf_constants", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+C = load_repo_constants()
+QUANT_SIZES = C.GGML_QUANT_SIZES
+QUANT_NAMES = {int(t): t.name for t in C.GGMLQuantizationType}
+VT = C.GGUFValueType
+
+# GGUF scalar value type -> struct format character.
+SCALAR_FMT = {
+    int(VT.UINT8): "B", int(VT.INT8): "b",
+    int(VT.UINT16): "H", int(VT.INT16): "h",
+    int(VT.UINT32): "I", int(VT.INT32): "i",
+    int(VT.FLOAT32): "f", int(VT.BOOL): "?",
+    int(VT.UINT64): "Q", int(VT.INT64): "q",
+    int(VT.FLOAT64): "d",
+}
+
+
+class GGUFHeader:
+    """Minimal reader for the GGUF metadata and tensor-info blocks."""
+
+    def __init__(self, path):
+        self.path = path
+        self.fields = {}
+        self.tensors = []   # list of (name, dims, ggml_type, n_bytes)
+
+        with open(path, "rb") as f:
+            self.buf = f.read(64)
+            magic = struct.unpack("<I", self.buf[:4])[0]
+            if magic == C.GGUF_MAGIC:
+                self.bo = "<"
+            elif struct.unpack(">I", self.buf[:4])[0] == C.GGUF_MAGIC:
+                self.bo = ">"
+            else:
+                sys.exit(f"error: {path} is not a GGUF file (bad magic)")
+            f.seek(0)
+            self._f = f
+            self._read_all()
+
+    # -- primitives -----------------------------------------------------
+    def _r(self, fmt, size):
+        data = self._f.read(size)
+        if len(data) != size:
+            sys.exit("error: unexpected end of file while parsing the GGUF header")
+        return struct.unpack(self.bo + fmt, data)[0]
+
+    def _u32(self):
+        return self._r("I", 4)
+
+    def _u64(self):
+        return self._r("Q", 8)
+
+    def _str(self):
+        n = self._u64()
+        return self._f.read(n).decode("utf-8", errors="replace")
+
+    def _value(self, vtype):
+        if vtype == int(VT.STRING):
+            return self._str()
+        if vtype == int(VT.ARRAY):
+            elem = self._u32()
+            count = self._u64()
+            return [self._value(elem) for _ in range(count)]
+        fmt = SCALAR_FMT.get(vtype)
+        if fmt is None:
+            sys.exit(f"error: unknown GGUF value type {vtype}")
+        return self._r(fmt, struct.calcsize(fmt))
+
+    # -- structure ------------------------------------------------------
+    def _read_all(self):
+        self._u32()                     # magic, already validated
+        self.version = self._u32()
+        if self.version < 2:
+            sys.exit(f"error: GGUF v{self.version} uses 32-bit counts; only v2+ supported")
+        n_tensors = self._u64()
+        n_kv = self._u64()
+
+        for _ in range(n_kv):
+            key = self._str()
+            self.fields[key] = self._value(self._u32())
+
+        for _ in range(n_tensors):
+            name = self._str()
+            n_dims = self._u32()
+            dims = [self._u64() for _ in range(n_dims)]
+            ggml_type = self._u32()
+            self._u64()                 # data offset, unused here
+            self.tensors.append((name, dims, ggml_type, self._nbytes(dims, ggml_type)))
+
+    @staticmethod
+    def _nbytes(dims, ggml_type):
+        n_elems = 1
+        for d in dims:
+            n_elems *= d
+        try:
+            block_size, type_size = QUANT_SIZES[C.GGMLQuantizationType(ggml_type)]
+        except (KeyError, ValueError):
+            return 0
+        return n_elems * type_size // block_size
+
 
 # Metadata keys we care about, without the "<arch>." prefix (src/llama-arch.cpp).
 HPARAM_KEYS = [
@@ -57,24 +173,14 @@ HPARAM_KEYS = [
 BLK_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
 
 
-def field_value(field):
-    """Best-effort scalar/list extraction from a ReaderField."""
-    try:
-        val = field.contents()
-    except Exception:
-        return None
-    if isinstance(val, bytes):
-        return val.decode("utf-8", errors="replace")
-    return val
-
-
 def classify(tensor_names):
     """Classify a block by which tensors it owns (see src/models/qwen35.cpp)."""
     if any(n.startswith("nextn.") for n in tensor_names):
         return "MTP"
     if any(n.startswith("ssm_") for n in tensor_names):
         return "GDN"
-    if any(n in ("attn_q_norm.weight", "attn_k_norm.weight", "attn_output.weight") for n in tensor_names):
+    if any(n in ("attn_q_norm.weight", "attn_k_norm.weight", "attn_output.weight")
+           for n in tensor_names):
         return "ATTN"
     return "OTHER"
 
@@ -87,57 +193,67 @@ def main():
     ap.add_argument("--json", metavar="PATH", help="also write the raw layout as JSON")
     args = ap.parse_args()
 
-    reader = GGUFReader(args.model, "r")
-
-    # ---- metadata -------------------------------------------------------
-    arch = None
-    for name, field in reader.fields.items():
-        if name == "general.architecture":
-            arch = field_value(field)
-            break
+    g = GGUFHeader(args.model)
+    arch = g.fields.get("general.architecture")
 
     print("=" * 72)
     print(f"file : {args.model}")
     print(f"size : {os.path.getsize(args.model) / GIB:.2f} GiB")
-    print(f"arch : {arch}")
+    print(f"arch : {arch}   (gguf v{g.version}, {len(g.tensors)} tensors)")
     print("=" * 72)
     print()
+
+    # ---- metadata -------------------------------------------------------
     print("--- hparams ---")
     hp = {}
     for key in HPARAM_KEYS:
         full = f"{arch}.{key}" if arch else key
-        field = reader.fields.get(full)
-        if field is None:
+        if full not in g.fields:
             continue
-        val = field_value(field)
+        val = g.fields[full]
         hp[key] = val
-        if isinstance(val, (list, tuple)) and len(val) > 12:
-            shown = f"[{len(val)} values] {list(val[:12])} ..."
+        if isinstance(val, list) and len(val) > 12:
+            shown = f"[{len(val)} values] {val[:12]} ..."
         else:
             shown = val
         print(f"  {key:34s} = {shown}")
-
     missing = [k for k in HPARAM_KEYS if k not in hp]
     if missing:
         print(f"  (absent from file: {', '.join(missing)})")
     print()
 
+    # ---- quant mix ------------------------------------------------------
+    # UD-* quants are mixed precision, and repack eligibility is per type
+    # (ggml/src/ggml-cpu/repack.cpp:4573-4699), so the spread matters.
+    by_type = defaultdict(lambda: {"n": 0, "bytes": 0})
+    for _, _, t, nb in g.tensors:
+        e = by_type[QUANT_NAMES.get(t, f"type{t}")]
+        e["n"] += 1
+        e["bytes"] += nb
+    print("--- quant mix ---")
+    repackable = {"Q4_0", "Q4_K", "Q2_K", "Q5_K", "Q6_K", "IQ4_NL", "MXFP4", "Q8_0"}
+    for tname, e in sorted(by_type.items(), key=lambda kv: -kv[1]["bytes"]):
+        flag = "repackable" if tname in repackable else ""
+        print(f"  {tname:10s} n={e['n']:5d}  {e['bytes'] / GIB:6.2f} GiB  {flag}")
+    rp = sum(e["bytes"] for t, e in by_type.items() if t in repackable)
+    tot = sum(e["bytes"] for e in by_type.values())
+    print(f"  -> {rp / GIB:.2f} of {tot / GIB:.2f} GiB ({100.0 * rp / max(tot, 1):.0f}%) "
+          f"is repack-eligible by type")
+    print()
+
     # ---- tensors grouped by block --------------------------------------
-    blocks = defaultdict(dict)   # il -> {suffix: n_bytes}
-    non_block = {}               # name -> n_bytes
-    total = 0
-    for t in reader.tensors:
-        name = t.name
-        total += int(t.n_bytes)
+    blocks = defaultdict(dict)
+    non_block = {}
+    for name, _, _, nb in g.tensors:
         m = BLK_RE.match(name)
         if m:
-            blocks[int(m.group(1))][m.group(2)] = int(t.n_bytes)
+            blocks[int(m.group(1))][m.group(2)] = nb
         else:
-            non_block[name] = int(t.n_bytes)
+            non_block[name] = nb
 
     if not blocks:
-        print("no blk.* tensors found - is this the MTP sidecar rather than the main checkpoint?")
-        for name, nb in sorted(non_block.items()):
+        print("no blk.* tensors found - is this a sidecar rather than the main checkpoint?")
+        for name, nb in sorted(non_block.items(), key=lambda kv: -kv[1]):
             print(f"  {name:44s} {nb / MIB:9.1f} MiB")
         return
 
@@ -151,11 +267,10 @@ def main():
     rows = []
     for il in layer_ids:
         tensors = blocks[il]
-        cls = classify(tensors.keys())
         nb = sum(tensors.values())
         ffn = sum(v for k, v in tensors.items() if k.startswith("ffn_"))
-        rows.append({"il": il, "cls": cls, "bytes": nb, "ffn_bytes": ffn,
-                     "other_bytes": nb - ffn})
+        rows.append({"il": il, "cls": classify(tensors.keys()), "bytes": nb,
+                     "ffn_bytes": ffn, "other_bytes": nb - ffn})
 
     print("--- per-layer bytes ---")
     print(f"  {'il':>4} {'class':>6} {'total MiB':>10} {'ffn MiB':>9} {'attn/ssm MiB':>13}")
@@ -171,9 +286,9 @@ def main():
         by_cls[r["cls"]]["n"] += 1
         by_cls[r["cls"]]["bytes"] += r["bytes"]
     for cls, agg in sorted(by_cls.items()):
-        mean = agg["bytes"] / agg["n"] / MIB
-        print(f"  {cls:6s} n={agg['n']:3d}  total={agg['bytes'] / GIB:6.2f} GiB  mean/layer={mean:7.1f} MiB")
-    print(f"  {'ALL':6s} n={len(rows):3d}  total={total / GIB:6.2f} GiB "
+        print(f"  {cls:6s} n={agg['n']:3d}  total={agg['bytes'] / GIB:6.2f} GiB  "
+              f"mean/layer={agg['bytes'] / agg['n'] / MIB:7.1f} MiB")
+    print(f"  {'ALL':6s} n={len(rows):3d}  total={tot / GIB:6.2f} GiB "
           f"(incl. {sum(non_block.values()) / GIB:.2f} GiB non-block)")
     print()
 
@@ -194,7 +309,7 @@ def main():
     print("  (weights only - KV, recurrent state and compute buffers are on top)")
     tail = list(reversed(layer_ids))
     cum = 0
-    cum_at = {}   # n trailing layers -> cumulative bytes
+    cum_at = {}
     for n, il in enumerate(tail, start=1):
         cum += sum(blocks[il].values())
         cum_at[n] = cum
@@ -218,8 +333,6 @@ def main():
     print()
 
     # ---- suggested -ot regexes ------------------------------------------
-    # Handy for hand-beating the fitter (PLAN section 2.3) - these feed the same
-    # override array common_fit_params writes into.
     if attn_ids:
         attn_re = r"blk\.(" + "|".join(str(i) for i in attn_ids) + r")\."
         print("--- suggested overrides ---")
@@ -238,14 +351,15 @@ def main():
             json.dump({
                 "file": args.model,
                 "arch": arch,
-                "hparams": {k: (list(v) if isinstance(v, (list, tuple)) else v)
-                            for k, v in hp.items()},
+                "gguf_version": g.version,
+                "hparams": hp,
+                "quant_mix": {k: v for k, v in by_type.items()},
                 "non_block": non_block,
                 "layers": rows,
                 "attn_layers": attn_ids,
                 "gdn_layers": gdn_ids,
                 "mtp_layers": mtp_ids,
-                "total_bytes": total,
+                "total_bytes": tot,
             }, f, indent=2, default=str)
         print(f"\nwrote {args.json}")
 

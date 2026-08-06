@@ -3,6 +3,7 @@
 # resolved local path for the other scripts.
 #
 #   HF_REPO=<user>/<model>:Q4_K_M ./01-download.sh
+#   HF_REPO=unsloth/Qwen3.6-27B-MTP-GGUF:UD-Q4_K_XL
 #
 # --mtp asks the downloader to also fetch the multi-token-prediction sidecar if
 # the repo has one (common/arg.cpp:3006). On this architecture the MTP layers may
@@ -37,26 +38,45 @@ if [ ! -x "$DL" ]; then
 fi
 
 echo "=== downloading $HF_REPO ==="
-"$DL" download -hf "$HF_REPO" --mtp
 
-# The downloader puts files in the llama.cpp HF cache. Find the newest .gguf that
-# matches, and let the user correct it if the guess is wrong.
-CACHE_DIR="${LLAMA_CACHE:-$HOME/.cache/llama.cpp}"
+# The downloader prints resolved paths to STDOUT, one per line, in a fixed order
+# (app/download.cpp:62-69):
+#   line 1 : the model
+#   then   : mmproj, if the repo has one
+#   then   : the speculative/MTP sidecar, if one was fetched
+# Progress goes to stderr, so let that through to the terminal and capture only
+# stdout. Do NOT try to guess the file by scanning a cache directory - the
+# download may land in the HF hub cache rather than $LLAMA_CACHE.
+STDOUT_LOG="$RESULTS_DIR/download-stdout.txt"
+"$DL" download -hf "$HF_REPO" --mtp > "$STDOUT_LOG"
+
 echo
-echo "=== gguf files in $CACHE_DIR ==="
-find "$CACHE_DIR" -name '*.gguf' -printf '%T@ %s %p\n' 2>/dev/null \
-    | sort -rn | awk '{printf "  %10.2f GiB  %s\n", $2/1073741824, $3}'
+echo "=== downloader reported ==="
+cat "$STDOUT_LOG"
+echo
 
-NEWEST="$(find "$CACHE_DIR" -name '*.gguf' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
-if [ -n "$NEWEST" ]; then
-    echo "$NEWEST" > "$RESULTS_DIR/model-path.txt"
-    echo
-    echo "recorded model path: $NEWEST"
-    echo "  -> $RESULTS_DIR/model-path.txt"
-    echo
-    echo "If that picked the wrong file (e.g. it grabbed the MTP sidecar instead of"
-    echo "the main checkpoint), overwrite that file by hand before continuing, and"
-    echo "set MTP_MODEL in config.sh to the sidecar."
+MODEL_PATH="$(sed -n '1p' "$STDOUT_LOG")"
+if [ -z "$MODEL_PATH" ] || [ ! -f "$MODEL_PATH" ]; then
+    echo "error: could not read a model path from the downloader output." >&2
+    echo "       set it by hand: echo /abs/path/model.gguf > $RESULTS_DIR/model-path.txt" >&2
+    exit 1
+fi
+
+echo "$MODEL_PATH" > "$RESULTS_DIR/model-path.txt"
+echo "model      : $MODEL_PATH"
+echo "size       : $(du -h "$MODEL_PATH" | cut -f1)"
+echo "  recorded -> $RESULTS_DIR/model-path.txt"
+
+# Any extra line that is not the model and not an mmproj is the MTP/draft sidecar.
+SIDECAR="$(tail -n +2 "$STDOUT_LOG" | grep -v -i 'mmproj' | head -1 || true)"
+echo
+if [ -n "$SIDECAR" ] && [ -f "$SIDECAR" ]; then
+    echo "$SIDECAR" > "$RESULTS_DIR/mtp-path.txt"
+    echo "MTP sidecar: $SIDECAR"
+    echo "  export MTP_MODEL=\"$SIDECAR\" before running 04-residency.sh"
 else
-    echo "warning: no .gguf found under $CACHE_DIR - set model-path.txt by hand." >&2
+    echo "no separate MTP sidecar was fetched."
+    echo "For a repo named '*-MTP-GGUF' that almost certainly means the MTP layers are"
+    echo "inside the main checkpoint. 02-gguf-layout.py confirms it: look for a layer"
+    echo "classified MTP (it detects blk.N.nextn.* tensors)."
 fi

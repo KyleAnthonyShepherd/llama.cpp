@@ -49,6 +49,22 @@ resolve_model() {
         echo "error: no model found. Set MODEL=/path/to/model.gguf or run 01-download.sh first." >&2
         return 1
     fi
+    case "$(basename "$MODEL")" in
+        *mmproj*|*MMPROJ*)
+            echo "error: '$MODEL' looks like a multimodal projector, not the model." >&2
+            echo "       Fix $RESULTS_DIR/model-path.txt to point at the main checkpoint." >&2
+            return 1
+            ;;
+    esac
+    # A 27B 4-bit checkpoint is ~15-20 GiB. Anything much smaller is the wrong file.
+    local sz_gib
+    sz_gib=$(( $(stat -c %s "$MODEL") / 1073741824 ))
+    if [ "$sz_gib" -lt 8 ]; then
+        echo "warning: '$MODEL' is only ${sz_gib} GiB - is that really the 27B checkpoint?" >&2
+    fi
+    if [ -z "$MTP_MODEL" ] && [ -f "$RESULTS_DIR/mtp-path.txt" ]; then
+        MTP_MODEL="$(cat "$RESULTS_DIR/mtp-path.txt")"
+    fi
 }
 
 drop_caches() {
