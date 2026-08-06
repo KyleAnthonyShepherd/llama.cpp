@@ -9,6 +9,56 @@ where they apply and marks where the 27B dense case diverges.
 
 ---
 
+## Measured, 2026-08-06 - `unsloth/Qwen3.6-27B-MTP-GGUF:UD-Q4_K_XL`
+
+Real numbers from `phase0/02-gguf-layout.py`, replacing the structural placeholders that
+sections 2 and 6 were written against. Raw output in `phase0/results/layout.json`.
+
+| | |
+|---|---|
+| file size | **16.68 GiB** (not the ~18 GiB assumed - a full 1.3 GiB of slack) |
+| blocks | 65 = 64 trunk + 1 MTP, `nextn_predict_layers = 1` |
+| layer classes | **48 GDN + 16 full-attention**, `full_attention_interval = 4`, attention at il 3, 7, ... 63 |
+| MTP | **il=64, inside this checkpoint** - 254.2 MiB, no sidecar |
+| n_embd / n_head / n_head_kv | 5120 / 24 / 4 |
+| key_length = value_length | 256 |
+| n_ctx_train | 262144 |
+| ssm | `d_conv=4, d_inner=6144, d_state=128, dt_rank=48, n_group=16` |
+| quant mix | Q4_K 9.28 + Q6_K 3.78 + Q5_K 1.96 + Q8_0 1.55 GiB; **99% repack-eligible** |
+| `output.weight` | **994.6 MiB** |
+| `token_embd.weight` | 682.0 MiB |
+| per-block size | 201.0 - 269.3 MiB (mean: ATTN 216.7, GDN 243.1) |
+
+**Section 0.1 is confirmed exactly.** 48 GDN + 16 attention, interval 4. The KV story is
+1/4 of a comparable dense model's, as predicted.
+
+Three things the numbers add that the source reading could not give:
+
+1. **KV is 4.0 KiB per token per attention layer** at f16 (`(256+256) * 4 heads * 2 B`).
+   With all 16 attention layers on GPU that is 64 KiB/token: 512 MiB at 8k, 1 GiB at 16k.
+   But only the *offloaded* attention layers cost VRAM, and a 6 GB card holds roughly the
+   last 16 blocks, which contain only 4 attention layers - so the realistic figure is
+   **~128 MiB at 8k**, not 512.
+2. **Recurrent state is 3.12 MiB per GDN layer per sequence** (conv 120 KiB + state 3 MiB),
+   ~150 MiB for all 48, and **constant in context length**. Confirms section 0.1's claim
+   that growing context is free on 3/4 of the stack.
+3. **`output.weight` alone is 994.6 MiB and is the first thing offloaded.** The output
+   layer occupies slot `n_layer_all`, and the GPU is filled from the top down
+   (`src/llama-model.cpp:1318,1333`), so it consumes ~4 blocks' worth of VRAM before any
+   block lands. Conversely `token_embd.weight` (682 MiB) is **pinned to the CPU
+   unconditionally** (`src/llama-model.cpp:1334-1336`) and never competes for VRAM.
+
+Point 3 was a bug in the first version of `02-gguf-layout.py`, which counted only blocks.
+Corrected, a 5000 MiB weight budget buys **`-ngl 17`** (output + the last 16 blocks,
+4897 MiB), not the "20 trailing layers" the first run printed.
+
+Resulting split at `-ngl 17`: ~4.9 GiB of weights on the GPU, ~11.8 GiB on the CPU. On
+16 GiB of RAM that leaves roughly 3 GiB of headroom - **this fits without swapping, as
+long as the CPU-side weights stay on the mmap path.** Which is exactly what section 1.2
+is about, and is now the single load-bearing unknown.
+
+---
+
 ## 0. Two premise corrections before anything else
 
 ### 0.1 Qwen3.6-27B is not a plain dense transformer - it is a hybrid
@@ -85,11 +135,25 @@ There is no whole-model host staging step on any path. Good.
 This is the mechanism that produces the ~2 GB swap hit you predicted, and it is not the
 pipeline - it is buffer-type selection.
 
-1. When a tensor is overridden to CPU (which is exactly what `--fit` / `-ot` / `--n-cpu-moe`
-   do), the loader does **not** use the plain CPU buffer type. It calls
-   `select_weight_buft(hparams, t_meta, op, buft_list_cpu)`
-   (`src/llama-model-loader.cpp:1177`), which considers the CPU "extra" buffer types -
-   including the weight-repack buft (`make_cpu_buft_list`, `src/llama-model.cpp:928-942`).
+> **Correction (2026-08-06):** an earlier draft of this section framed the trap as
+> *override*-triggered. That was too narrow. Every CPU-resident layer uses
+> `pimpl->cpu_buft_list` whether or not any override matched
+> (`src/llama-model.cpp:1322-1324`), and `select_weight_buft` returns the **first**
+> entry in that list which supports the op (`src/llama-model-loader.cpp:1046-1056`).
+> `make_cpu_buft_list` builds it in the order: ACCEL bufts, then the GPU's **pinned host
+> buffer type**, then the repack extras, and only last the plain CPU buft
+> (`src/llama-model.cpp:896-950`). So the plain mmap-able CPU buft is the *lowest*
+> priority option, and nothing about `-ot` is required to skip past it. Whether the
+> pinned-host or the repack buft actually wins is decided by `supports_op` at runtime -
+> that is an empirical question, and the load log answers it directly (see below).
+> Note pinned host memory would be worse than repack: it is page-locked, so it can be
+> neither swapped nor evicted.
+
+1. When a tensor is CPU-resident, the loader does **not** default to the plain CPU buffer
+   type. It calls `select_weight_buft(...)` over `cpu_buft_list`
+   (`src/llama-model-loader.cpp:1198`, or `:1177` when an override matched), which
+   considers the pinned-host and "extra" buffer types first - including the weight-repack
+   buft (`make_cpu_buft_list`, `src/llama-model.cpp:928-942`).
 2. **Q4_K is repackable on x86.** `repack_q4_K_to_q4_K_8_bl` and the
    `q4_K_8x8_q8_K` / `q4_K_8x4_q8_K` traits exist and are selected for `GGML_TYPE_Q4_K`
    (`ggml/src/ggml-cpu/repack.cpp:3231,4535-4536,4600`). So a Q4_K_M GGUF hits this.
@@ -110,8 +174,15 @@ The codebase already half-knows this - there is a one-shot warning at
 enabled - consider using --no-mmap for better performance"*. That advice is aimed at
 throughput, but the memory consequence is the more important one here.
 
-**Mitigation available today, no code:** `-nr` / `--no-repack` (`common/arg.cpp:2381-2386`,
-default is repack **enabled**).
+**Mitigations available today, no code:** `-nr` / `--no-repack`
+(`common/arg.cpp:2381-2386`, default is repack **enabled**) and `--no-host`
+(`common/arg.cpp:2388-2393`), which drops the pinned-host entry from the list. Both may
+be needed to fall all the way through to the plain, mmap-able CPU buft.
+
+**One command settles which buft actually wins.** The loader logs one line per allocated
+buffer with its buffer-type name (`src/llama-model.cpp:1645`). `CPU_Mapped` means the
+mmap path (good); `CUDA_Host` means pinned, non-evictable host memory; a repack buft name
+means a real copy plus transform. See `phase0/README.md`.
 
 **This is a real tradeoff, not a free win.** Repack is a substantial CPU matmul speedup,
 and with 13 of 18 GB on the CPU you are heavily CPU-bound. Phase 0 must measure both.

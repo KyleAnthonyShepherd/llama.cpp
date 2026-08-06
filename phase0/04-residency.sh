@@ -19,8 +19,14 @@ set -euo pipefail
 source "$(dirname "$0")/config.sh"
 resolve_model
 
+# Use llama-completion, NOT llama-cli. llama-cli is the interactive TUI client: it
+# forces params.verbosity = LOG_LEVEL_ERROR (tools/cli/cli.cpp:36), which hides the
+# per-buffer "model buffer size" lines we need, and it ignores -no-cnv. Only the MTP
+# case below falls back to llama-cli, because --spec-type is not registered for the
+# completion example (common/arg.cpp:4102).
+RUNNER="$BIN_DIR/llama-completion"
 CLI="$BIN_DIR/llama-cli"
-[ -x "$CLI" ] || { echo "error: $CLI not found; run 00-build.sh" >&2; exit 1; }
+[ -x "$RUNNER" ] || { echo "error: $RUNNER not found; run 00-build.sh" >&2; exit 1; }
 
 OUT="$RESULTS_DIR/04-residency"
 mkdir -p "$OUT"
@@ -41,9 +47,10 @@ PROMPT="${PROMPT:-Explain in detail how a memory-mapped file differs from a heap
 
 run_case() {
     local name="$1"; shift
+    local bin="$1"; shift
     echo
     echo "================================================================"
-    echo "case: $name"
+    echo "case: $name   ($(basename "$bin"))"
     echo "args: $*"
     echo "================================================================"
     drop_caches
@@ -54,8 +61,8 @@ run_case() {
     local t_start
     t_start=$(date +%s)
 
-    "$CLI" -m "$MODEL" -c "$N_CTX" -n "$N_GEN" -no-cnv -st \
-        -p "$PROMPT" "$@" > "$OUT/$name.log" 2>&1 &
+    "$bin" -m "$MODEL" -c "$N_CTX" -n "$N_GEN" -no-cnv -st \
+        -p "$PROMPT" "$@" > "$OUT/$name.log" 2>&1 < /dev/null &
     local pid=$!
 
     "$PHASE0_DIR/sample-proc.sh" "$pid" "$OUT/$name.csv" 1 &
@@ -80,6 +87,8 @@ run_case() {
         echo "final_majflt:     $(awk -F, 'END{print $6}' "$OUT/$name.csv")"
         echo "peak_gpu_used_mb: $(awk -F, 'NR>1 && $8>m {m=$8} END{print m+0}' "$OUT/$name.csv")"
         echo "min_host_avail_mb: $(awk -F, 'NR>1 && ($9<m || m==0) {m=$9} END{print m+0}' "$OUT/$name.csv")"
+        echo "--- buffer types (the PLAN 1.2 verdict) ---"
+        grep 'model buffer size' "$OUT/$name.log" || echo "(none logged - wrong binary?)"
         echo "--- timings ---"
         grep -E 'eval time|total time|load time' "$OUT/$name.log" || true
         echo "--- memory breakdown ---"
@@ -87,22 +96,26 @@ run_case() {
     } | tee "$OUT/$name.summary.txt"
 }
 
-# A. the repack A/B. Same everything else.
-run_case "default"   "${NGL_ARGS[@]}"
-run_case "norepack"  "${NGL_ARGS[@]}" -nr
+# A. the buffer-type / residency matrix. cpu_buft_list is ordered
+# ACCEL -> pinned host -> repack extras -> plain CPU (src/llama-model.cpp:896-950)
+# and select_weight_buft takes the first that supports the op, so it can take three
+# runs to fall all the way through to the mmap-able plain CPU buft.
+run_case "default"       "$RUNNER" "${NGL_ARGS[@]}"
+run_case "norepack"      "$RUNNER" "${NGL_ARGS[@]}" -nr
+run_case "norepack-nohost" "$RUNNER" "${NGL_ARGS[@]}" -nr --no-host
 
 # B. mlock is the opposite extreme - forces residency and will fail or swap on a
-# 16 GB box with an 18 GB model. Included because a failure here is itself a
-# clean datapoint about how much really has to be resident.
-run_case "mmap-mlock" "${NGL_ARGS[@]}" -lm mmap+mlock || true
+# 16 GiB box. A failure here is itself a clean datapoint about what must be resident.
+run_case "mmap-mlock"    "$RUNNER" "${NGL_ARGS[@]}" -lm mmap+mlock || true
 
-# C. MTP. --spec-type is available in the cli example (common/arg.cpp:4102).
-# Skips itself cleanly if the checkpoint has no MTP layers.
+# C. MTP. --spec-type is registered for cli/server/speculative but NOT completion
+# (common/arg.cpp:4102), so this one case has to go through llama-cli. Pass -v to undo
+# the TUI's LOG_LEVEL_ERROR default (tools/cli/cli.cpp:36) or the log is empty.
+MTP_ARGS=(-nr --spec-type draft-mtp -v)
 if [ -n "$MTP_MODEL" ]; then
-    run_case "mtp" "${NGL_ARGS[@]}" -nr --spec-type draft-mtp -md "$MTP_MODEL" || true
-else
-    run_case "mtp" "${NGL_ARGS[@]}" -nr --spec-type draft-mtp || true
+    MTP_ARGS+=(-md "$MTP_MODEL")
 fi
+run_case "mtp" "$CLI" "${NGL_ARGS[@]}" "${MTP_ARGS[@]}" || true
 
 echo
 echo "================================================================"

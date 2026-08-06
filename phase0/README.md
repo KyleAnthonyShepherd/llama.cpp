@@ -15,6 +15,7 @@ chmod +x *.sh
 HF_REPO=<user>/<model>:Q4_K_M ./01-download.sh
 python3 02-gguf-layout.py "$(cat results/model-path.txt)" --vram-mib 5000 --json results/layout.json
 ./03-fit.sh
+./03b-buftypes.sh                               # fast + decisive, run before 04
 ./04-residency.sh
 NGL_LIST=0,4,8,12,16,20,24 ./05-ngl-sweep.sh
 ```
@@ -40,6 +41,7 @@ comparison in `04` loses most of its meaning.
 | `01-download.sh` | - | fetch the model, and the MTP sidecar if the repo has one |
 | `02-gguf-layout.py` | 0.1, 2.3, 6 | is it really 48 GDN + 16 attention layers? what does one layer cost? how many trailing layers fit in 5 GB? |
 | `03-fit.sh` | 0.2, 2.4, 3.2 | what does the fitter decide, at what margin, and does it emit any tensor overrides for a dense model (I predict zero) |
+| `03b-buftypes.sh` | 1.2 | which CPU buffer type do the host-side weights land in - `CPU_Mapped`, `CUDA_Host`, or a repack buft |
 | `04-residency.sh` | 1.2, 1.4, 3.2 | **the important one.** does `--repack` convert the CPU-side weights into swappable anonymous RAM? what does MTP cost in VRAM? |
 | `05-ngl-sweep.sh` | 2.1, 2.2 | throughput vs. layers on GPU, and how much of it is KV placement |
 
@@ -62,6 +64,37 @@ free win.
 
 If `rss_anon` is small in *both* runs, my section 1.2 analysis is wrong and the
 swap you predicted comes from somewhere else. Send me the CSVs either way.
+
+## Use `llama-completion`, never `llama-cli`, for measurement
+
+`llama-cli` is the interactive TUI client. It sets `params.verbosity = LOG_LEVEL_ERROR`
+at startup (`tools/cli/cli.cpp:36`), which hides every loader line these scripts parse,
+and it does not act on `-no-cnv`. `llama-completion` takes the same common arguments and
+logs normally.
+
+The one exception is MTP: `--spec-type` is registered for speculative/server/cli but not
+for completion (`common/arg.cpp:4102`), so that case has to go through `llama-cli` with
+an explicit `-v` to undo the verbosity default. `04-residency.sh` already does this.
+
+## The buffer-type check - run this before the slow scripts
+
+`./03b-buftypes.sh` - fast, and decisive for `PLAN` section 1.2. It probes four
+configurations and reports which buffer types the host-side weights land in.
+
+`cpu_buft_list` is ordered ACCEL -> the GPU's **pinned host** buft -> repack extras ->
+plain CPU (`src/llama-model.cpp:896-950`), and `select_weight_buft` takes the first entry
+that supports the op (`src/llama-model-loader.cpp:1046-1056`). The plain, mmap-able CPU
+buft is the *lowest* priority, and no `-ot` override is needed to skip past it. Only that
+plain buft gets the mmap-backed buffer, because that path tests `is_default_buft`
+(`src/llama-model.cpp:1568-1570`).
+
+- `CPU_Mapped` - mmap. Clean, evictable, never swapped. **This is the good case.**
+- `CUDA_Host` - pinned host memory. A real copy **and page-locked**, so it can be neither
+  evicted nor swapped. The worst case on a 16 GiB box.
+- a repack buft name - a real copy plus a transform. Anonymous and swappable.
+
+Carry whichever of `default` / `-nr` / `-nr --no-host` / `--no-host` yields `CPU_Mapped`
+for the bulk of the host-side weights into the rest of Phase 0 as the baseline.
 
 ## A note on the `UD-Q4_K_XL` quant
 

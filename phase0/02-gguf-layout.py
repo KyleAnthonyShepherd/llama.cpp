@@ -301,35 +301,87 @@ def main():
     print(f"  MTP layers ({len(mtp_ids)}): {mtp_ids}")
     print()
 
+    # ---- runtime state, which comes out of the same VRAM budget ---------
+    # KV lives on the same device as its layer (src/llama-kv-cache.cpp:214-219),
+    # and only the full-attention layers have one at all.
+    n_kv_head = hp.get("attention.head_count_kv")
+    k_len = hp.get("attention.key_length")
+    v_len = hp.get("attention.value_length")
+    kv_per_tok_per_layer = None
+    if n_kv_head and k_len and v_len:
+        kv_per_tok_per_layer = (k_len + v_len) * n_kv_head * 2   # f16 K and V
+        print("--- runtime state (comes out of the same VRAM budget) ---")
+        print(f"  KV per token per attention layer (f16): "
+              f"{kv_per_tok_per_layer / 1024:.1f} KiB")
+        print(f"  KV per token, all {len(attn_ids)} attention layers: "
+              f"{kv_per_tok_per_layer * len(attn_ids) / 1024:.1f} KiB")
+        for ctx in (4096, 8192, 16384, 32768):
+            tot_kv = kv_per_tok_per_layer * len(attn_ids) * ctx
+            print(f"    at n_ctx={ctx:6d}: {tot_kv / MIB:8.1f} MiB if every attention layer is on GPU")
+        print("  (only the offloaded attention layers cost VRAM - the rest sit in host RAM)")
+
+    d_conv = hp.get("ssm.conv_kernel")
+    d_inner = hp.get("ssm.inner_size")
+    d_state = hp.get("ssm.state_size")
+    n_group = hp.get("ssm.group_count")
+    if d_conv and d_inner and d_state and n_group:
+        conv_b = (d_conv - 1) * (d_inner + 2 * n_group * d_state) * 4
+        ssm_b = d_state * d_inner * 4
+        print(f"  recurrent state per sequence per GDN layer (f32): "
+              f"{(conv_b + ssm_b) / MIB:.2f} MiB "
+              f"(conv {conv_b / 1024:.0f} KiB + state {ssm_b / MIB:.2f} MiB)")
+        print(f"  all {len(gdn_ids)} GDN layers, 1 sequence: "
+              f"{(conv_b + ssm_b) * len(gdn_ids) / MIB:.1f} MiB "
+              f"- CONSTANT in context length")
+    print()
+
     # ---- trailing-layer budget -----------------------------------------
-    # The fitter fills the GPU back-to-front (common/fit.cpp:481), so what matters
-    # is the cumulative size of the LAST n layers, not the mean layer size.
+    # The GPU is filled back-to-front, but the slot order is not just the blocks:
+    #   - the output layer sits at index n_layer_all, i.e. it is the LAST slot and
+    #     therefore the FIRST thing offloaded (src/llama-model.cpp:1318,1333)
+    #   - the input layer (token_embd) is pinned to the CPU unconditionally
+    #     (src/llama-model.cpp:1334-1336, "very little benefit to offloading")
+    # Ignoring either of those gets the layer count badly wrong on a small card.
     budget = args.vram_mib * MIB
-    print(f"--- trailing layers vs a {args.vram_mib} MiB weight budget ---")
-    print("  (weights only - KV, recurrent state and compute buffers are on top)")
+    out_bytes = sum(v for k, v in non_block.items() if k.startswith("output"))
+    inp_bytes = sum(v for k, v in non_block.items() if not k.startswith("output"))
+
+    print(f"--- offload order vs a {args.vram_mib} MiB budget ---")
+    print("  weights only. Subtract the runtime state above before trusting this.")
+    print(f"  token_embd and friends ({inp_bytes / MIB:.1f} MiB) are pinned to the CPU and")
+    print(f"  never counted here (src/llama-model.cpp:1334-1336).")
+    print()
+    print(f"  ngl=1 -> output layer only: {out_bytes / MIB:9.1f} MiB")
+
     tail = list(reversed(layer_ids))
-    cum = 0
-    cum_at = {}
+    cum = out_bytes
+    cum_at = {1: out_bytes}
     for n, il in enumerate(tail, start=1):
         cum += sum(blocks[il].values())
-        cum_at[n] = cum
-        if cum <= budget * 1.2:
-            print(f"  last {n:3d} layers: {cum / MIB:9.1f} MiB"
-                  f"{' <= fits' if cum <= budget else ''}")
+        cum_at[n + 1] = cum
+        if cum <= budget * 1.15:
+            print(f"  ngl={n + 1:3d} -> output + last {n:2d} blocks (il>={il}): "
+                  f"{cum / MIB:9.1f} MiB{' <= fits' if cum <= budget else ''}")
         else:
             break
 
     chosen = max((n for n, b in cum_at.items() if b <= budget), default=0)
     used = cum_at.get(chosen, 0)
     print()
-    print(f"  => at most {chosen} trailing layers of weights fit in {args.vram_mib} MiB "
-          f"({used / MIB:.1f} MiB used, {(budget - used) / MIB:.1f} MiB left over)")
-    if chosen < len(tail):
-        nxt = tail[chosen]
-        one_more = sum(blocks[nxt].values())
-        print(f"  => the next layer (il={nxt}) costs {one_more / MIB:.1f} MiB and does not fit;")
-        print(f"     that is the granularity the dense fitter is stuck with, so up to")
-        print(f"     {(budget - used) / MIB:.1f} MiB of VRAM is stranded at this setting.")
+    if chosen == 0:
+        print(f"  => not even the output layer ({out_bytes / MIB:.1f} MiB) fits in "
+              f"{args.vram_mib} MiB")
+    else:
+        print(f"  => -ngl {chosen} is the largest that fits: {used / MIB:.1f} MiB used, "
+              f"{(budget - used) / MIB:.1f} MiB left over")
+        if chosen - 1 < len(tail):
+            nxt = tail[chosen - 1]
+            one_more = sum(blocks[nxt].values())
+            print(f"  => the next block (il={nxt}) costs {one_more / MIB:.1f} MiB and does not fit.")
+            print(f"     That is the granularity the dense fitter is stuck with (PLAN 0.2):")
+            print(f"     up to {(budget - used) / MIB:.1f} MiB of VRAM is stranded here, and the")
+            print(f"     sub-layer fractions that would recover it are unreachable for a")
+            print(f"     dense model (common/fit.cpp:596,613,640).")
     print()
 
     # ---- suggested -ot regexes ------------------------------------------
