@@ -35,16 +35,41 @@ probe() {
     local name="$1"; shift
     echo
     echo "=== $name : $* ==="
+    local rc=0
     "$RUNNER" -m "$MODEL" -c "$CTX" -ngl "$NGL" -n 1 -no-cnv -p hi "$@" \
-        > "$OUT/$name.log" 2>&1 < /dev/null || echo "  (exited non-zero)"
-    grep 'model buffer size' "$OUT/$name.log" || echo "  (no buffer lines logged)"
-    echo "  --- host-side total ---"
-    awk '/model buffer size/ && !/CUDA[0-9]/ {s+=$(NF-1)} END{printf "  %.1f MiB not on a CUDA device\n", s}' \
-        "$OUT/$name.log"
+        > "$OUT/$name.log" 2>&1 < /dev/null || rc=$?
+    echo "  exit code: $rc"
+
+    if grep -q 'model buffer size' "$OUT/$name.log"; then
+        grep 'model buffer size' "$OUT/$name.log"
+        echo "  --- host-side total ---"
+        awk '/model buffer size/ && !/CUDA[0-9]/ {s+=$(NF-1)}
+             END{printf "  %.1f MiB not on a CUDA device\n", s}' "$OUT/$name.log"
+    else
+        # Never swallow the evidence - show what the run actually said.
+        echo "  (no 'model buffer size' lines - showing the log so we can see why)"
+        echo "  log: $OUT/$name.log ($(wc -l < "$OUT/$name.log") lines)"
+        echo "  --- first 15 ---"
+        head -15 "$OUT/$name.log" | sed 's/^/    /'
+        echo "  --- last 25 ---"
+        tail -25 "$OUT/$name.log" | sed 's/^/    /'
+    fi
 }
 
-echo "model : $MODEL"
-echo "ngl   : $NGL   ctx: $CTX"
+echo "model  : $MODEL"
+echo "size   : $(du -Lh "$MODEL" | cut -f1)"
+echo "runner : $RUNNER"
+echo "ngl    : $NGL   ctx: $CTX"
+
+# Sanity: does the runner produce loader output at all? If this is empty, nothing
+# below will work and the problem is the binary or its logging, not the buffer types.
+echo
+echo "=== runner sanity check ==="
+if "$RUNNER" --version > "$OUT/version.txt" 2>&1 < /dev/null; then
+    head -3 "$OUT/version.txt" | sed 's/^/  /'
+else
+    echo "  warning: '$RUNNER --version' failed - see $OUT/version.txt"
+fi
 
 probe "default"
 probe "norepack"         -nr

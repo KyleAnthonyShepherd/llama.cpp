@@ -64,7 +64,7 @@ fi
 
 echo "$MODEL_PATH" > "$RESULTS_DIR/model-path.txt"
 echo "model      : $MODEL_PATH"
-echo "size       : $(du -h "$MODEL_PATH" | cut -f1)"
+echo "size       : $(du -Lh "$MODEL_PATH" | cut -f1)"   # -L: HF cache paths are symlinks into blobs/
 echo "  recorded -> $RESULTS_DIR/model-path.txt"
 
 # Any extra line that is not the model and not an mmproj is the MTP/draft sidecar.

@@ -57,8 +57,10 @@ resolve_model() {
             ;;
     esac
     # A 27B 4-bit checkpoint is ~15-20 GiB. Anything much smaller is the wrong file.
+    # -L dereferences: the HF hub cache stores snapshots as symlinks into blobs/, and
+    # without it stat reports the length of the link target string (~76 bytes).
     local sz_gib
-    sz_gib=$(( $(stat -c %s "$MODEL") / 1073741824 ))
+    sz_gib=$(( $(stat -Lc %s "$MODEL") / 1073741824 ))
     if [ "$sz_gib" -lt 8 ]; then
         echo "warning: '$MODEL' is only ${sz_gib} GiB - is that really the 27B checkpoint?" >&2
     fi
