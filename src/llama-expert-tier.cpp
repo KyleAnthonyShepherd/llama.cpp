@@ -76,9 +76,13 @@ ggml_tensor * llama_expert_tier_build(ggml_context * ctx,
                                       ggml_tensor * cur,
                                       ggml_tensor * ids,
                                       ggml_tensor * w_s) {
-    // BUG-3E3: CUDA MMQ mul_mat_id compaction assumes distinct expert ids per token;
-    // our sentinel duplicates OOB there. Decode (n_tokens==1) is safe via mmvq.
-    if (cur->ne[2] > 1) return nullptr;
+    // BUG-3E3: the CUDA id compaction (mm_ids_helper) assumes at most one use of an
+    // expert per token; our sentinel maps every cold expert of a token to one slot.
+    // MMVQ has no compaction and is safe, so keep the tiered path inside it: MMQ and
+    // MMF both compact. 4 is the lowest per-type bound of get_mmvq_mmid_max_batch()
+    // over all arch tables, so it needs no device query.
+    constexpr int64_t n_tokens_max = 4;
+    if (cur->ne[2] > n_tokens_max || !ggml_is_quantized(w->type)) return nullptr;
 
     tier_entry ent;
     {

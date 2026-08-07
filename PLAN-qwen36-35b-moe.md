@@ -1101,6 +1101,27 @@ An MTP verify batch is `1 + n_draft` tokens. So on this hardware:
 **The `ne[2] > 1` guard is off by a factor of 5 to 8.** The correct predicate is "will this
 dispatch pick mmvq", not "is this a single token".
 
+> **CORRECTION (found while implementing M1): MMQ is not the only compacting path, and the PR
+> has a latent bug in its *current* single-token form.** `ggml_cuda_mul_mat_f` also calls
+> `ggml_cuda_launch_mm_ids_helper` (`ggml/src/ggml-cuda/mmf.cu:87`). For a **non-quantized**
+> expert tensor on a non-AMD device, `ggml_cuda_mul_mat_id` falls past the mmvq branch (which is
+> gated on `ggml_is_quantized(src0->type)`) and past MMQ, into MMF - **at any `ne2`, including
+> `ne2 == 1`**. Sentinel duplicates within a single token break the same "at most one use per
+> token" assumption there, so an F16/BF16 MoE with `-ehs` is already exposed today.
+>
+> The M1 predicate must therefore test **both** the token count and `ggml_is_quantized`, and the
+> second half is a bug fix rather than a restriction. Implemented on `expert-cache-vram` as:
+>
+> ```cpp
+>     constexpr int64_t n_tokens_max = 4;
+>     if (cur->ne[2] > n_tokens_max || !ggml_is_quantized(w->type)) return nullptr;
+> ```
+>
+> `4` is the lowest per-type bound across **all seven** arch tables in
+> `get_mmvq_mmid_max_batch` (`mmvq.cu:114-247` - pascal_older, turing_plus, gcn, cdna,
+> rdna1_rdna2, rdna3, rdna4); no entry in any table is below 4, so no device query is needed.
+> Section 12.3's M2 test should sweep the **MMF** path too, not just MMQ.
+
 Note `get_mmvq_mmid_max_batch` is a **performance** heuristic (its comment cites PR #20905), not
 a correctness bound - above it MMQ is merely *faster* for stock inference. For the tiered path it
 doubles as the correctness bound, which is a coincidence worth stating explicitly in any PR
