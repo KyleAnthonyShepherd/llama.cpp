@@ -12,9 +12,20 @@
 #
 # What to look for:
 #   - eval t/s should peak at some n_max and then fall: deeper drafts cost a longer
-#     verify batch, and acceptance decays per position (measured: 0.947, 0.737, 0.632).
+#     verify batch, and acceptance decays per position.
 #   - "mean len" tells you the effective tokens per pass over the weights, which is the
 #     quantity that actually beats the DRAM roofline.
+#
+# MEASUREMENT NOTE (learned the hard way): with sampling enabled, each run generates
+# DIFFERENT text, so acceptance and tg vary by ~10% run to run at n_gen=64 - enough to
+# invent trends that are not there. Two things fix it, both on by default here:
+#   1. Greedy sampling (--temp 0). Speculative decoding is output-equivalent to
+#      non-speculative under greedy, so EVERY n_max produces the identical token
+#      sequence and the only thing that varies is how it was produced. That makes the
+#      comparison apples-to-apples.
+#   2. A longer generation (n_gen 256 by default here, not the shared 64), so the
+#      acceptance statistic averages over ~70 draft iterations instead of ~18.
+# Set GREEDY=0 to sample instead, and REPS=N to repeat each point.
 set -euo pipefail
 source "$(dirname "$0")/config.sh"
 resolve_model
@@ -47,29 +58,42 @@ if [ -n "$THREADS" ]; then
     THREAD_ARGS=(-t "$THREADS")
 fi
 
+# See the measurement note at the top. Greedy + a longer run is what makes these
+# numbers comparable across n_max.
+GREEDY="${GREEDY:-1}"
+SAMPLE_ARGS=()
+if [ "$GREEDY" = "1" ]; then
+    SAMPLE_ARGS=(--temp 0 --seed 42)
+fi
+MTP_N_GEN="${MTP_N_GEN:-256}"
+REPS="${REPS:-1}"
+
 echo "model   : $MODEL"
-echo "n_ctx   : $N_CTX   n_gen: $N_GEN"
+echo "n_ctx   : $N_CTX   n_gen: $MTP_N_GEN"
 echo "n_max   : $N_MAX_LIST   (0 = MTP disabled, the baseline)"
 echo "threads : ${THREADS:-default}"
 echo "ngl     : ${NGL:-fitter chooses}"
+echo "sampling: $([ "$GREEDY" = 1 ] && echo 'greedy (--temp 0, comparable across n_max)' || echo 'stochastic - EXPECT ~10% run-to-run noise')"
+echo "reps    : $REPS"
 echo
 
 run_one() {
     local n_max="$1"
-    local name="nmax$n_max"
+    local rep="$2"
+    local name="nmax${n_max}-r${rep}"
     local args=()
 
     if [ "$n_max" = "0" ]; then
-        name="baseline-nospec"
+        name="baseline-nospec-r${rep}"
     else
         args=(--spec-type draft-mtp --spec-draft-n-max "$n_max")
     fi
 
-    echo "--- n_max=$n_max ---"
+    echo "--- n_max=$n_max (rep $rep/$REPS) ---"
     drop_caches
 
-    "$CLI" -m "$MODEL" -c "$N_CTX" -n "$N_GEN" -no-cnv -st -lv 4 \
-        "${NGL_ARGS[@]}" "${THREAD_ARGS[@]}" "${args[@]}" \
+    "$CLI" -m "$MODEL" -c "$N_CTX" -n "$MTP_N_GEN" -no-cnv -st -lv 4 \
+        "${NGL_ARGS[@]}" "${THREAD_ARGS[@]}" "${SAMPLE_ARGS[@]}" "${args[@]}" \
         -p "$PROMPT" > "$OUT/$name.log" 2>&1 < /dev/null || echo "  (exited non-zero)"
 
     # llama-cli goes through the server path, so timings come from slot print_timing.
@@ -85,13 +109,15 @@ run_one() {
 
     printf "  ngl=%-3s tg=%-7s acceptance=%-8s mean_len=%s\n" \
         "${ngl_used:-?}" "${tg:-?}" "${acc:--}" "${mlen:--}"
-    printf "%s,%s,%s,%s,%s\n" "$n_max" "${ngl_used:-}" "${tg:-}" "${acc:-}" "${mlen:-}" \
+    printf "%s,%s,%s,%s,%s,%s\n" "$n_max" "$rep" "${ngl_used:-}" "${tg:-}" "${acc:-}" "${mlen:-}" \
         >> "$OUT/summary.csv"
 }
 
-echo "n_max,ngl,tg_tps,acceptance,mean_len" > "$OUT/summary.csv"
+echo "n_max,rep,ngl,tg_tps,acceptance,mean_len" > "$OUT/summary.csv"
 for n in $N_MAX_LIST; do
-    run_one "$n"
+    for r in $(seq 1 "$REPS"); do
+        run_one "$n" "$r"
+    done
 done
 
 echo
