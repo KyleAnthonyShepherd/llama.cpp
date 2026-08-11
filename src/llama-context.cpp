@@ -2,6 +2,7 @@
 
 #include "ggml.h"
 #include "llama-arch.h"
+#include "llama-expert-tier.h"
 #include "llama-graph.h"
 #include "llama-impl.h"
 #include "llama-batch.h"
@@ -473,7 +474,12 @@ llama_context::llama_context(
         }
     }
 
-    if (hparams.n_expert > 0 && !cparams.warmup &&
+    // an MTP context runs only the nextn block, but the hot store is sized for every trunk
+    // layer, so it would waste VRAM on layers it never executes. It would also overwrite the
+    // target context's tier registrations, which are keyed by model tensor in a global table.
+    const bool expert_cache_ok = params.ctx_type != LLAMA_CONTEXT_TYPE_MTP;
+
+    if (hparams.n_expert > 0 && !cparams.warmup && expert_cache_ok &&
         (params.expert_heat_log_period != 0 || params.expert_hot_s != 0)) {
         expert_heatmap = std::make_unique<llama_expert_heatmap>(
             hparams.n_layer(), hparams.n_expert,
@@ -482,7 +488,7 @@ llama_context::llama_context(
             params.expert_hot_s);
     }
 
-    if (hparams.n_expert > 0 && !cparams.warmup && params.expert_hot_s != 0) {
+    if (hparams.n_expert > 0 && !cparams.warmup && expert_cache_ok && params.expert_hot_s != 0) {
         const int sync_period = 50;
         expert_hotstore = std::make_unique<llama_expert_hotstore>(
             &model, hparams.n_layer(), hparams.n_expert,
@@ -1511,7 +1517,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         return nullptr;
     }
 
-    if (expert_heatmap && (ubatch.n_tokens == 1 || !expert_hotstore || !expert_hotstore->is_filled)) {
+    // track every batch the tier actually serves, not just single-token decode: a speculative
+    // verify batch holds 1 + n_draft tokens, and gating on == 1 froze the heat for the whole
+    // run once the store was filled.
+    const bool expert_heat_batch = ubatch.n_tokens <= LLAMA_EXPERT_TIER_MAX_TOKENS;
+
+    if (expert_heatmap && (expert_heat_batch || !expert_hotstore || !expert_hotstore->is_filled)) {
         synchronize();
         expert_heatmap->update_from_graph(res->moe_sel_experts);
     }
@@ -1519,8 +1530,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         if (!expert_hotstore->is_filled) {
             expert_hotstore->copy_top_s(*expert_heatmap);
         } else {
-            expert_hotstore->maybe_resync(*expert_heatmap, ubatch.n_tokens > 1);
-            if (ubatch.n_tokens == 1 && getenv("LLAMA_EXPERT_HITRATE")) {
+            expert_hotstore->maybe_resync(*expert_heatmap, !expert_heat_batch);
+            if (expert_heat_batch && getenv("LLAMA_EXPERT_HITRATE")) {
                 expert_hotstore->log_hit_rate(res->moe_sel_experts);
             }
         }
