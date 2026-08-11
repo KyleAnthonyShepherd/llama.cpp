@@ -53,6 +53,16 @@ struct llama_expert_hotstore {
     ggml_context_ptr        ctx;
     ggml_backend_buffer_ptr buf;
 
+    // VRAM one slot costs across every layer
+    size_t bytes_per_slot_total() const;
+
+    // Shrink to new_hot_s slots and hand the VRAM back, for when a growing KV cache
+    // needs room the store was given when the context was still small. Frees the old
+    // buffer before allocating the new one - a shrink happens precisely when VRAM is
+    // tight, so an allocate-then-free peak of old+new is what we cannot afford. That
+    // costs a re-plant from host on every shrink. Returns bytes released.
+    size_t shrink(int new_hot_s, const llama_expert_heatmap & heatmap, ggml_backend_buffer_type_t gpu_buft);
+
     // true once the first copy of the top-S experts landed (once per session)
     bool is_filled = false;
 

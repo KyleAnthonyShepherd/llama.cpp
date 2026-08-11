@@ -173,6 +173,57 @@ void llama_expert_hotstore::copy_top_s(const llama_expert_heatmap & heatmap) {
     LLAMA_LOG("=== Expert hot store: top-S experts copied to GPU ===\n");
 }
 
+size_t llama_expert_hotstore::bytes_per_slot_total() const {
+    size_t n = 0;
+    for (size_t b : bytes_per_slot) {
+        n += b;
+    }
+    return n;
+}
+
+size_t llama_expert_hotstore::shrink(int new_hot_s, const llama_expert_heatmap & heatmap,
+                                     ggml_backend_buffer_type_t gpu_buft) {
+    if (!buf || new_hot_s >= hot_s) {
+        return 0;
+    }
+
+    const size_t released = ggml_backend_buffer_get_size(buf.get());
+
+    // the graph holds pointers to dst/LUT tensors, so drop the registrations with them
+    llama_expert_tier_clear();
+    buf.reset();
+    ctx.reset();
+    for (auto & e : entries) {
+        e.dst = nullptr;
+    }
+    is_filled = false;
+
+    if (new_hot_s <= 0) {
+        hot_s = 0;
+        LLAMA_LOG_INFO("%s: expert hot store disabled, released %zu MiB\n", __func__, released / (1024 * 1024));
+        return released;
+    }
+
+    hot_s = new_hot_s;
+    for (int il = 0; il < n_layers; il++) {
+        slot_to_expert[il].assign(hot_s, -1);
+        dwell_count[il].assign(hot_s, 0);
+    }
+
+    if (!allocate(gpu_buft)) {
+        hot_s = 0;
+        LLAMA_LOG_WARN("%s: could not re-allocate the hot store at %d slots, cache is now off\n", __func__, new_hot_s);
+        return released;
+    }
+    copy_top_s(heatmap);
+
+    const size_t kept = buf ? ggml_backend_buffer_get_size(buf.get()) : 0;
+    LLAMA_LOG_INFO("%s: expert hot store %d slots, released %zu MiB\n",
+            __func__, hot_s, (released - kept) / (1024 * 1024));
+
+    return released - kept;
+}
+
 void llama_expert_hotstore::plant_static() {
     if (is_filled || hot_s <= 0 || entries.empty() || !buf) {
         return;

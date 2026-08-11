@@ -377,6 +377,14 @@ private:
     std::unique_ptr<llama_expert_heatmap> expert_heatmap;
     std::unique_ptr<llama_expert_hotstore> expert_hotstore;
 
+    // buffer type the hot store was allocated from; needed to re-allocate it smaller
+    // when a growing KV cache wants the VRAM back (see set_n_ctx())
+    ggml_backend_buffer_type_t expert_hotstore_buft = nullptr;
+
+    // KV cell types, kept so set_n_ctx() can size the grown cache without the memory module
+    ggml_type kv_type_k = GGML_TYPE_F16;
+    ggml_type kv_type_v = GGML_TYPE_F16;
+
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;
 

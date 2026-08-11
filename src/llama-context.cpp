@@ -390,6 +390,9 @@ llama_context::llama_context(
     }
 
     // init the memory module
+    kv_type_k = params.type_k;
+    kv_type_v = params.type_v;
+
     if (!hparams.vocab_only) {
         llama_memory_params params_mem = {
             /*.type_k    =*/ params.type_k,
@@ -510,7 +513,8 @@ llama_context::llama_context(
             if (!force && !supported) {
                 break;
             }
-            cache_enabled = expert_hotstore->allocate(ggml_backend_get_default_buffer_type(backend.get()));
+            expert_hotstore_buft = ggml_backend_get_default_buffer_type(backend.get());
+            cache_enabled = expert_hotstore->allocate(expert_hotstore_buft);
             break;
         }
         // launch hint: cache did not engage, usually a non-CUDA (or no) accelerator
@@ -917,6 +921,48 @@ int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
             return -1;
         }
         n_ctx_new = n_ctx_seq_new * cparams.n_seq_max;
+    }
+
+    // Hand VRAM back from the expert hot store before the KV cache asks for it. The store is
+    // sized once at load against the initial n_ctx, so a context that grows afterwards is
+    // competing with slots that were budgeted while the KV cache was still small.
+    if (expert_hotstore && expert_hotstore->hot_s > 0 && expert_hotstore_buft && expert_heatmap) {
+        // Size the new KV from the attention layers directly, mirroring llama_kv_cache's own
+        // tensor shapes. Scaling memory_breakdown() instead would be badly wrong on a hybrid
+        // arch: it also holds the recurrent state, which is constant in context length and
+        // dominates the total at small n_ctx.
+        const auto & hparams = model.hparams;
+
+        size_t kv_per_cell = 0;
+        for (uint32_t il = 0; il < hparams.n_layer(); ++il) {
+            if (hparams.is_recr(il)) {
+                continue;
+            }
+            kv_per_cell += ggml_row_size(kv_type_k, hparams.n_embd_k_gqa(il));
+            kv_per_cell += ggml_row_size(kv_type_v, hparams.n_embd_v_gqa(il));
+        }
+
+        const uint32_t n_stream = cparams.kv_unified ? 1 : cparams.n_seq_max;
+        const size_t   kv_new   = kv_per_cell * n_ctx_seq_new * n_stream;
+
+        size_t free_mem = 0, total_mem = 0;
+        ggml_backend_dev_t dev = ggml_backend_buft_get_device(expert_hotstore_buft);
+        if (dev) {
+            ggml_backend_dev_memory(dev, &free_mem, &total_mem);
+        }
+
+        // resize() builds the new buffers while the old ones are still live, so the peak
+        // needs kv_new free on top of the kv_now already allocated, not just the difference
+        if (dev && kv_new > free_mem) {
+            const size_t per_slot = expert_hotstore->bytes_per_slot_total();
+            if (per_slot > 0) {
+                const size_t deficit = kv_new - free_mem;
+                const int    drop    = (int) ((deficit + per_slot - 1) / per_slot);
+                LLAMA_LOG_INFO("%s: KV needs %zu MiB with %zu MiB free, dropping %d hot expert slots\n",
+                        __func__, kv_new / (1024 * 1024), free_mem / (1024 * 1024), drop);
+                expert_hotstore->shrink(expert_hotstore->hot_s - drop, *expert_heatmap, expert_hotstore_buft);
+            }
+        }
     }
 
     if (!memory->resize(n_ctx_seq_new)) {
