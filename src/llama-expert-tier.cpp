@@ -1,4 +1,5 @@
 #include "llama-expert-tier.h"
+#include "llama-impl.h"
 
 #include <mutex>
 #include <unordered_map>
@@ -82,13 +83,27 @@ ggml_tensor * llama_expert_tier_build(ggml_context * ctx,
     // MMF both compact. 4 is the lowest per-type bound of get_mmvq_mmid_max_batch()
     // over all arch tables, so it needs no device query.
     constexpr int64_t n_tokens_max = 4;
-    if (cur->ne[2] > n_tokens_max || !ggml_is_quantized(w->type)) return nullptr;
+    if (cur->ne[2] > n_tokens_max || !ggml_is_quantized(w->type)) {
+        // one-shot: a silently bypassed tier looks exactly like an engaged one
+        static bool logged = false;
+        if (!logged && llama_expert_tier_has(w)) {
+            logged = true;
+            LLAMA_LOG_WARN("%s: expert tier bypassed: n_tokens=%d (max %d), %s is %s\n",
+                    __func__, (int) cur->ne[2], (int) n_tokens_max, w->name, ggml_type_name(w->type));
+        }
+        return nullptr;
+    }
 
     tier_entry ent;
     {
         std::lock_guard<std::mutex> lk(g_mtx);
         auto it = g_table.find(w);
         if (it == g_table.end()) {
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                LLAMA_LOG_WARN("%s: expert tier bypassed: %s has no registered hot store\n", __func__, w->name);
+            }
             return nullptr;
         }
         ent = it->second;
@@ -97,6 +112,14 @@ ggml_tensor * llama_expert_tier_build(ggml_context * ctx,
     const int n_experts     = (int) w->ne[2];
     const int n_expert_used = (int) ids->ne[0];
     const int n_tokens      = (int) cur->ne[2];
+
+    {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            LLAMA_LOG_INFO("%s: expert tier engaged: n_tokens=%d, %s\n", __func__, (int) cur->ne[2], w->name);
+        }
+    }
 
     // hot path: GPU tier tensor. Remap real expert ids through hot_lut
     // -> hot slot indices (sentinel S for cold experts = zero contribution).
