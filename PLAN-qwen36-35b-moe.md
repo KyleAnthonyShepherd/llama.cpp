@@ -1867,7 +1867,43 @@ with `-c 512 --ctx-max 4096`, 900 predicted tokens. Growth fires from the `decod
 growth. Fixing it means re-reading `llama_n_ctx(ctx)` after each decode instead of caching it at
 startup, exactly the pattern `NOTES.md` Part 1 item 9 prescribes for the server.
 
-### 15.13 Open
+### 15.13 CLOSED: `--ctx-max` composes with `-ehs` on this architecture
+
+Sections 11.5 / 13.6 flagged "hot store sized at load, never resized; growth then eats VRAM it
+already claimed" as a blocking hazard and told the user not to combine the two. **Tested, and the
+hazard does not bite on this model.**
+
+`-c 512 --ctx-max 32768 -ehs -1 -fitt 256`, hot store **S=45, 2439 MiB**:
+
+```
+=== Expert hotstore sizing (S=45) ===
+  GPU hot store allocated: CUDA0, 2558394368 bytes (2439 MiB) for 45+1 slots
+set_n_ctx: growing n_ctx: 512 -> 1536 (n_ctx_seq: 512 -> 1536)
+set_n_ctx: growing n_ctx: 1536 -> 32768 (n_ctx_seq: 1536 -> 32768)
+resize:      CUDA0 KV buffer size =    30.00 MiB      (at 1536)
+resize:      CUDA0 KV buffer size =   640.00 MiB      (at 32768)
+```
+
+Then real work at the grown size: a **25841-token prompt at 231.63 t/s**, no failure, no
+`failed to reserve graph`. A 33301-token prompt was cleanly rejected against the ceiling with a
+400 and an explicit message, which is the correct behaviour.
+
+**Why it survives: KV on this architecture is unusually cheap.** Section 0.3's 20 KiB/token is
+confirmed to the megabyte - 32768 x 20 KiB = **640.00 MiB** measured. The mechanism in 11.5 is
+real, but its magnitude here is one quarter of the hot store, and the fitter's slack absorbed it.
+
+**The boundary, stated so it can be checked elsewhere:** with `--ctx-max`, the fit sizes the hot
+store against the *initial* `n_ctx`, so it over-commits VRAM by roughly the KV delta between the
+initial and the maximum context. Here that is `n_ctx_max x 20 KiB` = 640 MiB at 32768, and
+`-fitt 256` left enough slack to cover it. **Rule: keep `-fitt` at or above the KV cost of
+`--ctx-max`.** On an architecture with expensive KV (many attention layers, weak GQA) the same
+mechanism would still bite - this result does not generalise beyond Qwen3.5/3.6-style hybrids.
+
+Also observed, and relevant to the 16 GiB box: the server creates **context checkpoints of
+62.8 MiB each, up to 32** (`--ctx-checkpoints`). Only 2 were live here, but the ceiling is ~2 GiB
+of host state. Worth lowering on a memory-constrained server.
+
+### 15.14 Open
 
 - **No repeats** - every number in 15.2/15.7 is a single run, and the same config varied ~8%
   between two runs. Repeat before trusting any delta under ~10%.
