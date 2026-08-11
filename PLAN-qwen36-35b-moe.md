@@ -1860,6 +1860,14 @@ Verified on the server:
 ```
 set_n_ctx: growing n_ctx: 512 -> 1024 (n_ctx_seq: 512 -> 1024)
 ```
+
+> **CORRECTION (2026-08-11, found via the home server's llama-cli log):** those early verifications
+> only exercised `maybe_grow_for_request()`, which needs an explicit `n_predict` to size against.
+> The **mid-generation** hook (`maybe_grow_mid_generation()`) had an off-by-one - caller triggers
+> at `n_tokens + 1 >= n_ctx`, hook bailed at `n_needed <= n_ctx` - so with `n_predict = -1` (what
+> llama-cli's chat sends) nothing ever grew and generation truncated at the initial `-c`. Fixed in
+> `ca7de7932`; a no-`n_predict` request now steps 512 -> 768 -> ... -> ctx_max by 1.5x. Repro and
+> regression case: request with no `n_predict` against `-c 512 --ctx-max 4096`.
 with `-c 512 --ctx-max 4096`, 900 predicted tokens. Growth fires from the `decode()` hook
 (`src/llama-context.cpp:1967-1980`) on memory-prepare failure, gated `n_seq_max == 1`.
 
