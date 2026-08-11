@@ -1420,6 +1420,372 @@ that does not require porting a CUDA kernel change by hand.
 
 ---
 
+## 14. Review - PR #26824 (closed) and RFC discussion #24528
+
+Reviewed 2026-08-11. **The RFC discussion matters more than the PR.** It contains the two
+measurements this whole plan has been waiting on, and one that should change the risk ordering.
+
+### 14.1 `H(f)` is answered, and the answer is "no skew"
+
+Discussion #24528, on the expert-coverage question section 1.3 made everything contingent on:
+
+> Initial hypothesis that top ~1000 experts saturate value was "probably... measurement
+> artifact" from under-warmed pools. Properly warmed caches show "essentially linear" returns
+> across coverage percentages up to 30%+.
+
+**Linear returns means `H(f) ~= f`.** The hottest 26% of experts capture about 26% of
+activations. Section 1.3's decision rule (`H(0.19) >= 0.40` to justify per-expert placement)
+**fails**, and section 11.3's inference that miltos22's 1.7-2.1x implied `H ~= 0.6` was wrong -
+those gains come from elsewhere (14.2).
+
+Consequences:
+- The heat/decay/hysteresis/dwell machinery is mostly wasted motion. A static assignment would
+  land within a few percent of a perfectly-ranked one.
+- **But the cache is still worth having**, because its value was never skew - it is moving expert
+  matmuls from ~28 GB/s host to ~288-448 GB/s VRAM. That is proportional to coverage, and
+  coverage is what the VRAM budget buys.
+- Section 7.3 predicted **~20%** decode gain from ~26% coverage. leloch measured **+21.6%** full
+  path on Qwen3.6-35B. The byte model in section 7 is sound; the skew hypothesis was not.
+
+Section 3's Phase A is still worth running - but now to *confirm* flatness on Qwen3.6-35B
+specifically, not to discover skew.
+
+### 14.2 The fused cold op is worth more than the VRAM cache
+
+leloch's own decomposition on Qwen3.6-35B:
+
+| component | decode gain |
+|---|---|
+| cache only | **+8%** |
+| + fusion | +18% |
+| + redirect | +20% |
+| full path | +21.6% |
+
+**Fusion (gate/up/SwiGLU in one pass) more than doubles the cache-only figure.** This confirms
+section 13.5's guess that `MOE_COLD` matters more here than moving 26% of experts to VRAM, and it
+reorders the work: the fused cold path is the high-value, low-risk piece, and it is pure CPU code
+with no graph sentinel, no duplicate ids, and no batch ceiling.
+
+It also explains the gap between leloch's +21.6% and miltos22's 1.49-2.19x: different baselines,
+and miltos22's numbers bundle fusion **and** mmap pinning **and** the cache.
+
+### 14.3 The measurement that should worry us most: old single GPUs regress
+
+@batot1, GTX 1080 Ti, 11 GB, single GPU:
+
+| config | tok/s |
+|---|---|
+| cache hard OFF | **19.32** |
+| cache ON, 4096 MB | **13.25 (-31%)** |
+| cache ON, 32 MB | 18.72 (-3%) |
+
+**A 32 MiB cache still costs 3%.** That is a fixed per-token dispatch overhead independent of
+cache size - the tell for an approach whose bookkeeping does not amortise on a slow GPU.
+
+Every positive report in that thread is Ampere-or-newer, and most are multi-GPU 3090s. The one
+old single-GPU datapoint is a consistent regression. **The home server's GTX 1660 Ti (Turing
+TU116, no tensor cores, 5748 MiB) is architecturally much closer to the 1080 Ti than to a 3090.**
+
+This inverts the testing order. The dev box (RTX 3060, Ampere, cc 8.6) will flatter this feature;
+it is the *wrong* box to decide on. **Get a 1660 Ti number early, before investing further.**
+
+### 14.4 MTP + cache composition is measured, and section 12.3's M4 prediction holds
+
+> GLM-5.2 754B + MTP: 13.92 -> 29.35 tok/s (+64.9%)
+> "MTP is worth +28% without cache but +51% with it"
+
+Section 12.3 M4 argued that caching lowers the marginal cost of a larger expert union, so `k_opt`
+should rise and MTP should be worth *more* with a cache than without. **That is now measured on
+someone else's hardware: +28% -> +51%.** The mechanism is confirmed; the magnitudes still need
+re-measuring here, since the user has confirmed 27B MTP results do not transfer to the 35B.
+
+This strengthens the case for the M1 guard work rather than weakening it.
+
+### 14.5 A footgun that our M1 guard shares
+
+Discussion #24528, operational issues list:
+
+> **Silent bypass above max batch:** If batch size exceeds cache's maximum, operations silently
+> bypass cache with no diagnostic.
+
+**Our `n_tokens_max` guard at `src/llama-expert-tier.cpp:79` is exactly this bug.** It returns
+`nullptr` with no log, so a config that silently loses the tier looks identical to one that keeps
+it. Cheapest possible fix: a one-shot `LLAMA_LOG_WARN` naming `n_tokens` and the cap. Should land
+before any benchmarking, or half the results will be unattributable.
+
+Two more from the same list worth pre-empting:
+- **Default admission too aggressive** - "full-acceptance content regressed -30%... ADMIT_AFTER=64
+  removed the cliff entirely." Do not trust `--expert-hyst 1.3` / `--expert-dwell 0` defaults;
+  sweep them.
+- **Budget silently capped** - requesting 20480 MiB quietly allocated 12563 MiB. Always read back
+  the `GPU hot store allocated:` line rather than trusting the request.
+
+### 14.6 A speculative-decoding failure mode to watch for in Test 3
+
+@noonghunna: "DSpark (GPU) + cache -> 33.4 tok/s - **cache never engages**" versus "DSpark on CPU
++ cache -> 46.8 tok/s - composes." Diagnosis offered: "device/session binding doesn't survive the
+reordered device list."
+
+MTP creates a second `llama_context` (`ctx_dft`). If #26563's hot store binds to a device index or
+a context identity that the draft context perturbs, **the cache can silently fail to engage with
+MTP on - which would look exactly like the M1 guard not working.** Test 3's
+`GGML_SCHED_DEBUG=2 | grep -c MUL_MAT_ID_COLD` distinguishes the two, because it observes the
+graph directly rather than inferring from throughput. Keep that distinction in mind when reading
+the result.
+
+### 14.7 Prompt processing regresses, repeatedly, across implementations
+
+Independent reports: -14% (@xashr), -19% (@noonghunna), -7% (@giveen) on leloch's; and on
+miltos22's #26824, @kabhinara measured a **3-4x** prompt-processing regression, with Green-Sky
+finding "prompt processing is ALWAYS done on cpu (300 -> 2 tps)" on BTL-4-Compact.
+
+The 27B work already established that prompt processing is a first-class metric on this hardware
+(the `GGML_CUDA_FORCE_MMQ` build was worth +135% pp). **Every A/B in sections 12-13 must report pp
+alongside tg**, or a large pp regression will hide behind a modest tg gain.
+
+Some of the reported pp loss is confounded with `-ub` sizing changes made to free VRAM for the
+cache - control for that explicitly.
+
+### 14.8 leloch's architecture is a genuine alternative, and it avoids our whole M1 problem
+
+#24528 inverts #26563's structure: **keep `MUL_MAT_ID` on the CPU** and have the CPU kernel
+dispatch cached rows to a persistent VRAM cache, computing misses locally. Versus #26563's
+"hot GPU `mul_mat_id` + cold CPU op, summed".
+
+Consequence: **no graph-level sentinel, so no duplicate expert ids, so no `mm_ids_helper` hazard
+and no MMQ/MMF exposure.** Sections 12 and 13 - the entire M1/M5 line of work - exist only because
+of #26563's sentinel. leloch's design does not have that problem at all.
+
+Costs, in leloch's own accounting: it "hooks the CPU mul_mat_id hot path" (named as the largest
+structural cost), carries heuristics maintainers did not choose, is hard to test in CI, and is
+CUDA-only. It also still has a max-batch bypass (14.5), just for a different reason.
+
+Not a recommendation to switch - we have #26563 merged and working. But if M1/M5 turn into a
+sustained fight with the CUDA id-compaction path, this is the escape hatch, and it has a measured
+MTP composition story (14.4) that #26563 does not.
+
+### 14.9 Status of #26824 and what is worth taking from it
+
+**Closed.** IMbackK: *"This type of pr is not acceptable as i violates multiple rules, for example
+the one change per pr rule, the no changes in multiple back ends rule, vibecodeing etc."* Plus
+automated flags for "multiple backend changes in one PR" and "large PR" (71 commits). Green-Sky
+also objected to the title length. Constructive path offered by voidpush and Tha14: an issue
+describing the architecture first, then small sequential PRs.
+
+Read against `AGENTS.md`, this is a clean demonstration of what that file is warning about, and it
+is a strong argument for keeping our branch a *private fork* rather than trying to upstream
+anything except the narrow, self-contained pieces (section 13.3's M2 duplicate-id test remains the
+best candidate).
+
+Three features in #26824 are worth porting later, in this order for a 16 GiB box:
+
+1. **`--expert-move-mode` (copy vs move).** Move mode frees the host copy of a promoted expert.
+   This directly addresses section 11.4's duplication concern, which is the single biggest memory
+   risk on the 16 GiB server. Copy mode heats up faster; move mode preserves RAM.
+2. **`--expert-pin N`** - `MADV_WILLNEED` pinning of the top N% of *cold* experts' mmap pages,
+   with a reported optimum of **30-60%**. This is section 3's Phase C, implemented, with a tuned
+   range already established.
+3. **Fused cold op** - per 14.2, the largest single component of the measured gain.
+
+Everything else in #26824 (device-priority stores, throttled PCIe queue, multi-GPU handshakes) is
+multi-GPU machinery with no value on a single-card box.
+
+---
+
+## 15. MEASURED - dev box, 2026-08-11, `UD-Q3_K_M` + PR #26563 + M1
+
+Branch `expert-cache-vram` (`714299277`). Harness: `phase0/devbox-expert-ab.sh`,
+logs in `phase0/results/devbox/`.
+
+**Box:** RTX 3060 Laptop, 6144 MiB VRAM (**only 5066 MiB free** - 1077 MiB held by the
+display), cc 8.6 Ampere, **64 GB RAM**, Windows, MSVC, CUDA 13.3.
+**Model:** `unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q3_K_M`, 15.93 GiB, 41 blocks
+(40 trunk + MTP in-checkpoint), 256 experts, top-8, `n_ff_exp` 512, `n_ctx_train` 262144.
+
+**Expert tensor types are i-quants, not K-quants:** IQ3_XXS x78, IQ4_XS x39, Q6_K x3,
+Q4_K x1, Q3_K x2. On the `turing_plus` mmvq table (both this box and the 1660 Ti) that is
+IQ3_XXS=7, IQ4_XS=8, Q3_K=5 - so `n_tokens_max = 4` is safe with headroom. Section 0.4's
+worry about i-quant CPU matmul throughput applies to this quant and is unmeasured.
+
+### 15.1 The tier engages, and only because of M1
+
+```
+llama_expert_tier_build: expert tier engaged: n_tokens=2, blk.0.ffn_up_exps.weight
+llama_expert_tier_build: expert tier bypassed: n_tokens=9 (max 4), blk.0.ffn_up_exps.weight is iq3_xxs
+```
+
+**Decode runs at `n_tokens = 2`, not 1.** PR #26563's original `if (cur->ne[2] > 1)` guard
+would therefore have bypassed the tier **on every single decode step** - the feature as
+submitted does nothing on this configuration. Section 12's M1 change is what makes it work.
+Prompt processing (`n_tokens = 9`) correctly bypasses, as designed.
+
+> **Retracted:** an earlier run of this pass concluded "zero `MUL_MAT_ID_COLD` nodes, the tier
+> never engages". That run was killed by a 10-minute timeout and its log was truncated before
+> decode began. `GGML_SCHED_DEBUG=2` at `-lv 5` produces ~64 MB of output per few tokens and is
+> not a practical instrument here; the one-shot logging committed in `714299277` is.
+
+### 15.2 Throughput - warm-up dominates, and short benchmarks lie
+
+| run | S | coverage | pp t/s | tg t/s |
+|---|---|---|---|---|
+| 128 tok, `-ehs 0` | - | - | 84.54 | 18.39 |
+| 128 tok, `-ehs -1` | 23 | 9% | 80.59 | 18.82 |
+| 128 tok, `-ehs -1 -fitt 256` | 37 | 14.5% | 80.51 | 18.32 |
+| **483 tok, `-ehs 0`** | - | - | 19.10 | **15.81** |
+| **483 tok, `-ehs -1 -fitt 256`** | 41 | 16% | 17.11 | **17.55 (+11%)** |
+
+At 128 tokens the hot set has not converged and the gain is zero. At 483 tokens it is
+**+11% tg / -10% pp**. **Any benchmark under ~300 generated tokens understates this feature**
+and will produce a false negative. (The two 483-token rows also ran at `-c 512`, so their
+absolute pp/tg are not comparable to the 128-token rows - only within-pair deltas are.)
+
+### 15.3 Hit rate is strongly super-linear - section 14.1 was wrong for this model
+
+With S=37-41 (**14-16% of experts resident**), the measured per-decode hit rate is **30-76%,
+mean ~55%**, once warmed. Early in a run it is ~24%.
+
+That is roughly **3.5x uniform**, and it directly contradicts discussion #24528's "essentially
+linear returns" finding quoted in section 14.1. Either the effect is model-dependent, or that
+thread's pools were still under-warmed (the same warm-up artifact 15.2 shows here, which is
+exactly the artifact that thread claimed to have corrected for).
+
+**Section 1.3's decision rule is therefore back in play for Qwen3.6-35B-A3B specifically**, and
+section 14.1 should not be treated as settled. The 55% figure is this plan's first direct `H(f)`
+measurement and it clears the top bar (`H >= 0.40`).
+
+Per-layer heat after 128 tokens shows the depth dependence section 12.3 predicted:
+layer 0 has **225 of 256 experts warm**, layer 9 only **126** - early layers flat, deep layers
+concentrated. Spending VRAM preferentially on deep layers is untested and looks promising.
+
+### 15.4 `-fitt` is worth ~40% of the hot store
+
+Default 1024 MiB fit margin -> **S=23**. `-fitt 256` -> **S=37-41**. The fit trace shows why:
+free VRAM is 5066 MiB, target = 5066 - 1024 = 4042 MiB, and `S` is derived as
+`n_expert * moe_on_gpu / total_moe_bytes - 1 = 256 * 1283/13578 - 1 = 23`. The final allocation
+still leaves ~1035 MiB unused, so **the autofit under-allocates even after the margin is
+accounted for** - there is more headroom to reclaim than `-fitt` alone gets.
+
+### 15.5 Two undocumented / silent behaviours
+
+- **`LLAMA_EXPERT_HITRATE`** (env var, `src/llama-context.cpp:1523`) is the only way to get the
+  hit-rate counter. Not in `--help`, not in the READMEs. It is the single most useful number the
+  feature produces.
+- **The heatmap freezes under speculation.** `src/llama-context.cpp:1514`:
+  ```cpp
+  if (expert_heatmap && (ubatch.n_tokens == 1 || !expert_hotstore || !expert_hotstore->is_filled)) {
+  ```
+  Once the store is filled, heat only updates at `n_tokens == 1`. An MTP verify batch is >= 2, so
+  **with MTP on the hot set is frozen at whatever the first fill chose, permanently.** This is
+  section 12.3's M3, and it is worse than predicted: not mis-weighted, simply dead.
+
+### 15.6 Auto context growth does not work outside the server
+
+`-c 512 --ctx-max 4096 -n 800` generated exactly 483 tokens and stopped at 511 = the initial
+`n_ctx`. No `growing n_ctx:` line ever appeared.
+
+- The core mechanism is present and looks correct: `llama_context::set_n_ctx()`
+  (`src/llama-context.cpp:891`) and the auto-grow hook in `decode()` (`:1967-1980`), gated on
+  `n_seq_max == 1 && n_ctx_max > n_ctx`, firing on a memory prepare failure.
+- **`llama_set_n_ctx` is called from exactly one place in the tree:
+  `tools/server/server-context.cpp` (3 sites).**
+- `llama-completion` reads `n_ctx` once at startup and enforces it itself at
+  `tools/completion/completion.cpp:609` (`n_past + embd.size() >= n_ctx` -> context-shift or
+  stop), so `decode()` never fails and the growth hook never runs.
+
+This is precisely the failure mode `NOTES.md` Part 1 item 9 predicted for the server
+("`slot.n_ctx` computed once at startup... would grow the underlying cache but leave the server
+still enforcing the old limit"), applying verbatim to the completion tool. Tools that guard the
+context themselves silently opt out of growth.
+
+### 15.7 Server matrix, 900 generated tokens (`phase0/devbox-server-ab.sh`)
+
+The server is the only harness that registers `--spec-type` **and** drives context growth, so all
+of the below runs there. `-c 4096`, `-np 1`, `n_predict 900`, temp 0.
+
+| case | S | pp t/s | tg t/s | draft accept | mean hit rate |
+|---|---|---|---|---|---|
+| `-ehs 0` | - | 13.13 | **15.37** | - | - |
+| `-ehs -1 -fitt 256` | 43 | 12.72 | **16.45** / 17.81 | - | 56.4% (899 samples) |
+| `--spec-type draft-mtp` | - | 13.96 | **12.62** | 0.507 | - |
+| both, before the 15.8 fix | 33 | 12.56 | **13.67** | 0.591 | 8.1% (**1 sample**) |
+| **both, after the 15.8 fix** | 33 | 11.38 | **17.30** | 0.605 | 35.9% (322 samples) |
+
+**MTP alone is a regression on this model: -18%** (12.62 vs 15.37), at 0.507 acceptance. This
+independently confirms the user's report that the 27B's MTP result does not transfer, and it is
+consistent with sections 7.4/10.1: on a MoE the verify batch pays for the *union* of the drafted
+tokens' experts, and a 0.5 acceptance rate does not buy enough tokens to cover it.
+
+**With the cache, MTP is roughly break-even** (17.30 vs 16.45-17.81) instead of -18%. That is the
+section 12.3 M4 / 14.4 mechanism showing up locally: the cache lowers the marginal cost of a
+larger expert union, so speculation stops being a net loss.
+
+**Run-to-run variance is significant** - the identical `cache` case measured 16.45 and 17.81 t/s
+on two runs (~8%). No conclusion below ~10% should be drawn from single runs. Everything in this
+section is n=1 and should be repeated.
+
+### 15.8 Three separate freezes broke MTP + cache, all now fixed
+
+Committed as `a02f14d05` and `f95c5a391`.
+
+1. **The MTP context built its own hot store and OOM'd at load.**
+   `common/speculative.cpp:2373` sets `ctx_type = LLAMA_CONTEXT_TYPE_MTP` but the draft context
+   still inherits `expert_hot_s`. The store is sized from `hparams.n_layer()` (40 trunk layers)
+   although an MTP context only runs the nextn block, so it asked for 1803 MiB with 528 MiB free:
+   ```
+   allocate: not enough memory to allocate the GPU hot store of 33 slots (1803 MiB needed, 528 MiB free on CUDA0)
+   common_speculative_init_result: failed to create MTP context
+   ```
+   Worse, `g_table` in `src/llama-expert-tier.cpp` is a **file-scope global keyed by model tensor
+   pointer**, and both contexts share the same model tensors - so the draft store would have
+   overwritten the target's registrations, and either destructor's `llama_expert_tier_clear()`
+   would wipe both. **This global is a latent multi-context bug independent of MTP** and is worth
+   reporting upstream.
+2. **Heat froze.** `src/llama-context.cpp` tracked heat only at `ubatch.n_tokens == 1`; a verify
+   batch is `1 + n_draft`, so after the initial fill the hot set never changed again.
+3. **Resync froze.** `maybe_resync(..., ubatch.n_tokens > 1)` returns immediately on the
+   multi-slot flag (`src/llama-expert-hotstore.cpp:302-306`), so even with heat updating, the
+   store contents were still pinned to the first fill.
+
+All three now key off `LLAMA_EXPERT_TIER_MAX_TOKENS` (4) - the batches the tier actually serves -
+rather than `== 1`. Net effect: hit rate **8.1% (1 sample) -> 35.9% (322 samples)**, tg
+**13.67 -> 17.30**.
+
+Still open from section 12.3's M3: heat is credited to *rejected* draft tokens too, since the
+update runs before acceptance is known. That biases the hot set toward what the MTP head predicts
+rather than what the model emits.
+
+### 15.9 Auto context growth - full tool survey
+
+| tool | growth | why |
+|---|---|---|
+| `llama-server` | **works** | the only caller of `llama_set_n_ctx` (3 sites, `tools/server/server-context.cpp`) |
+| `llama-cli` | **works** (inherited) | spawns `llama_server` on a thread and talks HTTP (`tools/cli/cli-server.h`, links `llama-server-impl`) |
+| `llama-completion` | **broken** | caches `n_ctx` at `completion.cpp:205`, enforces it itself at `:609`, so `decode()` never fails and the auto-grow hook never fires |
+| `llama-perplexity`, `batched-bench`, `imatrix` | n/a | fixed-window by design; they deliberately fill exactly `n_ctx` |
+
+Verified on the server:
+```
+set_n_ctx: growing n_ctx: 512 -> 1024 (n_ctx_seq: 512 -> 1024)
+```
+with `-c 512 --ctx-max 4096`, 900 predicted tokens. Growth fires from the `decode()` hook
+(`src/llama-context.cpp:1967-1980`) on memory-prepare failure, gated `n_seq_max == 1`.
+
+`llama-completion` is a genuine gap: any tool that guards the context itself silently opts out of
+growth. Fixing it means re-reading `llama_n_ctx(ctx)` after each decode instead of caching it at
+startup, exactly the pattern `NOTES.md` Part 1 item 9 prescribes for the server.
+
+### 15.10 Open
+
+- **No repeats** - every number in 15.2/15.7 is a single run, and the same config varied ~8%
+  between two runs. Repeat before trusting any delta under ~10%.
+- `llama-completion` context growth is unfixed (15.9).
+- Rejected draft tokens still pollute the heatmap (15.8).
+- The autofit still leaves ~1035 MiB of VRAM unused beyond the margin (15.4).
+- 64 GB of RAM here means host-bandwidth pressure does not reproduce; per section 14.3 the
+  1660 Ti is the box that decides, and MTP's -18% may not transfer either.
+
+---
+
 ## 8. Prior art
 
 - [ggml-org/llama.cpp#20757](https://github.com/ggml-org/llama.cpp/issues/20757) - two-tier
