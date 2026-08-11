@@ -11,7 +11,9 @@ set -u
 PHASE0_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$PHASE0_DIR/.." && pwd)"
 OUT="$PHASE0_DIR/results/devbox"
+# Release/ subdir on the MSVC generator, flat bin/ on the Linux build
 BIN="$REPO_ROOT/build/bin/Release/llama-server.exe"
+[ -x "$BIN" ] || BIN="$REPO_ROOT/build/bin/llama-server"
 MODEL="${MODEL:-$(cat "$OUT/model-path.txt")}"
 TAG="${TAG:-q3km}"
 
@@ -25,7 +27,8 @@ PROMPT="Write a detailed numbered list of forty distinct facts about the history
 
 stop_server() {
     curl -s -X POST "http://127.0.0.1:$PORT/shutdown" >/dev/null 2>&1
-    taskkill //F //IM llama-server.exe >/dev/null 2>&1
+    taskkill //F //IM llama-server.exe >/dev/null 2>&1   # windows
+    pkill -f "llama-server .*--port $PORT" >/dev/null 2>&1
     sleep 3
 }
 

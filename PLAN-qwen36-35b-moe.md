@@ -1815,7 +1815,39 @@ choice is between a K-quant that pages from SSD and an i-quant that fits but com
 measure it.** A K-quant near 16 GiB (`UD-Q3_K_XL`, 16.8 GB) is the obvious candidate to test
 against `UD-Q3_K_M`.
 
-### 15.11 Auto context growth - full tool survey
+### 15.11 Every unsloth quant at or below Q3 uses i-quant experts
+
+`UD-Q3_K_XL` was the obvious candidate from 15.10 ("a K-quant near 16 GiB"). **It is not one.**
+Scanned with `phase0/gguf-remote-types.py`, which range-requests only the GGUF header, so a quant
+can be checked without downloading it. Validated against the local `UD-Q3_K_M` file first - the
+remote scan reproduces its measured types exactly.
+
+| quant | size | expert tensor types | i-quant free |
+|---|---|---|---|
+| UD-Q2_K_XL | 12.3 GB | IQ2_XS x78, IQ3_XXS x39, IQ4_XS x3, Q2_K x2, Q3_K x1 | no |
+| UD-Q3_K_M | 16.6 GB | IQ3_XXS x78, IQ4_XS x39, Q6_K x3, Q3_K x2, Q4_K x1 | no |
+| **UD-Q3_K_XL** | 16.8 GB | **IQ3_XXS x78, IQ4_XS x39, Q6_K x3, Q3_K x2, Q4_K x1** | **no** |
+| **UD-Q4_K_S** | 20.9 GB | **Q4_K x120, Q6_K x3** | **yes** |
+| MXFP4_MOE | 21.7 GB | MXFP4 x80, Q5_K x40, Q6_K x3 | yes (but MXFP4) |
+| UD-Q4_K_M | 22.1 GB | Q4_K x102, Q6_K x21 | yes |
+
+`UD-Q3_K_XL`'s expert tensors are **byte-for-byte the same mix as `UD-Q3_K_M`**. The entire ~200 MB
+difference between the two files is one dense tensor moving Q6_K -> Q8_0 (Q8_0 x259 vs x258). The
+"XL" upgrade never touches the experts, so it cannot fix the slow CPU expert path.
+
+**Consequence: the smallest i-quant-free option is `UD-Q4_K_S` at 20.9 GB = 19.5 GiB**, which is
+at or just over the server's ~19.4 GiB budget (section 0.4). There is no comfortable K-quant
+choice; the server must either accept i-quant experts that fit, or a K-quant that pages from SSD.
+
+**Warning for the constrained box:** `-ehs` (either mode) forces **all** experts to system memory
+(`common/common.cpp:1242-1265`) and holds VRAM copies on top. On a box already at its memory
+limit that pushes host demand *up*, which is the wrong direction - the fitter's default placement
+puts several GiB of experts on the GPU instead. Section 11.4 argues mmap should make the
+duplication self-correcting (hot experts' host pages stop being read and get evicted), but that
+is unverified and 64 GB of dev-box RAM cannot test it. **Measure `-ehs 0` before `-ehs -1` on the
+server, and judge on `majflt`, not throughput alone.**
+
+### 15.12 Auto context growth - full tool survey
 
 | tool | growth | why |
 |---|---|---|
@@ -1835,7 +1867,7 @@ with `-c 512 --ctx-max 4096`, 900 predicted tokens. Growth fires from the `decod
 growth. Fixing it means re-reading `llama_n_ctx(ctx)` after each decode instead of caching it at
 startup, exactly the pattern `NOTES.md` Part 1 item 9 prescribes for the server.
 
-### 15.12 Open
+### 15.13 Open
 
 - **No repeats** - every number in 15.2/15.7 is a single run, and the same config varied ~8%
   between two runs. Repeat before trusting any delta under ~10%.
