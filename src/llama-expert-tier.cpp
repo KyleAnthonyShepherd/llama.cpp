@@ -82,7 +82,7 @@ ggml_tensor * llama_expert_tier_build(ggml_context * ctx,
     // MMVQ has no compaction and is safe, so keep the tiered path inside it: MMQ and
     // MMF both compact. 4 is the lowest per-type bound of get_mmvq_mmid_max_batch()
     // over all arch tables, so it needs no device query.
-    constexpr int64_t n_tokens_max = 4;
+    constexpr int64_t n_tokens_max = LLAMA_EXPERT_TIER_MAX_TOKENS;
     if (cur->ne[2] > n_tokens_max || !ggml_is_quantized(w->type)) {
         // one-shot: a silently bypassed tier looks exactly like an engaged one
         static bool logged = false;

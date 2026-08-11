@@ -2,6 +2,12 @@
 
 #include "ggml.h"
 
+// Max tokens per batch for which the tiered path is used. Above this the CUDA
+// dispatch leaves MMVQ for MMQ/MMF, whose id compaction miscounts the duplicate
+// sentinel ids the cold remap creates. 4 is the lowest per-type bound of
+// get_mmvq_mmid_max_batch() over every arch table, so it needs no device query.
+constexpr int64_t LLAMA_EXPERT_TIER_MAX_TOKENS = 4;
+
 // Expert tier hook: drop-in replacement for ggml_mul_mat_id on expert weight
 // tensors that have a registered GPU hot store. Pure stock ggml ops, no
 // custom kernel, no per-model code.
