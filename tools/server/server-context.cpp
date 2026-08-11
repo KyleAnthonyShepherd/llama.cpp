@@ -4117,8 +4117,11 @@ private:
             return; // already at the ceiling
         }
 
+        // grow when the next token no longer fits - the same boundary the caller in
+        // process_token() triggers on (n_tokens + 1 >= n_ctx). With <= here the hook
+        // was a no-op at exactly that boundary and generation truncated at n_ctx
         const int32_t n_needed = slot.prompt.n_tokens() + 1;
-        if (n_needed <= n_ctx_cur) {
+        if (n_needed < n_ctx_cur) {
             return;
         }
 
