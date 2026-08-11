@@ -1710,10 +1710,10 @@ of the below runs there. `-c 4096`, `-np 1`, `n_predict 900`, temp 0.
 | both, before the 15.8 fix | 33 | 12.56 | **13.67** | 0.591 | 8.1% (**1 sample**) |
 | **both, after the 15.8 fix** | 33 | 11.38 | **17.30** | 0.605 | 35.9% (322 samples) |
 
-**MTP alone is a regression on this model: -18%** (12.62 vs 15.37), at 0.507 acceptance. This
-independently confirms the user's report that the 27B's MTP result does not transfer, and it is
-consistent with sections 7.4/10.1: on a MoE the verify batch pays for the *union* of the drafted
-tokens' experts, and a 0.5 acceptance rate does not buy enough tokens to cover it.
+**MTP alone looks like a -18% regression here (12.62 vs 15.37) - but that is an artifact of the
+default `n_max = 3`. See 15.9: at `n_max 1` MTP is +17.4%.** The mechanism is still sections
+7.4/10.1's: the verify batch pays for the *union* of the drafted tokens' experts, so the cost
+grows with draft length while acceptance falls.
 
 **With the cache, MTP is roughly break-even** (17.30 vs 16.45-17.81) instead of -18%. That is the
 section 12.3 M4 / 14.4 mechanism showing up locally: the cache lowers the marginal cost of a
@@ -1754,7 +1754,68 @@ Still open from section 12.3's M3: heat is credited to *rejected* draft tokens t
 update runs before acceptance is known. That biases the hot set toward what the MTP head predicts
 rather than what the model emits.
 
-### 15.9 Auto context growth - full tool survey
+### 15.9 Draft length dominates, and `n_max 1` is optimal - 15.7's "MTP regresses" was wrong
+
+The user reported `--spec-draft-n-max 1` as optimal for 35B-A3B. **Confirmed, and it reverses
+section 15.7's conclusion**: the default is `n_max = 3` (`common/common.h:325`), so every MTP run
+in 15.7 was at the worst setting on the curve.
+
+`UD-Q3_K_M`, 900 tokens, base = 15.37 t/s:
+
+| `n_max` | verify batch | MTP alone | MTP + cache | accept | hit rate |
+|---|---|---|---|---|---|
+| **1** | 2 | **18.05 (+17.4%)** | **20.11 (+30.8%)** | 0.81 / 0.83 | 44.7% |
+| 2 | 3 | 15.40 (+0.2%) | 19.11 (+24.3%) | 0.69 / 0.68 | 41.1% |
+| 3 (default) | 4 | 12.62 (-17.9%) | 17.30 (+12.6%) | 0.51 / 0.61 | 35.9% |
+
+Monotonic in every column. This is sections 7.4 / 10.1's union argument measured directly: each
+extra drafted token adds distinct experts to the verify batch, acceptance falls, and the hit rate
+falls with it (44.7 -> 41.1 -> 35.9%) because a wider union spills past the resident set.
+
+**Two operational consequences:**
+- **`n_max` must stay <= 3.** The verify batch is `1 + n_max`, and the tier bypasses above
+  `LLAMA_EXPERT_TIER_MAX_TOKENS` (4), so `n_max >= 4` silently turns the expert cache off during
+  verification - the exact silent-bypass footgun section 14.5 warned about, now reachable through
+  an ordinary user-facing flag. The one-shot log from `714299277` is what makes it visible.
+- The default `n_max = 3` is the worst usable value here. Anyone benchmarking MTP on this
+  architecture without setting `n_max 1` will measure a regression.
+
+### 15.10 `Q4_K_M` beats `UD-Q3_K_M` outright - i-quant experts are the problem
+
+Same box, same harness, `llmfan46/...-Native-MTP-Preserved-Q4_K_M` (20.28 GiB, experts **Q4_K
+x102 + Q6_K x21**) versus `unsloth UD-Q3_K_M` (15.93 GiB, experts **IQ3_XXS x78 + IQ4_XS x39**):
+
+| case (`n_max 1`) | `UD-Q3_K_M` tg | `Q4_K_M` tg |
+|---|---|---|
+| base | 15.37 | **20.38 (+33%)** |
+| cache | 16.45 / 17.81 | 20.16 (-1%, noise) |
+| MTP alone | 18.05 | 23.78 (+16.7%) |
+| **MTP + cache** | 20.11 | **23.95 (+17.5%)** |
+
+**The 27% larger model is 33% faster at baseline.** Section 0.4 flagged exactly this risk for
+i-quants ("materially worse CPU matmul throughput than K-quants and not repack-eligible") when
+weighing `UD-IQ4_XS`; it is now measured, and it is decisive. With ~75% of expert matmuls running
+on the CPU, i-quant expert tensors cost far more in decode time than their smaller footprint
+saves.
+
+**And the expert cache's value tracks CPU expert speed inversely:**
+- on `UD-Q3_K_M` (slow i-quant CPU path) the cache is worth +7-16% alone and +11% on top of MTP
+- on `Q4_K_M` (fast, repack-eligible K-quant CPU path) it is worth **nothing** (20.16 vs 20.38
+  base; 23.95 vs 23.78 with MTP) despite a healthy 52.1% hit rate over 901 samples
+
+That is a coherent mechanism, not noise: the cache moves expert matmuls from CPU to GPU, so its
+benefit is proportional to how slow the CPU path was to begin with. **A high hit rate does not
+imply a throughput win.**
+
+**Caveat that decides nothing here:** `Q4_K_M` is 20.28 GiB and this box has 64 GB. The 16 GiB
+server cannot hold it (section 0.4) - which is why `UD-Q3_K_M` was chosen in the first place. So
+the dev box's answer ("`Q4_K_M` + MTP `n_max 1`") is not transferable, and the server's real
+choice is between a K-quant that pages from SSD and an i-quant that fits but computes slowly.
+**That comparison is the single most valuable thing left to measure, and only the 1660 Ti box can
+measure it.** A K-quant near 16 GiB (`UD-Q3_K_XL`, 16.8 GB) is the obvious candidate to test
+against `UD-Q3_K_M`.
+
+### 15.11 Auto context growth - full tool survey
 
 | tool | growth | why |
 |---|---|---|
@@ -1774,7 +1835,7 @@ with `-c 512 --ctx-max 4096`, 900 predicted tokens. Growth fires from the `decod
 growth. Fixing it means re-reading `llama_n_ctx(ctx)` after each decode instead of caching it at
 startup, exactly the pattern `NOTES.md` Part 1 item 9 prescribes for the server.
 
-### 15.10 Open
+### 15.12 Open
 
 - **No repeats** - every number in 15.2/15.7 is a single run, and the same config varied ~8%
   between two runs. Repeat before trusting any delta under ~10%.

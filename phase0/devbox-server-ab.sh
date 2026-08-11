@@ -12,11 +12,15 @@ PHASE0_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$PHASE0_DIR/.." && pwd)"
 OUT="$PHASE0_DIR/results/devbox"
 BIN="$REPO_ROOT/build/bin/Release/llama-server.exe"
-MODEL="$(cat "$OUT/model-path.txt")"
+MODEL="${MODEL:-$(cat "$OUT/model-path.txt")}"
+TAG="${TAG:-q3km}"
 
 PORT="${PORT:-8080}"
 N_CTX="${N_CTX:-4096}"
 N_PREDICT="${N_PREDICT:-900}"
+# verify batch is 1 + n_max, and the tier bypasses above LLAMA_EXPERT_TIER_MAX_TOKENS (4),
+# so n_max >= 4 silently turns the cache off during verification.
+N_MAX="${N_MAX:-3}"
 PROMPT="Write a detailed numbered list of forty distinct facts about the history of computing, each three sentences long."
 
 stop_server() {
@@ -27,8 +31,8 @@ stop_server() {
 
 run_case() {
     local name="$1"; shift
-    local log="$OUT/srv-$name.log"
-    local json="$OUT/srv-$name.json"
+    local log="$OUT/srv-$TAG-$name.log"
+    local json="$OUT/srv-$TAG-$name.json"
 
     stop_server
     LLAMA_EXPERT_HITRATE=1 "$BIN" -m "$MODEL" -c "$N_CTX" -np 1 -lv 4 \
@@ -65,8 +69,8 @@ for c in "${@:-base cache mtp cachemtp}"; do
     case "$c" in
         base)     run_case base     -ehs 0 ;;
         cache)    run_case cache    -ehs -1 -fitt 256 ;;
-        mtp)      run_case mtp      -ehs 0 --spec-type draft-mtp ;;
-        cachemtp) run_case cachemtp -ehs -1 -fitt 256 --spec-type draft-mtp ;;
+        mtp)      run_case "mtp-n$N_MAX"      -ehs 0 --spec-type draft-mtp --spec-draft-n-max "$N_MAX" ;;
+        cachemtp) run_case "cachemtp-n$N_MAX" -ehs -1 -fitt 256 --spec-type draft-mtp --spec-draft-n-max "$N_MAX" ;;
         *) echo "unknown case: $c" ;;
     esac
 done
