@@ -6,6 +6,12 @@
 
 struct ggml_tensor;
 
+// read a moe_sel_experts tensor into [n_expert_used * n_tokens] host ids.
+// ggml_argsort_top_k returns a view of the full [n_expert, n_tokens] argsort, so its
+// rows are n_expert apart, not n_expert_used. one read per row, never one flat read.
+// returns n_tokens, or 0 if the tensor holds no readable ids.
+int64_t llama_expert_read_sel_ids(const ggml_tensor * t, std::vector<int32_t> & ids);
+
 struct llama_expert_heatmap {
     int n_layers;
     int n_experts;

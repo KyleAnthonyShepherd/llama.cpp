@@ -9,6 +9,22 @@
 #include <cstdio>
 #include <cmath>
 
+int64_t llama_expert_read_sel_ids(const ggml_tensor * t, std::vector<int32_t> & ids) {
+    if (!t || !t->data || t->type != GGML_TYPE_I32) {
+        return 0;
+    }
+
+    const int64_t n_expert_used = t->ne[0];
+    const int64_t n_tokens      = t->ne[1];
+
+    ids.resize(n_expert_used * n_tokens);
+    for (int64_t i = 0; i < n_tokens; ++i) {
+        ggml_backend_tensor_get(t, ids.data() + i*n_expert_used, i*t->nb[1], n_expert_used*sizeof(int32_t));
+    }
+
+    return n_tokens;
+}
+
 llama_expert_heatmap::llama_expert_heatmap(
         int n_layers, int n_experts,
         float decay_rate, int log_period, int hot_s) :
@@ -41,15 +57,13 @@ void llama_expert_heatmap::update_from_graph(const std::vector<std::pair<int, gg
     decay_all();
 
     int64_t n_tokens = 0;
+    std::vector<int32_t> expert_ids;
     for (const auto & [il, tensor] : moe_sel_experts) {
-        n_tokens = tensor->ne[1];
-
-        if (!tensor->data) {
+        const int64_t n = llama_expert_read_sel_ids(tensor, expert_ids);
+        if (n == 0) {
             continue;
         }
-
-        std::vector<int32_t> expert_ids(tensor->ne[0] * n_tokens);
-        ggml_backend_tensor_get(tensor, expert_ids.data(), 0, expert_ids.size() * sizeof(int32_t));
+        n_tokens = n;
 
         update(il, expert_ids.data(), tensor->ne[0], n_tokens);
     }

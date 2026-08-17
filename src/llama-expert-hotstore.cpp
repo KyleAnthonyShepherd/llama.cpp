@@ -414,16 +414,13 @@ void llama_expert_hotstore::log_hit_rate(const std::vector<std::pair<int, ggml_t
         return;
     }
     size_t hits = 0, total = 0;
+    std::vector<int32_t> ids;
     for (const auto & kv : moe_sel) {
         const int il = kv.first;
-        const ggml_tensor * t = kv.second;
-        if (!t || !t->data || t->type != GGML_TYPE_I32) {
+        if (llama_expert_read_sel_ids(kv.second, ids) == 0) {
             continue;
         }
-        const size_t n = ggml_nelements(t);
-        std::vector<int32_t> ids(n);
-        ggml_backend_tensor_get(t, ids.data(), 0, n * sizeof(int32_t));
-        for (size_t i = 0; i < n; i++) {
+        for (size_t i = 0; i < ids.size(); i++) {
             const int32_t id = ids[i];
             if (id >= 0 && id < n_experts) {
                 total++;
