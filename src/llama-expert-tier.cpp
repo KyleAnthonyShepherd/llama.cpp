@@ -2,6 +2,7 @@
 #include "llama-ext.h"
 #include "llama-impl.h"
 
+#include <atomic>
 #include <mutex>
 #include <unordered_map>
 
@@ -15,6 +16,8 @@ namespace {
 
     std::mutex g_mtx;
     std::unordered_map<ggml_tensor *, tier_entry> g_table;
+
+    std::atomic<int32_t> g_max_tokens{(int32_t) LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT};
 }
 
 void llama_expert_tier_register(ggml_tensor * src,
@@ -37,7 +40,12 @@ bool llama_expert_tier_has(ggml_tensor * w) {
 }
 
 int32_t llama_expert_tier_max_tokens(void) {
-    return (int32_t) LLAMA_EXPERT_TIER_MAX_TOKENS;
+    return g_max_tokens.load(std::memory_order_relaxed);
+}
+
+void llama_expert_tier_set_max_tokens(int32_t n) {
+    g_max_tokens.store(n > 0 ? n : (int32_t) LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT,
+            std::memory_order_relaxed);
 }
 
 // Build the [n_expert_used, n_tokens] i32 ids the hot path is indexed by.
@@ -100,12 +108,7 @@ ggml_tensor * llama_expert_tier_build(ggml_context * ctx,
                                       ggml_tensor * cur,
                                       ggml_tensor * ids,
                                       ggml_tensor * w_s) {
-    // BUG-3E3: the CUDA id compaction (mm_ids_helper) assumes at most one use of an
-    // expert per token; our sentinel maps every cold expert of a token to one slot.
-    // MMVQ has no compaction and is safe, so keep the tiered path inside it: MMQ and
-    // MMF both compact. 4 is the lowest per-type bound of get_mmvq_mmid_max_batch()
-    // over all arch tables, so it needs no device query.
-    constexpr int64_t n_tokens_max = LLAMA_EXPERT_TIER_MAX_TOKENS;
+    const int64_t n_tokens_max = llama_expert_tier_max_tokens();
     if (cur->ne[2] > n_tokens_max || !ggml_is_quantized(w->type)) {
         // one-shot: a silently bypassed tier looks exactly like an engaged one
         static bool logged = false;

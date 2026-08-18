@@ -2,11 +2,21 @@
 
 #include "ggml.h"
 
-// Max tokens per batch for which the tiered path is used. Above this the CUDA
-// dispatch leaves MMVQ for MMQ/MMF, whose id compaction miscounts the duplicate
-// sentinel ids the cold remap creates. 4 is the lowest per-type bound of
-// get_mmvq_mmid_max_batch() over every arch table, so it needs no device query.
-constexpr int64_t LLAMA_EXPERT_TIER_MAX_TOKENS = 4;
+// Default max tokens per batch for which the tiered path is used.
+//
+// The old reason for 4 was that the cold remap gave every cold draw of a token the same sentinel
+// slot, so a token's id list held duplicates, and MMQ/MMF id compaction miscounts those. MMVQ has
+// no compaction and 4 is the lowest per-type bound of get_mmvq_mmid_max_batch() over every arch
+// table, so staying inside MMVQ needed no device query.
+//
+// The landing pad removed the duplicates, so that reason is gone. The limit stays because a wide
+// batch is a different regime, not because the ids are unsafe: above ~32 tokens the tier takes
+// the MoE away from op-offload and pins it to the CPU, which is a real trade either way. Set it
+// with --expert-tier-max-tokens.
+constexpr int64_t LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT = 4;
+
+// current limit, and the setter the context calls at init
+void llama_expert_tier_set_max_tokens(int32_t n);
 
 // Expert tier hook: drop-in replacement for ggml_mul_mat_id on expert weight
 // tensors that have a registered GPU hot store. Pure stock ggml ops, no

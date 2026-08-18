@@ -16,6 +16,7 @@ RE_STATS = re.compile(
     r"#gen drafts =\s*(\d+), #acc drafts =\s*(\d+), #gen tokens =\s*(\d+), #acc tokens =\s*(\d+)")
 RE_HIT = re.compile(r"expert hot hit rate: (\d+)/(\d+) = ([\d.]+)% \(m=(\d+), union ([\d.]+)/(\d+)\)")
 RE_BYPASS = re.compile(r"expert tier bypassed: n_tokens=(\d+) \(max (\d+)\)")
+RE_ENGAGED = re.compile(r"expert tier engaged: n_tokens=(\d+)")
 RE_SIZING = re.compile(r"Expert hotstore sizing \(S=(\d+)\)")
 RE_VERIF = re.compile(r"draft acceptance = ([\d.]+) \(\s*(\d+) accepted /\s*(\d+) generated\), mean len =\s*([\d.]+)")
 
@@ -67,6 +68,9 @@ def main(json_path, log_path):
             print("  m=%-3d n=%-5d hit rate %5.1f%%  union %6.1f / %d experts (%.0f%%)" % (
                 m_tok, len(rows), 100.0 * h / tot, union, n_exp, 100.0 * union / n_exp))
 
+    eng = Counter(m.group(1) for m in RE_ENGAGED.finditer(log))
+    if eng:
+        print("  tier ENGAGED at n_tokens: %s" % ", ".join(sorted(eng, key=int)))
     byp = Counter(m.group(1) for m in RE_BYPASS.finditer(log))
     if byp:
         print("  tier bypassed at n_tokens: %s" % ", ".join(sorted(byp, key=int)))

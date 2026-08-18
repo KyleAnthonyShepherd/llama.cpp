@@ -125,6 +125,13 @@ for c in "${@:-e1}"; do
             HITRATE=0 run_case flag-min32  -ehs 0 --op-offload-min-batch 32  --spec-type ngram-mod --spec-ngram-mod-n-match "$N_MATCH" --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
             HITRATE=0 run_case ehs-implicit -ehs -1 -fitt 256 --spec-type ngram-mod --spec-ngram-mod-n-match "$N_MATCH" --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
             ;;
+        # E6: the ceiling raised past the verify batch. Arms interleaved so thermal drift lands
+        # on both equally; this box moves ~10% between identical runs.
+        e6) for rep in 1 2; do
+                HITRATE=0 run_case "ceil4-r$rep"  -ehs -1 -fitt 256                     --spec-type ngram-mod --spec-ngram-mod-n-match "$N_MATCH" --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
+                HITRATE=0 run_case "ceil65-r$rep" -ehs -1 -fitt 256 --expert-tier-max-tokens 65                     --spec-type ngram-mod --spec-ngram-mod-n-match "$N_MATCH" --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
+            done
+            ;;
         # wiring check: one short run of the proposed config
         smoke) run_case smoke -ehs 0 --spec-type ngram-mod --spec-ngram-mod-n-match "$N_MATCH" --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64 ;;
         *) echo "unknown case: $c" ;;

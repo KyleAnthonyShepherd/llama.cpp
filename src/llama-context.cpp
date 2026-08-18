@@ -483,6 +483,7 @@ llama_context::llama_context(
     const bool expert_cache_ok = params.ctx_type != LLAMA_CONTEXT_TYPE_MTP;
 
     expert_heat_defer = params.expert_heat_defer;
+    llama_expert_tier_set_max_tokens(params.expert_tier_max_tokens);
 
     if (hparams.n_expert > 0 && !cparams.warmup && expert_cache_ok &&
         (params.expert_heat_log_period != 0 || params.expert_hot_s != 0)) {
@@ -1605,7 +1606,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // track every batch the tier actually serves, not just single-token decode: a speculative
     // verify batch holds 1 + n_draft tokens, and gating on == 1 froze the heat for the whole
     // run once the store was filled.
-    const bool expert_heat_batch = ubatch.n_tokens <= LLAMA_EXPERT_TIER_MAX_TOKENS;
+    const bool expert_heat_batch = (int32_t) ubatch.n_tokens <= llama_expert_tier_max_tokens();
 
     if (expert_hotstore && expert_hotstore->hot_s > 0 && !expert_heat_batch) {
         expert_tier_n_bypassed++;
@@ -3793,6 +3794,7 @@ llama_context_params llama_context_default_params() {
         /*.expert_dwell                =*/ 0,
         /*.expert_cache_force         =*/ false,
         /*.expert_heat_defer          =*/ true,
+        /*.expert_tier_max_tokens     =*/ 0,
         /*.ctx_other                   =*/ nullptr,
         /*.n_ctx_max                   =*/ 0,
         /*.ctx_grow_factor             =*/ 1.5f,

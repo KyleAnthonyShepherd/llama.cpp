@@ -2835,6 +2835,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ));
     add_opt(common_arg(
+        {"--expert-tier-max-tokens"}, "N",
+        "largest batch the expert hot store serves; above it the stock matmul runs instead "
+        "(0 = built-in default of 4). a speculative verify batch is 1 + the draft width",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.expert_tier_max_tokens = value;
+        }
+    ).set_env("LLAMA_ARG_EXPERT_TIER_MAX_TOKENS"));
+    add_opt(common_arg(
         {"--expert-heat-defer"},
         {"--no-expert-heat-defer"},
         string_format("count only the accepted prefix of a speculative draft in the expert heatmap "
