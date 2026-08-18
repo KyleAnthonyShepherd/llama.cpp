@@ -29,7 +29,9 @@ struct llama_expert_heatmap {
 
     void update(int layer_idx, const int32_t * expert_ids, int n_expert_used, int n_tokens);
     void update_from_graph(const std::vector<std::pair<int, ggml_tensor *>> & moe_sel_experts);
-    void decay_all();
+    // decay is per token, not per call: a batch adds one count per token, so decaying once
+    // per call would tie the half-life to the batch shape instead of to usage
+    void decay_all(int64_t n_tokens);
     void log() const;
 
     float get_score(int layer_idx, int expert_id) const;

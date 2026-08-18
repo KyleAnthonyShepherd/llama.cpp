@@ -54,7 +54,7 @@ void llama_expert_heatmap::update_from_graph(const std::vector<std::pair<int, gg
         return;
     }
 
-    decay_all();
+    decay_all(moe_sel_experts.front().second->ne[1]);
 
     int64_t n_tokens = 0;
     std::vector<int32_t> expert_ids;
@@ -74,9 +74,13 @@ void llama_expert_heatmap::update_from_graph(const std::vector<std::pair<int, gg
     }
 }
 
-void llama_expert_heatmap::decay_all() {
+void llama_expert_heatmap::decay_all(int64_t n_tokens) {
+    if (n_tokens <= 0) {
+        return;
+    }
+    const float d = powf(decay_rate, (float) n_tokens);
     for (int i = 0; i < n_layers * n_experts; i++) {
-        heat[i] *= decay_rate;
+        heat[i] *= d;
     }
 }
 
