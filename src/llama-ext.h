@@ -86,6 +86,14 @@ using llama_memory_breakdown = std::map<ggml_backend_buffer_type_t, llama_memory
 LLAMA_API int32_t llama_model_n_expert (const struct llama_model * model);
 LLAMA_API int32_t llama_model_n_devices(const struct llama_model * model);
 
+// Tokens per batch above which the expert hot store is bypassed and the stock
+// mul_mat_id runs instead. A speculative verify batch is 1 + draft width, so a
+// wide draft can hold the whole run above this.
+LLAMA_API int32_t llama_expert_tier_max_tokens(void);
+
+// Decode batches this context sent past that limit.
+LLAMA_API int64_t llama_expert_tier_n_bypassed(const struct llama_context * ctx);
+
 LLAMA_API ggml_backend_dev_t llama_model_get_device(const struct llama_model * model, int i);
 
 LLAMA_API llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * ctx);

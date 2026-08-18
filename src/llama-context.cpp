@@ -842,6 +842,10 @@ llama_memory_t llama_context::get_memory() const {
     return memory.get();
 }
 
+int64_t llama_context::get_expert_tier_n_bypassed() const {
+    return expert_tier_n_bypassed;
+}
+
 bool llama_context::memory_update(bool optimize) {
     if (!memory) {
         return false;
@@ -1567,6 +1571,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // verify batch holds 1 + n_draft tokens, and gating on == 1 froze the heat for the whole
     // run once the store was filled.
     const bool expert_heat_batch = ubatch.n_tokens <= LLAMA_EXPERT_TIER_MAX_TOKENS;
+
+    if (expert_hotstore && expert_hotstore->hot_s > 0 && !expert_heat_batch) {
+        expert_tier_n_bypassed++;
+    }
 
     if (expert_heatmap && (expert_heat_batch || !expert_hotstore || !expert_hotstore->is_filled)) {
         synchronize();
@@ -4419,4 +4427,8 @@ llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * c
 
 llama_context * llama_get_ctx_other(struct llama_context * ctx) {
     return ctx->get_cparams().ctx_other;
+}
+
+int64_t llama_expert_tier_n_bypassed(const struct llama_context * ctx) {
+    return ctx->get_expert_tier_n_bypassed();
 }

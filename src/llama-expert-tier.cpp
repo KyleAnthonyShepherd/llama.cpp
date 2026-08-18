@@ -1,4 +1,5 @@
 #include "llama-expert-tier.h"
+#include "llama-ext.h"
 #include "llama-impl.h"
 
 #include <mutex>
@@ -31,6 +32,10 @@ void llama_expert_tier_clear() {
 bool llama_expert_tier_has(ggml_tensor * w) {
     std::lock_guard<std::mutex> lk(g_mtx);
     return g_table.find(w) != g_table.end();
+}
+
+int32_t llama_expert_tier_max_tokens(void) {
+    return (int32_t) LLAMA_EXPERT_TIER_MAX_TOKENS;
 }
 
 // Remap real expert ids through a LUT and produce a 2d [n_expert_used,

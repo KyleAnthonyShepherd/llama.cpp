@@ -10,6 +10,8 @@
 #include "speculative.h"
 #include "unicode.h"
 
+#include "../src/llama-ext.h"
+
 #include <algorithm>
 #include <cinttypes>
 #include <climits>
@@ -1262,6 +1264,19 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
                     }
                 }
             }
+        }
+    }
+
+    // a verify batch is 1 + the draft width, and the tier is bypassed above its token limit,
+    // so a wide draft keeps the hot store resident but unread for the whole run
+    if (params.expert_hot_s > 0) {
+        const int32_t n_verify = 1 + common_speculative_n_max(&params.speculative);
+        const int32_t n_tier   = llama_expert_tier_max_tokens();
+        if (n_verify > n_tier) {
+            LOG_WRN("the expert hot store (-ehs) is bypassed for every verify batch: the draft is up to "
+                    "%d tokens, so the batch is %d, above the %d token tier limit. lower the draft width "
+                    "(--spec-draft-n-max / --spec-ngram-mod-n-max) or drop -ehs\n",
+                    n_verify - 1, n_verify, n_tier);
         }
     }
 

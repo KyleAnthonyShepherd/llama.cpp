@@ -76,6 +76,8 @@ struct llama_context {
 
     llama_memory_t get_memory() const;
 
+    int64_t get_expert_tier_n_bypassed() const;
+
     // return true if the memory was updated
     bool memory_update(bool optimize);
 
@@ -380,6 +382,10 @@ private:
     // buffer type the hot store was allocated from; needed to re-allocate it smaller
     // when a growing KV cache wants the VRAM back (see set_n_ctx())
     ggml_backend_buffer_type_t expert_hotstore_buft = nullptr;
+
+    // decode batches that were too wide for the tier, so the store held VRAM without
+    // being read. a wide speculative draft keeps this at 100% for a whole run.
+    int64_t expert_tier_n_bypassed = 0;
 
     // KV cell types, kept so set_n_ctx() can size the grown cache without the memory module
     ggml_type kv_type_k = GGML_TYPE_F16;
