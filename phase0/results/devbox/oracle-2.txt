@@ -1,0 +1,6 @@
+=== cache : -ehs -1 -fitt 256 ===
+  pp 14.32 t/s (20 tok) | tg 22.41 t/s (900 tok)
+  expert tier bypassed: n_tokens=16 (max 4)
+  expert tier engaged: n_tokens=2
+  hotstore sizing (S=34)
+  mean hit rate: 48.4% over 902 samples

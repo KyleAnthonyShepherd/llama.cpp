@@ -1,0 +1,14 @@
+=== nodefer-n3 : -ehs -1 -fitt 256 --spec-type draft-mtp --spec-draft-n-max 3 --no-expert-heat-defer ===
+  pp 13.67 t/s (20 tok) | tg 28.31 t/s (900 tok)
+  expert tier bypassed: n_tokens=16 (max 4)
+  expert tier engaged: n_tokens=2
+  hotstore sizing (S=25)
+  mean hit rate: 42.6% over 341 samples
+  draft acceptance = 0.55545 (  561 accepted /  1010 generated)
+=== defer-n3 : -ehs -1 -fitt 256 --spec-type draft-mtp --spec-draft-n-max 3 --expert-heat-defer ===
+  pp 14.05 t/s (20 tok) | tg 29.41 t/s (900 tok)
+  expert tier bypassed: n_tokens=16 (max 4)
+  expert tier engaged: n_tokens=2
+  hotstore sizing (S=25)
+  mean hit rate: 38.4% over 320 samples
+  draft acceptance = 0.61328 (  582 accepted /   949 generated)

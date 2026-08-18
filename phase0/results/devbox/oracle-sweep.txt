@@ -1,0 +1,108 @@
+=== s1 ===
+  shared tokens in top-k : 38 of 40 / 40
+  argmax                 : ':' vs ':'
+  rank positions moved   : 23 of 38
+  max |dlogprob|         : 2.560e-01
+  mean |dlogprob|        : 9.412e-02
+
+  token                       ref         test      delta
+  ':'                   -0.955394    -0.972959  -1.76e-02
+  ' energy'             -1.449413    -1.519366  -7.00e-02
+  ' ('                  -2.860115    -2.732802   1.27e-01
+  ':\\'                 -2.901026    -2.972636  -7.16e-02
+  ' the'                -3.282615    -3.026633   2.56e-01
+  '\n\n'                -3.487224    -3.501277  -1.41e-02
+  ' heat'               -3.980312    -3.904370   7.59e-02
+  ' a'                  -4.237812    -4.096267   1.42e-01
+  ' you'                -4.267181    -4.264321   2.86e-03
+  ' there'              -4.881525    -4.751338   1.30e-01
+
+  VERDICT: top-k set and argmax agree, so no gross corruption.
+
+  This test cannot go further than that. Deltas of ~1e-1 in logprob are far
+  larger than last-bit rounding, but the hot path runs on the GPU and the cold
+  path on the CPU, and a per-layer difference of ~1e-3 compounds through 40
+  residual layers into exactly this range. Benign reassociation and a subtle
+  routing error both land here. Use perplexity over a fixed corpus to separate
+  them: reassociation leaves it flat, dropped expert rows do not.
+=== s4 ===
+  shared tokens in top-k : 38 of 40 / 40
+  argmax                 : ':' vs ':'
+  rank positions moved   : 25 of 38
+  max |dlogprob|         : 2.641e-01
+  mean |dlogprob|        : 1.120e-01
+
+  token                       ref         test      delta
+  ':'                   -0.955394    -0.998712  -4.33e-02
+  ' energy'             -1.449413    -1.481085  -3.17e-02
+  ' ('                  -2.860115    -2.732130   1.28e-01
+  ':\\'                 -2.901026    -2.988230  -8.72e-02
+  ' the'                -3.282615    -3.126444   1.56e-01
+  '\n\n'                -3.487224    -3.594549  -1.07e-01
+  ' heat'               -3.980312    -3.796388   1.84e-01
+  ' a'                  -4.237812    -4.023010   2.15e-01
+  ' you'                -4.267181    -4.092336   1.75e-01
+  ' there'              -4.881525    -4.844657   3.69e-02
+
+  VERDICT: top-k set and argmax agree, so no gross corruption.
+
+  This test cannot go further than that. Deltas of ~1e-1 in logprob are far
+  larger than last-bit rounding, but the hot path runs on the GPU and the cold
+  path on the CPU, and a per-layer difference of ~1e-3 compounds through 40
+  residual layers into exactly this range. Benign reassociation and a subtle
+  routing error both land here. Use perplexity over a fixed corpus to separate
+  them: reassociation leaves it flat, dropped expert rows do not.
+=== s16 ===
+  shared tokens in top-k : 37 of 40 / 40
+  argmax                 : ':' vs ':'
+  rank positions moved   : 23 of 37
+  max |dlogprob|         : 3.671e-01
+  mean |dlogprob|        : 9.298e-02
+
+  token                       ref         test      delta
+  ':'                   -0.955394    -0.985734  -3.03e-02
+  ' energy'             -1.449413    -1.502683  -5.33e-02
+  ' ('                  -2.860115    -2.849183   1.09e-02
+  ':\\'                 -2.901026    -2.839252   6.18e-02
+  ' the'                -3.282615    -3.035817   2.47e-01
+  '\n\n'                -3.487224    -3.429374   5.79e-02
+  ' heat'               -3.980312    -3.890645   8.97e-02
+  ' a'                  -4.237812    -4.182717   5.51e-02
+  ' you'                -4.267181    -4.218690   4.85e-02
+  ' there'              -4.881525    -4.813186   6.83e-02
+
+  VERDICT: top-k set and argmax agree, so no gross corruption.
+
+  This test cannot go further than that. Deltas of ~1e-1 in logprob are far
+  larger than last-bit rounding, but the hot path runs on the GPU and the cold
+  path on the CPU, and a per-layer difference of ~1e-3 compounds through 40
+  residual layers into exactly this range. Benign reassociation and a subtle
+  routing error both land here. Use perplexity over a fixed corpus to separate
+  them: reassociation leaves it flat, dropped expert rows do not.
+=== s32 ===
+  shared tokens in top-k : 38 of 40 / 40
+  argmax                 : ':' vs ':'
+  rank positions moved   : 28 of 38
+  max |dlogprob|         : 2.744e-01
+  mean |dlogprob|        : 9.604e-02
+
+  token                       ref         test      delta
+  ':'                   -0.955394    -1.023996  -6.86e-02
+  ' energy'             -1.449413    -1.434697   1.47e-02
+  ' ('                  -2.860115    -2.840669   1.94e-02
+  ':\\'                 -2.901026    -2.840520   6.05e-02
+  ' the'                -3.282615    -3.106298   1.76e-01
+  '\n\n'                -3.487224    -3.563493  -7.63e-02
+  ' heat'               -3.980312    -3.916507   6.38e-02
+  ' a'                  -4.237812    -4.109394   1.28e-01
+  ' you'                -4.267181    -3.992830   2.74e-01
+  ' there'              -4.881525    -4.819387   6.21e-02
+
+  VERDICT: top-k set and argmax agree, so no gross corruption.
+
+  This test cannot go further than that. Deltas of ~1e-1 in logprob are far
+  larger than last-bit rounding, but the hot path runs on the GPU and the cold
+  path on the CPU, and a per-layer difference of ~1e-3 compounds through 40
+  residual layers into exactly this range. Benign reassociation and a subtle
+  routing error both land here. Use perplexity over a fixed corpus to separate
+  them: reassociation leaves it flat, dropped expert rows do not.

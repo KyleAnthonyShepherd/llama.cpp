@@ -8,7 +8,7 @@
 > # **The error is flat in S**: 5.5e-2 at `-ehs 1`, 6.2e-2 at `-ehs 32`. If it came from the GPU
 > # hot path it would scale with how much traffic that path takes. It does not. That points at
 > # `ggml_mul_mat_id_cold` differing from stock `ggml_mul_mat_id` on the same CPU, which would be
-> # benign, but is unverified. See section 12.5 for the one diagnostic that would close it.
+> # benign, but is unverified. See section 12.4 for the one diagnostic that would close it.
 > #
 > # **Until this is explained, every number measured with `-ehs -1` describes a subtly different
 > # model.** Do not ship the hot store on the strength of throughput alone. RE-CHECK THIS.

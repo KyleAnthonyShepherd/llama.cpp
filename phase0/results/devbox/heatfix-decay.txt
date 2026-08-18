@@ -1,0 +1,13 @@
+=== cache : -ehs -1 -fitt 256 ===
+  pp 15.19 t/s (20 tok) | tg 25.36 t/s (900 tok)
+  expert tier bypassed: n_tokens=16 (max 4)
+  expert tier engaged: n_tokens=2
+  hotstore sizing (S=34)
+  mean hit rate: 49.0% over 902 samples
+=== cachemtp-n1 : -ehs -1 -fitt 256 --spec-type draft-mtp --spec-draft-n-max 1 ===
+  pp 14.01 t/s (20 tok) | tg 30.48 t/s (900 tok)
+  expert tier bypassed: n_tokens=16 (max 4)
+  expert tier engaged: n_tokens=2
+  hotstore sizing (S=29)
+  mean hit rate: 44.4% over 493 samples
+  draft acceptance = 0.83640 (  409 accepted /   489 generated)
