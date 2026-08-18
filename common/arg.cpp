@@ -909,6 +909,29 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
         }
     }
 
+    // The backend offloads a host-weight op at 32 tokens, which is below a speculative verify
+    // batch. Offloading that batch streams whole _exps tensors over PCIe and is slower than
+    // running the MoE on the CPU, while a 512 token prompt ubatch is still much faster on the
+    // device. 128 sits between the two. Fork default, not upstream: upstream keeps 32.
+    // Measured on 6 GB / PCIe 4.0 x8, see PLAN-ngram-mod-expert-cache.md section 11.1.
+    //
+    // set_op_offload_min_batch_env() already put this in the environment before the parser ran.
+    // Here we only record the effective value, and say so if the two ever disagree.
+    if (params.op_offload_min_batch == 0 && params.expert_hot_s != 0) {
+        params.op_offload_min_batch = 128;
+    }
+    if (params.op_offload_min_batch > 0) {
+        const std::string env = common_get_env("GGML_OP_OFFLOAD_MIN_BATCH");
+        if (env == std::to_string(params.op_offload_min_batch)) {
+            LOG_INF("op-offload threshold is %d tokens (upstream default is 32; see --op-offload-min-batch)\n",
+                    params.op_offload_min_batch);
+        } else {
+            LOG_WRN("op-offload threshold %d was not applied, the backend already latched %s. "
+                    "set GGML_OP_OFFLOAD_MIN_BATCH in the environment instead\n",
+                    params.op_offload_min_batch, env.empty() ? "32" : env.c_str());
+        }
+    }
+
     // pad tensor_buft_overrides for llama_params_fit:
     const size_t ntbo = llama_max_tensor_buft_overrides();
     while (params.tensor_buft_overrides.size() < ntbo) {
@@ -1241,6 +1264,48 @@ static utf8_argv make_utf8_argv() {
 }
 #endif
 
+// The CUDA backend latches GGML_OP_OFFLOAD_MIN_BATCH once, when its registry entry is built, and
+// that happens while the parser is still being set up. So the value has to be in the environment
+// before parsing starts, which is why these two options are read by hand here as well.
+static void set_op_offload_min_batch_env(int argc, char ** argv) {
+    if (!common_get_env("GGML_OP_OFFLOAD_MIN_BATCH").empty()) {
+        return; // the user set it directly, leave it alone
+    }
+
+    auto arg_value = [argc, argv](const std::vector<std::string> & names) {
+        for (int i = 1; i < argc; i++) {
+            const std::string a = argv[i];
+            for (const auto & name : names) {
+                if (a == name && i + 1 < argc) {
+                    return std::string(argv[i + 1]);
+                }
+                if (a.rfind(name + "=", 0) == 0) {
+                    return a.substr(name.size() + 1);
+                }
+            }
+        }
+        return std::string();
+    };
+
+    std::string min_batch = arg_value({"--op-offload-min-batch"});
+    if (min_batch.empty()) {
+        min_batch = common_get_env("LLAMA_ARG_OP_OFFLOAD_MIN_BATCH");
+    }
+    if (min_batch.empty()) {
+        std::string hot_s = arg_value({"-ehs", "--expert-hot-s"});
+        if (hot_s.empty()) {
+            hot_s = common_get_env("LLAMA_ARG_EXPERT_HOT_S");
+        }
+        if (!hot_s.empty() && std::atoi(hot_s.c_str()) != 0) {
+            min_batch = "128";
+        }
+    }
+
+    if (std::atoi(min_batch.c_str()) > 0) {
+        common_set_env("GGML_OP_OFFLOAD_MIN_BATCH", min_batch);
+    }
+}
+
 bool common_params_parse(int argc, char ** argv, common_params & params, llama_example ex, void(*print_usage)(int, char **)) {
 #ifdef _WIN32
     auto utf8 = make_utf8_argv();
@@ -1249,6 +1314,8 @@ bool common_params_parse(int argc, char ** argv, common_params & params, llama_e
         argv = utf8.ptrs.data();
     }
 #endif
+
+    set_op_offload_min_batch_env(argc, argv);
 
     auto ctx_arg = common_params_parser_init(params, ex, print_usage);
     const common_params params_org = ctx_arg.params; // the example can modify the default params
@@ -2753,7 +2820,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_EXPERT_DWELL"));
     add_opt(common_arg(
         {"-ehs", "--expert-hot-s"}, "N",
-        "-1 = autofit slots from free VRAM, 0 = disabled, N = manual top-N slots",
+        "-1 = autofit slots from free VRAM, 0 = disabled, N = manual top-N slots. "
+        "also raises the op-offload threshold to 128, see --op-offload-min-batch",
         [](common_params & params, int value) {
             params.expert_hot_s = value;
         }
@@ -2933,6 +3001,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.no_op_offload = !value;
         }
     ));
+    add_opt(common_arg(
+        {"--op-offload-min-batch"}, "N",
+        "batch size at which a host-weight op offloads to the device (0 = keep the backend default of 32, "
+        "-ehs raises it to 128)",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.op_offload_min_batch = value;
+        }
+    ).set_env("LLAMA_ARG_OP_OFFLOAD_MIN_BATCH"));
     add_opt(common_arg(
         {"--lora"}, "FNAME",
         "path to LoRA adapter (use comma-separated values to load multiple adapters)",
