@@ -708,3 +708,56 @@ order as the expert bytes the hot slots save.
 **So on this workload the hot store is not paying for itself at m=65, whatever the limit.** What
 it is worth at m=2, where the store covers the whole union and `S/U` is above 1, is a different
 question and is the one the MTP `n_max 1` regression guard actually measures.
+
+---
+
+## 14. The combined config: MTP n_max 1 + ngram-mod + `-ehs -1` (measured)
+
+`--spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 24
+--spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64`, UD-Q4_K_S, copy-heavy prompt, 900 tokens,
+arms interleaved, warm page cache. Every arm produced **byte-identical output** (4238 chars), so
+only speed differs.
+
+Both speculators fire, as the impl order predicts. ngram-mod takes the copy runs and MTP covers
+the rest:
+
+| impl | fire rate | mean draft width | accepted |
+|---|---|---|---|
+| ngram-mod | 37.8% (14/37 calls) | 63.1 tok | 839/884 |
+| draft-mtp | 100% (23/23 calls) | 1.0 tok | 23/23 |
+
+Together they turn 900 tokens into ~39 decode steps, mean accepted length 24.3.
+
+| config | tg t/s (median) | runs |
+|---|---|---|
+| no speculation, `-ehs 0` | 28.2 | 1 |
+| MTP `n_max 1` + `-ehs -1` | 35.2 | 34.8, 35.3, 35.7 |
+| combined, `-ehs -1`, limit 4 (today's default) | 65.4 | 63.4, 64.6, 66.2, 69.1 |
+| combined, `-ehs 0` + `--op-offload-min-batch 128` | 70.0 | 69.7, 70.3 |
+| ngram-mod alone, `-ehs 0` + threshold 128 | 70.9 | 69.9, 70.9, 74.0 |
+| **combined, `-ehs -1`, limit 65** | **78.1** | 77.2, 77.8, 79.0 |
+
+**This is the best configuration measured anywhere in this document: 78.1 t/s, 2.8x the
+no-speculation baseline and 2.2x MTP-with-cache.**
+
+### 14.1 It is also the first config where the hot store pays for itself
+
+Section 13.3 found the store roughly break-even with ngram-mod alone. Here it is not:
+
+- against the same config without the store, 78.1 vs 70.0 = **+11.6%**
+- against the same config with the store but the old limit, 78.1 vs 65.4 = **+19.4%**
+
+The within-arm spread is 2.3% for the winner and 0.8% for the no-store arm, so +11.6% is real and
+not the thermal noise that swamped the earlier single-run comparisons.
+
+The reason the store earns its keep here and not in section 13.3: with MTP filling in, *every*
+decode step is a batch the tier can serve - 2 tokens when MTP drafts, 65 when ngram-mod does -
+provided the limit clears 65. At limit 4 the tier serves only the MTP steps and bypasses the wide
+ones, which is the 65.4 row. Raising the limit is what converts the store from dead VRAM into a
+win on this workload.
+
+### 14.2 Caveat on the first run of a batch
+
+`combo-cache65` first measured 58.7 t/s with pp 91.5, against 128-140 pp everywhere else. That was
+a cold page cache on a 21 GB file, not a property of the config; re-run warm it gives 79.0. Any
+A/B on this box should discard or warm up the first run, on top of interleaving the arms.

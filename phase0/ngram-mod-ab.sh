@@ -132,6 +132,18 @@ for c in "${@:-e1}"; do
                 HITRATE=0 run_case "ceil65-r$rep" -ehs -1 -fitt 256 --expert-tier-max-tokens 65                     --spec-type ngram-mod --spec-ngram-mod-n-match "$N_MATCH" --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
             done
             ;;
+        # E7: MTP n_max 1 for ordinary decode, ngram-mod for the copy runs, hot store under both.
+        # ngram-mod outranks draft-mtp in the impl order and the draft loop stops at the first one
+        # that returns tokens, so the stream is bimodal: 65 token batches when the copy run hits,
+        # 2 token batches when MTP takes over. The tier only covers both if the limit clears 65.
+        # Arms interleaved against this box's ~10% drift.
+        e7) for rep in 1 2; do
+                HITRATE=0 run_case "combo-cache65-r$rep" -ehs -1 -fitt 256 --expert-tier-max-tokens 65 --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match "$N_MATCH" --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
+                HITRATE=0 run_case "combo-cache4-r$rep"  -ehs -1 -fitt 256 --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match "$N_MATCH" --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
+                HITRATE=0 run_case "combo-nocache-r$rep" -ehs 0 --op-offload-min-batch 128 --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match "$N_MATCH" --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64
+                HITRATE=0 run_case "mtponly-cache-r$rep" -ehs -1 -fitt 256 --spec-type draft-mtp --spec-draft-n-max 1
+            done
+            ;;
         # wiring check: one short run of the proposed config
         smoke) run_case smoke -ehs 0 --spec-type ngram-mod --spec-ngram-mod-n-match "$N_MATCH" --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64 ;;
         *) echo "unknown case: $c" ;;
