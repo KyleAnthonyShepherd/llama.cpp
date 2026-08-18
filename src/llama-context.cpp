@@ -1585,7 +1585,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             expert_hotstore->copy_top_s(*expert_heatmap);
         } else {
             expert_hotstore->maybe_resync(*expert_heatmap, !expert_heat_batch);
-            if (expert_heat_batch && getenv("LLAMA_EXPERT_HITRATE")) {
+            if (getenv("LLAMA_EXPERT_HITRATE")) {
+                // report at any batch size, not only the ones the heat update accepts:
+                // the union of experts a wide verify batch touches is what bounds the store
+                synchronize();
                 expert_hotstore->log_hit_rate(res->moe_sel_experts);
             }
         }

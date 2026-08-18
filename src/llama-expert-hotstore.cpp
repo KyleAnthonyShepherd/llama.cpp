@@ -7,6 +7,7 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 
+#include <algorithm>
 #include <regex>
 
 // matches the weight tensor of an expert tensor, e.g.:
@@ -413,25 +414,41 @@ void llama_expert_hotstore::log_hit_rate(const std::vector<std::pair<int, ggml_t
     if (moe_sel.empty() || !is_filled) {
         return;
     }
-    size_t hits = 0, total = 0;
+    size_t hits = 0, total = 0, distinct = 0;
+    int    n_layers_seen = 0;
+    int    n_tokens      = 0;
+    std::vector<uint8_t> seen(n_experts);
     std::vector<int32_t> ids;
     for (const auto & kv : moe_sel) {
         const int il = kv.first;
-        if (llama_expert_read_sel_ids(kv.second, ids) == 0) {
+        const int64_t n = llama_expert_read_sel_ids(kv.second, ids);
+        if (n == 0) {
             continue;
         }
+        std::fill(seen.begin(), seen.end(), 0);
         for (size_t i = 0; i < ids.size(); i++) {
             const int32_t id = ids[i];
             if (id >= 0 && id < n_experts) {
                 total++;
+                seen[id] = 1;
                 if (slot_of(il, id) >= 0) {
                     hits++;
                 }
             }
         }
+        for (int e = 0; e < n_experts; e++) {
+            distinct += seen[e];
+        }
+        n_tokens = (int) n;
+        n_layers_seen++;
     }
     if (total > 0) {
-        LLAMA_LOG("=== expert hot hit rate: %zu/%zu = %.1f%% ===\n", hits, total, 100.0f * (float) hits / (float) total);
+        // union is the mean number of distinct experts one layer touches in this batch. it bounds
+        // what a store of S slots can save: at most S/union of the expert reads, whatever the
+        // ranking. it grows with the batch, so a wide draft shrinks the store's ceiling.
+        LLAMA_LOG("=== expert hot hit rate: %zu/%zu = %.1f%% (m=%d, union %.1f/%d) ===\n",
+                hits, total, 100.0f * (float) hits / (float) total,
+                n_tokens, (float) distinct / (float) n_layers_seen, n_experts);
     }
 }
 
