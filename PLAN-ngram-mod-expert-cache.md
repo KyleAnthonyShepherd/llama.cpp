@@ -593,16 +593,24 @@ comments. The quantization of the activations, the `vec_dot`, and the chunking a
 **So two kernels with identical compute paths are producing a 7e-2 logprob difference, and that
 is still unexplained.**
 
-### 12.35 The leading hypothesis now
+### 12.35 The leading hypothesis, and a failed attempt to test it
 
-The tier inserts a GPU op (`hot`) and two `ggml_mul`/`ggml_add` nodes into the middle of each MoE,
-where stock has one CPU op. That changes where the scheduler cuts the graph, and therefore which
-backend runs the *surrounding* ops - the SwiGLU, the norms, the residual add. The same arithmetic
-on CUDA and on the CPU does not agree bit for bit, and this would be constant in S, which matches.
+The tier inserts a GPU op (`hot`) and two arithmetic nodes into the middle of each MoE, where
+stock has one CPU op. That changes where the scheduler cuts the graph, and therefore which backend
+runs the *surrounding* ops - the SwiGLU, the norms, the residual add. The same arithmetic on CUDA
+and on the CPU does not agree bit for bit, and this would be constant in S, which matches.
 
-If that is the cause, it is benign: every op is correct, they are just not all on the same device
-as before. The test is cheap: re-run both arms with `-lv 4` and diff the `graph splits` line and
-the per-op backend assignment.
+**A first attempt to test this was invalid and is recorded so nobody repeats it.** Comparing the
+`graph splits = N` line between `-ehs 0 -cmoe` and `-ehs 1 -cmoe` gives 122/82 for both, which
+looks like a refutation. It is not: that line is printed by `sched_reserve` during context init,
+*before* the hot store is allocated and long before the tier first engages. In the `-ehs 1` log it
+appears at line 240 while the store is sized at 243 and the tier engages at 287. Both arms are
+reporting the same pre-tier reserve graph.
+
+Testing it properly needs the assignment of a decode graph built *after* the store is filled.
+`GGML_SCHED_DEBUG` (`ggml-backend.cpp:1793`) dumps per-node backend assignment and is the right
+instrument; the comparison to make is which backend runs the ops either side of the MoE, not how
+many splits the reserve graph had.
 
 ### 12.4 What to run next, cheapest first
 
