@@ -53,11 +53,18 @@ run_arm() {
 }
 
 mkdir -p "$OUT"
-REF="$(run_arm ref -ehs 0)"
+# -cmoe on the reference too. Any -ehs above 0 forces every MoE weight to the CPU
+# (arg.cpp, and common.cpp for the autofit case), so a bare -ehs 0 reference would differ in
+# tensor placement as well as in the tier, and the placement difference is the larger of the two.
+REF="$(run_arm ref -ehs 0 -cmoe)"
 for c in "${@:-cache}"; do
     case "$c" in
         cache) TEST="$(run_arm cache -ehs -1 -fitt 256)" ;;
+        # does the error grow with how much traffic the hot path takes? reassociation says yes and
+        # says it should be small at S=1. a big error at S=1 points at the split logic instead.
+        s*)    TEST="$(run_arm "$c" -ehs "${c#s}" --expert-hyst 0 --expert-dwell 0)" ;;
         *)     echo "unknown arm: $c"; continue ;;
     esac
+    echo "=== $c ==="
     python "$PHASE0_DIR/oracle-logprobs.py" "$REF" "$TEST"
 done

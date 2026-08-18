@@ -1,16 +1,17 @@
 > # !!! UNRESOLVED: THE TIER MOVES THE LOGITS BY MORE THAN IT SHOULD !!!
 > #
-> # `-ehs -1` shifts the first generated token's logprobs by **max 3.2e-1, mean 1.0e-1** against
-> # `-ehs 0`, and reorders **20 of 38** shared top-k entries. The argmax survives and 38 of 40
-> # top-k tokens are shared, so it is not gross corruption, but this is far more than last-bit
-> # rounding and **it has not been explained**. Measured 2026-08-17 on UD-Q4_K_S, first token,
-> # `phase0/oracle-logprobs.sh`, raw in `phase0/results/devbox/oracle-q4ks-*.json`.
+> # With tensor placement matched (`-cmoe` on both arms), `-ehs -1` shifts the first generated
+> # token's logprobs by **max 2.4e-1, mean 7.0e-2** against stock, and reorders **19 of 38**
+> # shared top-k entries. The argmax survives and 38 of 40 top-k tokens are shared, so it is not
+> # gross corruption, but it is far more than last-bit rounding and **it is not fully explained**.
 > #
-> # **The tier is supposed to be numerically transparent. Until this is explained, every number
-> # measured with `-ehs -1` describes a subtly different model, and section 8.1's premise is
-> # unproven.** Do not ship the hot store on the strength of throughput alone.
+> # **The error is flat in S**: 5.5e-2 at `-ehs 1`, 6.2e-2 at `-ehs 32`. If it came from the GPU
+> # hot path it would scale with how much traffic that path takes. It does not. That points at
+> # `ggml_mul_mat_id_cold` differing from stock `ggml_mul_mat_id` on the same CPU, which would be
+> # benign, but is unverified. See section 12.5 for the one diagnostic that would close it.
 > #
-> # See section 12 for what has been ruled out and what to run next. RE-CHECK THIS.
+> # **Until this is explained, every number measured with `-ehs -1` describes a subtly different
+> # model.** Do not ship the hot store on the strength of throughput alone. RE-CHECK THIS.
 
 # PLAN - make `ngram-mod` speculation compatible with the expert hot store (`-ehs -1`)
 
@@ -530,60 +531,57 @@ the ngram-mod work and it affects the whole expert cache, not just the wide-draf
 ### 12.1 What was measured
 
 `phase0/oracle-logprobs.sh`, UD-Q4_K_S, prompt "The three laws of thermodynamics state that",
-one generated token, top-40 logprobs, `-ehs 0` against `-ehs -1 -fitt 256`:
+one generated token, top-40 logprobs. **Both arms carry `-cmoe`**, so every MoE weight is on the
+CPU in both and only the tier differs. Getting this wrong was the first false alarm: a bare
+`-ehs 0` reference leaves part of the MoE on the GPU, and that placement difference alone
+accounted for roughly a third of the shift originally reported here.
 
-| quantity | value |
-|---|---|
-| argmax | same (`':'`) |
-| top-k tokens shared | 38 of 40 |
-| max abs delta logprob | **3.186e-1** |
-| mean abs delta logprob | **1.040e-1** |
-| rank positions moved | **20 of 38** |
+| arm | max abs delta | mean abs delta | ranks moved | shared top-k |
+|---|---|---|---|---|
+| `-ehs 1  --expert-hyst 0 --expert-dwell 0` | 1.936e-1 | **5.469e-2** | 20 of 39 | 39 of 40 |
+| `-ehs 32 --expert-hyst 0 --expert-dwell 0` | 2.478e-1 | **6.154e-2** | 24 of 38 | 38 of 40 |
+| `-ehs -1 -fitt 256` | 2.363e-1 | **7.020e-2** | 19 of 38 | 38 of 40 |
 
-Sampled-text comparison also diverges, at character 334 of 3478. `-ehs -1` is deterministic:
-two runs of the same config are byte-identical, so this is not run-to-run noise.
+`-ehs -1` is deterministic: two runs of one config are byte-identical, so none of this is noise.
 
 ### 12.2 Why this is not acceptable as-is
 
 The tier is meant to compute the same thing as stock `ggml_mul_mat_id`. It holds bit-identical
-copies of the same quantized expert slices; it just splits the routed sum into a hot half and a
-cold half and adds them. A shift of 1e-1 in logprob is 2 to 3 orders of magnitude above what
-last-bit reassociation of one matmul produces.
+copies of the same quantized expert slices and only splits the routed sum into a hot half and a
+cold half. A mean shift of 7e-2 in logprob is orders of magnitude above what reassociating one
+matmul produces.
 
-There is a benign story: the hot half runs on the GPU (MMVQ) and the cold half on the CPU, the
-two accumulate in different orders and possibly different intermediate precision, and a ~1e-3
-relative per-layer difference compounds through 40 residual layers into this range. That story
-is plausible and completely untested.
+**The decisive clue is that the error is flat in S.** At `-ehs 1` exactly one expert per layer is
+resident, so at most 1 of 8 draws per token takes the GPU hot path and the other 7 stay on the
+CPU. At `-ehs 32` far more traffic goes hot. If the shift came from the hot path being a
+different kernel, it would grow with S. It does not move.
 
-There is a malign story: a mask, a scale or an id is wrong for some subset of draws, so some
-experts contribute twice, not at all, or with the wrong weight. That would also produce a
-shifted-but-recognisable distribution.
+What *is* constant across both is that the cold half runs through `ggml_mul_mat_id_cold`
+(`ggml/src/ggml-cpu/ggml-cpu-mul-mat-id-cold.c`) instead of stock `ggml_mul_mat_id`. That kernel
+is a copy of the stock one with a `cold_mask[i02] == 0 -> continue` filter, but the stock path can
+take a llamafile/tinyBLAS route for some shapes that the copy does not. Two different CPU kernels
+for the same arithmetic differ by far more than last-bit rounding, and that would be benign.
 
-**Both stories fit the evidence. Throughput measured under the malign story is measuring a
-different model, and would be worthless.**
+That is a hypothesis, not a finding.
 
 ### 12.3 Ruled out so far
 
 - **Not nondeterminism.** Two `-ehs -1` runs are byte-identical.
 - **Not a dirty sentinel slot after a shrink.** `shrink()` re-allocates through `allocate()`,
-  which calls `ggml_backend_buffer_clear(buf, 0)` (`llama-expert-hotstore.cpp:121`), so the
-  sentinel is re-zeroed on every resize.
-- **Not gross id corruption.** The argmax holds and 38 of 40 top-k tokens survive. Duplicate-id
-  compaction damage (section 1.3) would be far more violent than this.
+  which calls `ggml_backend_buffer_clear(buf, 0)`, so the sentinel is re-zeroed on every resize.
+- **Not gross id corruption.** The argmax holds and 38 of 40 top-k tokens survive.
+- **Not (only) tensor placement.** Matching `-cmoe` cut the shift by about a third and left the
+  rest.
+- **Not the GPU hot path alone.** Flat in S, see above.
 
 ### 12.4 What to run next, cheapest first
 
-1. **Scale with S.** Compare `-ehs 1`, `-ehs 8`, `-ehs 32` against `-ehs 0` on the same oracle.
-   Reassociation predicts the error grows smoothly with how much traffic the hot path takes. A
-   large error already at `S=1` does not fit that and points at the split logic.
-2. **Freeze residency.** Re-run with `--expert-hyst 0 --expert-dwell 0` and a huge sync period so
-   the slot assignment never changes mid-run. Removes resync as a variable.
-3. **`plant_static()`.** Already in the tree (`llama-expert-hotstore.cpp:228`), built exactly to
-   isolate the dual-path graph from the heat and copy path. Wire it to a flag and run the oracle
-   against it.
-4. **Perplexity over a fixed corpus.** The decisive test. Reassociation leaves perplexity flat;
-   dropped or misrouted expert rows do not. Needs the `llama-perplexity` target.
-5. **Scale-factor audit.** `llama_expert_tier_build` applies `w_s` to both paths after the
-   matmuls (`llama-expert-tier.cpp:135-143`). Check that stock `build_lora_mm_id` applies it at
-   the same point and to the same operand, and that `ggml_mul_mat_id_cold`'s masking really
-   contributes exactly zero for hot draws rather than a small residue.
+1. **Force the tier cold-only.** The one diagnostic that closes 12.2: make `cold_mask` all ones
+   and point `hot_lut` at the pad, so the tier computes the whole MoE through
+   `ggml_mul_mat_id_cold` and the hot path contributes nothing. Compare that against stock. Any
+   remaining difference is `mul_mat_id_cold` versus `mul_mat_id` and nothing else. If it accounts
+   for the whole 7e-2, the tier's split is exonerated and the issue is a kernel choice.
+2. **Perplexity over a fixed corpus.** Tells you whether any of this costs quality, whatever the
+   cause. Needs the `llama-perplexity` target.
+3. **Scale-factor audit.** `llama_expert_tier_build` applies `w_s` to both paths after the
+   matmuls. Check stock `build_lora_mm_id` applies it at the same point and to the same operand.
