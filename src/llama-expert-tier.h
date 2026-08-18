@@ -39,7 +39,8 @@ constexpr int64_t LLAMA_EXPERT_TIER_MAX_TOKENS = 4;
 void llama_expert_tier_register(ggml_tensor * src,
                                 ggml_tensor * dst_hot,
                                 ggml_tensor * hot_lut,
-                                ggml_tensor * cold_mask);
+                                ggml_tensor * cold_mask,
+                                ggml_tensor * draw_pos);
 
 // drop the entire table (called by hotstore destructor)
 void llama_expert_tier_clear();

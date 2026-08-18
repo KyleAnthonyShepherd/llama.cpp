@@ -17,11 +17,12 @@
 static const std::regex g_re_exps_weight("blk\\.(\\d+)\\.ffn_(up|down|gate|gate_up)_(ch|)exps\\.weight");
 
 llama_expert_hotstore::llama_expert_hotstore(
-        const llama_model * model, int n_layers, int n_experts, int hot_s, int sync_period,
-        float hyst, int dwell) :
+        const llama_model * model, int n_layers, int n_experts, int n_expert_used, int hot_s,
+        int sync_period, float hyst, int dwell) :
     n_layers(n_layers),
     n_experts(n_experts),
     hot_s(hot_s),
+    n_expert_used(n_expert_used),
     bytes_per_slot(n_layers, 0),
     sync_period(sync_period),
     hyst(hyst),
@@ -49,9 +50,21 @@ llama_expert_hotstore::llama_expert_hotstore(
         entries_by_layer[e.layer_idx].push_back(&e);
     }
 
-    if (hot_s > 0) {
-        slot_to_expert.assign(n_layers, std::vector<int>(hot_s, -1));
-        dwell_count.assign(n_layers, std::vector<int>(hot_s, 0));
+    // The pad costs n_expert_used slices where the old sentinel cost one, so take the difference
+    // out of the requested slots instead of adding it on top. The store then keeps the VRAM
+    // budget it was sized against, and -ehs -1 cannot over-commit the card. Teaching the fit to
+    // reserve the pad directly is step 4 in PLAN-ngram-mod-expert-cache.md.
+    // note: the ctor parameters shadow the members, so this has to say this->
+    if (this->hot_s > 0 && this->n_expert_used > 1) {
+        const int hot_s_req = this->hot_s;
+        this->hot_s = std::max(1, hot_s_req - (this->n_expert_used - 1));
+        LLAMA_LOG_INFO("%s: expert hot store %d slots -> %d, %d reserved for the landing pad\n",
+                __func__, hot_s_req, this->hot_s, this->n_expert_used);
+    }
+
+    if (this->hot_s > 0) {
+        slot_to_expert.assign(n_layers, std::vector<int>(this->hot_s, -1));
+        dwell_count.assign(n_layers, std::vector<int>(this->hot_s, 0));
     }
 }
 
@@ -77,20 +90,20 @@ bool llama_expert_hotstore::allocate(ggml_backend_buffer_type_t gpu_buft) {
         return false;
     }
 
-    // one hot tensor per model expert tensor, with hot_s expert slots plus
-    // 1 sentinel slot (index hot_s) that stays zero so cold selections read
-    // zeros via a valid in-range index (sentinel trick, oldtricks Trick 2).
+    // one hot tensor per model expert tensor: n_expert_used pad slots that stay zero, then the
+    // hot_s resident slots. A cold draw reads zeros through the pad slot for its own draw
+    // position, so no two draws of one token name the same slot (landing pad, see the header).
     for (auto & e : entries) {
-        e.dst = ggml_new_tensor_3d(ctx.get(), e.src->type, e.src->ne[0], e.src->ne[1], hot_s + 1);
+        e.dst = ggml_new_tensor_3d(ctx.get(), e.src->type, e.src->ne[0], e.src->ne[1], n_expert_used + hot_s);
     }
 
     // per-layer LUTs and masks for in-graph routing (oldtricks Trick 4).
-    // hot_lut i32, cold_mask f32, both [n_experts].
     luts.assign(n_layers, layer_lut{});
     for (int il = 0; il < n_layers; il++) {
-        luts[il].hot_lut   = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_I32, n_experts);
+        luts[il].hot_lut   = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n_experts);
         luts[il].cold_mask = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n_experts);
     }
+    draw_pos = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n_expert_used);
 
     // check whether the buffer would fit before committing any VRAM
     const size_t need = ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(), gpu_buft);
@@ -119,16 +132,24 @@ bool llama_expert_hotstore::allocate(ggml_backend_buffer_type_t gpu_buft) {
     buf = ggml_backend_buffer_ptr(b);
     ggml_backend_buffer_set_usage(buf.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
 
-    // zero the whole buffer so the sentinel slot (index hot_s) AND every
-    // not-yet-filled expert slot is zero; copy_top_s/resync_top_s only write
-    // slots 0..hot_s-1, so slot hot_s stays zero for the lifetime of the store.
+    // zero the whole buffer so the pad slots AND every not-yet-filled expert slot are zero.
+    // copy_top_s/resync_top_s only write slots at or above n_expert_used, so the pad stays zero
+    // for the lifetime of the store.
     ggml_backend_buffer_clear(buf.get(), 0);
+
+    {
+        std::vector<float> pos(n_expert_used);
+        for (int j = 0; j < n_expert_used; j++) {
+            pos[j] = (float) j;
+        }
+        ggml_backend_tensor_set(draw_pos, pos.data(), 0, pos.size() * sizeof(float));
+    }
 
     // register each expert weight tensor with the tier hook so build_lora_mm_id
     // can find its GPU hot tensor and per-layer LUTs.
     for (const auto & e : entries) {
         const auto & L = luts[e.layer_idx];
-        llama_expert_tier_register(e.src, e.dst, L.hot_lut, L.cold_mask);
+        llama_expert_tier_register(e.src, e.dst, L.hot_lut, L.cold_mask, draw_pos);
     }
 
     return true;
@@ -163,7 +184,7 @@ void llama_expert_hotstore::copy_top_s(const llama_expert_heatmap & heatmap) {
                 if (ex < 0) {
                     continue;
                 }
-                ggml_backend_tensor_set(e->dst, src + (size_t) ex * slot, (size_t) p * slot, slot);
+                ggml_backend_tensor_set(e->dst, src + (size_t) ex * slot, (size_t) (n_expert_used + p) * slot, slot);
             }
         }
     }
@@ -241,7 +262,7 @@ void llama_expert_hotstore::plant_static() {
             const char * src = e->src->data ? (const char *) ggml_get_data(e->src) : nullptr;
             if (!src) continue;
             for (int p = 0; p < hot_s && p < n_experts; p++) {
-                ggml_backend_tensor_set(e->dst, src + (size_t) p * slot, (size_t) p * slot, slot);
+                ggml_backend_tensor_set(e->dst, src + (size_t) p * slot, (size_t) (n_expert_used + p) * slot, slot);
             }
         }
     }
@@ -328,7 +349,7 @@ void llama_expert_hotstore::resync_top_s(const llama_expert_heatmap & heatmap) {
                 if (!src) {
                     continue;
                 }
-                ggml_backend_tensor_set(ent->dst, src + (size_t) e_cold * slot, (size_t) p * slot, slot);
+                ggml_backend_tensor_set(ent->dst, src + (size_t) e_cold * slot, (size_t) (n_expert_used + p) * slot, slot);
             }
             ste[p] = e_cold;
             dc[p]  = -elapsed; // fresh dwell: aging below brings it to 0
@@ -379,31 +400,36 @@ void llama_expert_hotstore::update_luts() {
         return;
     }
 
-    std::vector<int32_t> hot_lut_h(n_experts);
-    std::vector<float>   cold_mask_h(n_experts);
+    std::vector<float> hot_lut_h(n_experts);
+    std::vector<float> cold_mask_h(n_experts);
+
+    // diagnostic: keep every expert cold, so the whole MoE runs through mul_mat_id_cold and the
+    // hot path contributes only zeros. Whatever still differs from stock is then the cold kernel
+    // alone, not the hot/cold split. See PLAN-ngram-mod-expert-cache.md section 12.
+    const bool cold_only = getenv("LLAMA_EXPERT_TIER_COLD_ONLY") != nullptr;
 
     for (int il = 0; il < n_layers; il++) {
         const auto & ste = slot_to_expert[il];
 
-        // defaults: everyone cold
+        // defaults: everyone cold. 0 is the pad base; the graph adds the draw position to it,
+        // so each cold draw of a token ends up on a different pad slot.
         for (int e = 0; e < n_experts; e++) {
-            hot_lut_h[e]   = hot_s;     // sentinel slot (zero)
+            hot_lut_h[e]   = 0.0f;
             cold_mask_h[e] = 1.0f;
         }
 
         // residents override
-        for (int p = 0; p < hot_s; p++) {
+        for (int p = 0; p < hot_s && !cold_only; p++) {
             const int e = ste[p];
             if (e < 0) {
                 continue;
             }
-            hot_lut_h[e]   = p;         // its slot index
+            hot_lut_h[e]   = (float) (n_expert_used + p); // its slot, past the pad
             cold_mask_h[e] = 0.0f;
         }
 
-        const size_t bytes_i32 = n_experts * sizeof(int32_t);
         const size_t bytes_f32 = n_experts * sizeof(float);
-        ggml_backend_tensor_set(luts[il].hot_lut,   hot_lut_h.data(),   0, bytes_i32);
+        ggml_backend_tensor_set(luts[il].hot_lut,   hot_lut_h.data(),   0, bytes_f32);
         ggml_backend_tensor_set(luts[il].cold_mask, cold_mask_h.data(), 0, bytes_f32);
     }
 

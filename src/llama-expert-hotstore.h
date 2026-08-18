@@ -17,6 +17,17 @@ struct llama_expert_hotstore {
     int n_experts;
     int hot_s;
 
+    // Landing pad. The old layout sent every cold draw of a token to one sentinel slot, so a
+    // token's id list held duplicates, and the CUDA id compaction miscounts those above 4 tokens
+    // (see llama-expert-tier.h). Give each draw position its own zero slot instead: cold draw j
+    // lands on slot j, residents start at n_expert_used. Then no two draws of a token can name
+    // the same slot, on any dispatch path.
+    //
+    // Hot tensor layout, n_expert_used + hot_s slices:
+    //   [0, n_expert_used)          pad, always zero, one per draw position
+    //   [n_expert_used, +hot_s)     the resident experts
+    int n_expert_used;
+
     // bytes of a single expert slot per layer, summed over that layer's
     // expert weight tensors (gate/up/down, incl. chexps variants)
     std::vector<size_t> bytes_per_slot;
@@ -37,12 +48,18 @@ struct llama_expert_hotstore {
     std::vector<std::vector<int>> slot_to_expert;
 
     // per-layer LUT and mask for in-graph routing.
-    // hot_lut[e]   = slot index [0..hot_s-1] if e is hot, or hot_s (sentinel) if cold.
-    // cold_mask[e] = 1.0f if e is cold, else 0.0f (passed to mul_mat_id_cold).
+    // hot_lut[e]   = n_expert_used + slot if e is hot, 0 if e is cold. f32 so the graph can add
+    //                the draw position on top without a second gather, see
+    //                llama_expert_tier_build(). Exact: every value is a small integer.
+    // cold_mask[e] = 1.0f if e is cold, else 0.0f. Passed to mul_mat_id_cold, and reused in the
+    //                graph to pick up the draw position for cold draws only.
     struct layer_lut {
-        ggml_tensor * hot_lut   = nullptr; // i32[n_experts]
+        ggml_tensor * hot_lut   = nullptr; // f32[n_experts]
         ggml_tensor * cold_mask = nullptr; // f32[n_experts]
     };
+
+    // [0, 1, ... n_expert_used-1] as f32, uploaded once. The draw position a cold id lands on.
+    ggml_tensor * draw_pos = nullptr;
     std::vector<layer_lut> luts; // size n_layers
 
     // bumped on every resync that swapped >0 slots; build_moe_ffn_tiered
@@ -79,7 +96,7 @@ struct llama_expert_hotstore {
     std::vector<std::vector<int>> dwell_count;
 
 llama_expert_hotstore(const llama_model * model, int n_layers,
-                      int n_experts, int hot_s, int sync_period = 0,
+                      int n_experts, int n_expert_used, int hot_s, int sync_period = 0,
                       float hyst = 0.0f, int dwell = 0);
 
     ~llama_expert_hotstore();

@@ -7,9 +7,10 @@
 
 namespace {
     struct tier_entry {
-        ggml_tensor * dst_hot;    // [ne0, ne1, hot_s + 1]
-        ggml_tensor * hot_lut;    // i32 [n_experts]
+        ggml_tensor * dst_hot;    // [ne0, ne1, n_expert_used + hot_s]
+        ggml_tensor * hot_lut;    // f32 [n_experts]
         ggml_tensor * cold_mask;  // f32 [n_experts] (read as int zero-check by cold op)
+        ggml_tensor * draw_pos;   // f32 [n_expert_used], = [0, 1, ... n_expert_used-1]
     };
 
     std::mutex g_mtx;
@@ -19,9 +20,10 @@ namespace {
 void llama_expert_tier_register(ggml_tensor * src,
                                 ggml_tensor * dst_hot,
                                 ggml_tensor * hot_lut,
-                                ggml_tensor * cold_mask) {
+                                ggml_tensor * cold_mask,
+                                ggml_tensor * draw_pos) {
     std::lock_guard<std::mutex> lk(g_mtx);
-    g_table[src] = {dst_hot, hot_lut, cold_mask};
+    g_table[src] = {dst_hot, hot_lut, cold_mask, draw_pos};
 }
 
 void llama_expert_tier_clear() {
@@ -38,27 +40,43 @@ int32_t llama_expert_tier_max_tokens(void) {
     return (int32_t) LLAMA_EXPERT_TIER_MAX_TOKENS;
 }
 
-// Remap real expert ids through a LUT and produce a 2d [n_expert_used,
-// n_tokens] i32 tensor usable as `ids` for ggml_mul_mat_id.
+// Build the [n_expert_used, n_tokens] i32 ids the hot path is indexed by.
 //
-// Flatten the per-token ids to 1D, run a stock 1D ggml_get_rows against the
-// per-expert LUT (reshape to [1, n_experts] so each row picked is 1 scalar),
-// then reshape the [1, n_eu*n_tok] result back to 2D. Avoids ggml_repeat_4d
-// + view_2d strides that the CUDA mul_mat_id kernel mishandles on multi-token
-// ubatches. `ggml_cont` defends against argsort views that may not be
-// contiguous across the n_expert_used * n_tokens layout.
+// A cold draw must land on the pad slot for its own draw position j, a hot draw on its expert's
+// slot. j is not knowable from a per-expert LUT, so carry it as arithmetic instead:
+//
+//   hot_lut[e]   = n_expert_used + slot for a hot expert, 0 for a cold one
+//   cold_mask[e] = 0 for hot, 1 for cold
+//   ids          = hot_lut[e] + cold_mask[e] * j
+//
+// which gives n_expert_used + slot for hot draws and j for cold ones. Every value is a small
+// integer held exactly in f32, so the cast back to i32 is exact. Both gathers use the same
+// flatten-then-1d-get_rows pattern as before: it avoids the ggml_repeat_4d + view_2d strides
+// that the CUDA mul_mat_id kernel mishandles on multi-token ubatches. `ggml_cont` defends
+// against argsort views that may not be contiguous.
 static ggml_tensor * remap_ids(ggml_context * ctx,
                               ggml_tensor * lut,
+                              ggml_tensor * mask,
+                              ggml_tensor * draw_pos,
                               ggml_tensor * selected,
                               int n_experts,
                               int n_expert_used,
                               int n_tokens) {
-    ggml_tensor * lut_rows = ggml_reshape_2d(ctx, lut, 1, n_experts);    // [1, n_experts]
-    // selected (argsort_top_k view) may be non-contiguous; cont first, then reshape
     ggml_tensor * flat_ids = ggml_reshape_1d(ctx,
-        ggml_cont(ctx, selected), n_expert_used * n_tokens);             // [n_eu*n_tok] i32
-    ggml_tensor * r = ggml_get_rows(ctx, lut_rows, flat_ids);            // [1, n_eu*n_tok, 1, 1] i32
-    return ggml_reshape_2d(ctx, r, n_expert_used, n_tokens);              // [n_eu, n_tok]
+        ggml_cont(ctx, selected), n_expert_used * n_tokens);
+
+    ggml_tensor * base = ggml_get_rows(ctx, ggml_reshape_2d(ctx, lut,  1, n_experts), flat_ids);
+    ggml_tensor * cold = ggml_get_rows(ctx, ggml_reshape_2d(ctx, mask, 1, n_experts), flat_ids);
+
+    base = ggml_reshape_3d(ctx, base, 1, n_expert_used, n_tokens);
+    cold = ggml_reshape_3d(ctx, cold, 1, n_expert_used, n_tokens);
+
+    // draw_pos as [1, n_expert_used, 1] repeats over the token axis
+    ggml_tensor * pos = ggml_reshape_3d(ctx, draw_pos, 1, n_expert_used, 1);
+
+    ggml_tensor * ids = ggml_add(ctx, base, ggml_mul(ctx, cold, pos));
+
+    return ggml_cast(ctx, ggml_reshape_2d(ctx, ids, n_expert_used, n_tokens), GGML_TYPE_I32);
 }
 
 // Build a per-(expert_used, token) mask f32 [1, n_expert_used, n_tokens, 1]
@@ -128,7 +146,8 @@ ggml_tensor * llama_expert_tier_build(ggml_context * ctx,
 
     // hot path: GPU tier tensor. Remap real expert ids through hot_lut
     // -> hot slot indices (sentinel S for cold experts = zero contribution).
-    ggml_tensor * ids_hot = remap_ids(ctx, ent.hot_lut, ids, n_experts, n_expert_used, n_tokens);
+    ggml_tensor * ids_hot = remap_ids(ctx, ent.hot_lut, ent.cold_mask, ent.draw_pos, ids,
+                                      n_experts, n_expert_used, n_tokens);
     ggml_tensor * hot = ggml_mul_mat_id(ctx, ent.dst_hot, cur, ids_hot);
 
     // cold path: dedicated CPU op that computes ONLY cold-selected experts.

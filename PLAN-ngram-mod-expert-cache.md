@@ -5,10 +5,11 @@
 > # shared top-k entries. The argmax survives and 38 of 40 top-k tokens are shared, so it is not
 > # gross corruption, but it is far more than last-bit rounding and **it is not fully explained**.
 > #
-> # **The error is flat in S**: 5.5e-2 at `-ehs 1`, 6.2e-2 at `-ehs 32`. If it came from the GPU
-> # hot path it would scale with how much traffic that path takes. It does not. That points at
-> # `ggml_mul_mat_id_cold` differing from stock `ggml_mul_mat_id` on the same CPU, which would be
-> # benign, but is unverified. See section 12.4 for the one diagnostic that would close it.
+> # **It is NOT the hot/cold split.** With the hot path forced to contribute exactly zero
+> # (`LLAMA_EXPERT_TIER_COLD_ONLY=1`) the shift is 7.2e-2, the same as with the tier fully active.
+> # The ids, the mask, the routing and the sum are all cleared. Step 3's landing pad changes the
+> # ids, so it is not building on this. The leading hypothesis is now that the tier's extra graph
+> # nodes move surrounding ops between CPU and GPU. See section 12.
 > #
 > # **Until this is explained, every number measured with `-ehs -1` describes a subtly different
 > # model.** Do not ship the hot store on the strength of throughput alone. RE-CHECK THIS.
@@ -568,11 +569,40 @@ That is a hypothesis, not a finding.
 
 - **Not nondeterminism.** Two `-ehs -1` runs are byte-identical.
 - **Not a dirty sentinel slot after a shrink.** `shrink()` re-allocates through `allocate()`,
-  which calls `ggml_backend_buffer_clear(buf, 0)`, so the sentinel is re-zeroed on every resize.
+  which calls `ggml_backend_buffer_clear(buf, 0)`.
 - **Not gross id corruption.** The argmax holds and 38 of 40 top-k tokens survive.
-- **Not (only) tensor placement.** Matching `-cmoe` cut the shift by about a third and left the
-  rest.
-- **Not the GPU hot path alone.** Flat in S, see above.
+- **Not (only) tensor placement.** Matching `-cmoe` cut the shift by about a third.
+- **Not the GPU hot path.** Flat in S, and the cold-only run below settles it.
+- **NOT THE HOT/COLD SPLIT.** With `LLAMA_EXPERT_TIER_COLD_ONLY=1` every expert is kept cold,
+  so the hot tensor is all zeros and contributes exactly nothing, and the whole MoE goes through
+  `ggml_mul_mat_id_cold`. The shift is **7.226e-2**, the same size as with the tier fully active
+  (7.020e-2 at `-ehs -1`, 5.469e-2 at `-ehs 1`). The routing, the ids, the mask and the sum are
+  therefore not the source. **This is the result that clears the landing-pad work in step 3**:
+  step 3 changes the ids, and the ids are not what is moving the logits.
+- **Not llamafile/tinyBLAS.** Neither stock `ggml_compute_forward_mul_mat_id` nor the cold copy
+  calls `llamafile_sgemm`; only plain `mul_mat` does. This was the leading hypothesis and it is
+  wrong.
+- **Not the per-expert scale.** Both apply `w_s` after the matmul with a per-expert gather
+  (`llama-graph.cpp:1534-1540` against `llama-expert-tier.cpp:135-143`). The gather is spelled
+  differently, the values are the same.
+
+Diffing the two kernels leaves only three differences: a `memset` of `dst` (needed, since the
+cold op writes a subset of rows), the `cold_mask[i02] == 0 -> continue` filter, and deleted
+comments. The quantization of the activations, the `vec_dot`, and the chunking are the same code.
+
+**So two kernels with identical compute paths are producing a 7e-2 logprob difference, and that
+is still unexplained.**
+
+### 12.35 The leading hypothesis now
+
+The tier inserts a GPU op (`hot`) and two `ggml_mul`/`ggml_add` nodes into the middle of each MoE,
+where stock has one CPU op. That changes where the scheduler cuts the graph, and therefore which
+backend runs the *surrounding* ops - the SwiGLU, the norms, the residual add. The same arithmetic
+on CUDA and on the CPU does not agree bit for bit, and this would be constant in S, which matches.
+
+If that is the cause, it is benign: every op is correct, they are just not all on the same device
+as before. The test is cheap: re-run both arms with `-lv 4` and diff the `graph splits` line and
+the per-op backend assignment.
 
 ### 12.4 What to run next, cheapest first
 

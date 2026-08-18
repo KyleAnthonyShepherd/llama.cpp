@@ -496,7 +496,7 @@ llama_context::llama_context(
     if (hparams.n_expert > 0 && !cparams.warmup && expert_cache_ok && params.expert_hot_s != 0) {
         const int sync_period = 50;
         expert_hotstore = std::make_unique<llama_expert_hotstore>(
-            &model, hparams.n_layer(), hparams.n_expert,
+            &model, hparams.n_layer(), hparams.n_expert, hparams.n_expert_used,
             params.expert_hot_s, sync_period,
             params.expert_hyst, params.expert_dwell);
         // the GPU hot store is only supported on CUDA. On CPU it buys nothing

@@ -37,6 +37,11 @@ run_arm() {
     local json="$OUT/oracle-$TAG-$name.json"
 
     stop_server
+    if [ -n "${COLD_ONLY:-}" ]; then
+        export LLAMA_EXPERT_TIER_COLD_ONLY=1
+    else
+        unset LLAMA_EXPERT_TIER_COLD_ONLY
+    fi
     "$BIN" -m "$MODEL" -c "$N_CTX" -np 1 -lv 2 --host 127.0.0.1 --port "$PORT" "$@" \
         > "$OUT/oracle-$TAG-$name.log" 2>&1 &
 
@@ -63,6 +68,9 @@ for c in "${@:-cache}"; do
         # does the error grow with how much traffic the hot path takes? reassociation says yes and
         # says it should be small at S=1. a big error at S=1 points at the split logic instead.
         s*)    TEST="$(run_arm "$c" -ehs "${c#s}" --expert-hyst 0 --expert-dwell 0)" ;;
+        # the whole MoE through the cold kernel, hot path contributing zeros. what is left is
+        # mul_mat_id_cold against stock mul_mat_id, with nothing else in the way.
+        coldonly) TEST="$(COLD_ONLY=1 run_arm coldonly -ehs 1 --expert-hyst 0 --expert-dwell 0)" ;;
         *)     echo "unknown arm: $c"; continue ;;
     esac
     echo "=== $c ==="
