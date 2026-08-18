@@ -761,3 +761,79 @@ win on this workload.
 `combo-cache65` first measured 58.7 t/s with pp 91.5, against 128-140 pp everywhere else. That was
 a cold page cache on a 21 GB file, not a property of the config; re-run warm it gives 79.0. Any
 A/B on this box should discard or warm up the first run, on top of interleaving the arms.
+
+---
+
+## 15. n-gram speculation on ordinary prompts (measured)
+
+Section 14's 78.1 t/s was on a deliberately copy-heavy prompt at temp 0. This section asks the
+question that actually matters day to day: does any n-gram setting help on normal work?
+
+Workload: 5 prompts (a factual question, "write a python script", a code review, a concepts
+explanation, a tradeoffs summary), ChatML-wrapped, the user's sampling (temp 0.6, top-p 0.95,
+top-k 20), fixed seed, n_predict 400 each, 2000 generated tokens per arm. `-ehs -1
+--expert-tier-max-tokens 65 --flash-attn on` throughout, MTP `n_max 1` always on.
+Harness: `phase0/ngram-ordinary.sh`.
+
+### 15.1 Nothing fires
+
+| speculator and setting | fire rate | draft width | accepted | tokens gained per 2000 |
+|---|---|---|---|---|
+| ngram-mod `n_match 24, n 48-64` | **0.0%** of 1095 calls | - | - | **0** |
+| ngram-mod `n_match 24, n 4-16` | 0.0% | - | - | 0 |
+| ngram-mod `n_match 16, n 4-16` | 0.1% | 16.0 | 43.8% | 7 |
+| ngram-mod `n_match 16, n 2-8` | 0.1% | 8.0 | 87.5% | 7 |
+| ngram-mod `n_match 8, n 2-8` | 0.6% | 7.3 | 50.0% | 22 |
+| ngram-mod `n_match 8, n 1-4` | 1.0% | 4.0 | 72.7% | 32 |
+| ngram-cache (defaults) | 3.9% | 1.0 | 52.3% | 23 |
+| ngram-simple `n 8, m 8` | 0.5% | 8.0 | 45.0% | 18 |
+| ngram-map-k4v `n 8, m 8` | 0.1% | 8.0 | 37.5% | 3 |
+
+The user's config **never fires once in 1095 draft calls**. Loosening `n_match` and `n_min` raises
+the fire rate to at most 4%, and the best any of them contributes is ~30 accepted tokens out of
+2000. There is no setting that helps, because prose contains nothing to match: an n-gram
+speculator needs the continuation to already exist verbatim in the context, and ordinary answers
+do not repeat themselves.
+
+This is not a tuning failure. It is the mechanism working as designed on a workload it does not
+suit.
+
+### 15.2 What it costs to leave enabled: about 1%, i.e. nothing
+
+Measured ABBA, MTP-only against the wide ngram-mod config, stratified by the artifact in 15.3:
+
+| state | MTP only | + ngram-mod |
+|---|---|---|
+| fast | 31.38, 30.25 | 30.13 |
+| slow | 27.69 | 27.94, 27.53 |
+
+Within the fast state MTP-only leads by 2.3%; within the slow state ngram-mod leads by 0.2%. The
+idle cost is not resolvable and is at most ~1%.
+
+**Recommendation: leave ngram-mod enabled.** It costs about 1% on prose and is worth 2.2x on
+copy-heavy work (section 14), so the trade is strongly favourable as long as any of the session is
+editing, refactoring or reproducing existing text.
+
+### 15.3 A benchmark artifact that invalidated two sweeps, unexplained
+
+Successive server runs alternate between two throughput states, **by run position, not by config**:
+
+| position | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|
+| pp t/s | 57.4 | 46.7 | 55.4 | 46.5 | 55.1 | 45.6 |
+| tg t/s | 31.4 | 27.9 | 30.1 | 27.7 | 30.3 | 27.5 |
+
+A ~20% swing in pp and ~10% in tg, alternating cleanly, whatever arm occupies the slot. Free VRAM
+is identical (5130 MiB) in every run, the hot store is S=20 in every run, and host RAM free is flat
+at ~52.5 GB, so it is none of those. `predicted_ms` is measured inside the server, so it is real
+generation speed and not harness overhead. pp and tg move together, which points at a CPU power or
+thermal state on this laptop rather than anything being configured. **Not explained.**
+
+Two consequences, both learned the hard way here:
+
+- **ABAB interleaving is worse than useless against this.** Alternating arms puts one arm on every
+  odd position and the other on every even one, so the artifact maps perfectly onto the arm and
+  looks like a clean result. That is exactly how sweep 1 concluded MTP-only was fastest and sweep 2
+  concluded the opposite.
+- Any comparison below ~10% on this box needs either ABBA-with-parity-stratification as in 15.2,
+  or enough reps to average the state out.

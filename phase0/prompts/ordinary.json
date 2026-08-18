@@ -1,0 +1,7 @@
+[
+  "What is an angora rabbit?",
+  "Write a python script of your choice. Explain what it does afterwards.",
+  "Please review this code and suggest improvements:\n\ndef load(path):\n    f = open(path)\n    d = f.read()\n    rows = []\n    for line in d.split('\n'):\n        if line == '': continue\n        parts = line.split(',')\n        rows.append({'id': int(parts[0]), 'name': parts[1], 'score': float(parts[2])})\n    return rows\n\ndef top(rows, n):\n    rows = sorted(rows, key=lambda r: r['score'])\n    rows.reverse()\n    return rows[0:n]\n",
+  "Explain the difference between a mutex and a semaphore, with an example of when each is the right choice.",
+  "Summarise the tradeoffs between renting and buying a home."
+]

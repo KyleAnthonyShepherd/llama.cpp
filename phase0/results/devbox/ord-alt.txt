@@ -1,0 +1,21 @@
+=== mtp-ref-a : --spec-type draft-mtp --spec-draft-n-max 1 ===
+  5 prompts | pp 46.57 t/s (222 tok) | tg 27.67 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+=== ngram-cache : --spec-type draft-mtp,ngram-cache --spec-draft-n-max 1 ===
+  5 prompts | pp 54.96 t/s (222 tok) | tg 29.77 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1057  calls | width   1.0 tok | accepted  82.1% (868/1057)
+  ngram-cache  fired   3.9% of 1100  calls | width   1.0 tok | accepted  52.3% (23/44)
+=== mtp-ref-b : --spec-type draft-mtp --spec-draft-n-max 1 ===
+  5 prompts | pp 46.21 t/s (222 tok) | tg 27.67 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+=== ngram-simple-8 : --spec-type draft-mtp,ngram-simple --spec-draft-n-max 1 --spec-ngram-simple-size-n 8 --spec-ngram-simple-size-m 8 --spec-ngram-simple-min-hits 1 ===
+  5 prompts | pp 56.08 t/s (222 tok) | tg 29.39 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1084  calls | width   1.0 tok | accepted  81.8% (887/1084)
+  ngram-simple fired   0.5% of 1089  calls | width   8.0 tok | accepted  45.0% (18/40)
+=== mtp-ref-c : --spec-type draft-mtp --spec-draft-n-max 1 ===
+  5 prompts | pp 46.93 t/s (222 tok) | tg 28.01 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+=== ngram-k4v-8 : --spec-type draft-mtp,ngram-map-k4v --spec-draft-n-max 1 --spec-ngram-map-k4v-size-n 8 --spec-ngram-map-k4v-size-m 8 --spec-ngram-map-k4v-min-hits 1 ===
+  5 prompts | pp 55.37 t/s (222 tok) | tg 29.95 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1093  calls | width   1.0 tok | accepted  81.9% (895/1093)
+  ngram-map-k4v fired   0.1% of 1094  calls | width   8.0 tok | accepted  37.5% (3/8)

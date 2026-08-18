@@ -1,0 +1,25 @@
+=== idle-mtp-1 : --spec-type draft-mtp --spec-draft-n-max 1 ===
+  5 prompts | pp 57.36 t/s (222 tok) | tg 31.38 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+=== idle-ng-1 : --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64 ===
+  5 prompts | pp 46.69 t/s (222 tok) | tg 27.94 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+  ngram-mod    fired   0.0% of 1095  calls | width   0.0 tok | accepted   0.0% (0/0)
+=== idle-ng-2 : --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64 ===
+  5 prompts | pp 55.35 t/s (222 tok) | tg 30.13 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+  ngram-mod    fired   0.0% of 1095  calls | width   0.0 tok | accepted   0.0% (0/0)
+=== idle-mtp-2 : --spec-type draft-mtp --spec-draft-n-max 1 ===
+  5 prompts | pp 46.46 t/s (222 tok) | tg 27.69 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+=== idle-mtp-3 : --spec-type draft-mtp --spec-draft-n-max 1 ===
+  5 prompts | pp 55.09 t/s (222 tok) | tg 30.25 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+=== idle-ng-3 : --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64 ===
+  5 prompts | pp 45.62 t/s (222 tok) | tg 27.53 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+  ngram-mod    fired   0.0% of 1095  calls | width   0.0 tok | accepted   0.0% (0/0)
+=== idle-ng-4 : --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64 ===
+  5 prompts | pp 49.68 t/s (222 tok) | tg 29.38 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+  ngram-mod    fired   0.0% of 1095  calls | width   0.0 tok | accepted   0.0% (0/0)

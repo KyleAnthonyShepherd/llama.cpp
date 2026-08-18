@@ -1,0 +1,64 @@
+=== mtp-only : --spec-type draft-mtp --spec-draft-n-max 1 ===
+  5 prompts | pp 57.26 t/s (222 tok) | tg 31.39 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+=== m24-48-64 : --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64 ===
+  5 prompts | pp 51.89 t/s (222 tok) | tg 30.40 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+  ngram-mod    fired   0.0% of 1095  calls | width   0.0 tok | accepted   0.0% (0/0)
+=== m24-04-16 : --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 4 --spec-ngram-mod-n-max 16 ===
+  5 prompts | pp 46.52 t/s (222 tok) | tg 28.17 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
+  ngram-mod    fired   0.0% of 1095  calls | width   0.0 tok | accepted   0.0% (0/0)
+=== m16-04-16 : --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 16 --spec-ngram-mod-n-min 4 --spec-ngram-mod-n-max 16 ===
+  5 prompts | pp 54.90 t/s (222 tok) | tg 30.10 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1090  calls | width   1.0 tok | accepted  82.2% (896/1090)
+  ngram-mod    fired   0.1% of 1091  calls | width  16.0 tok | accepted  43.8% (7/16)
+=== m16-02-08 : --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 16 --spec-ngram-mod-n-min 2 --spec-ngram-mod-n-max 8 ===
+  5 prompts | pp 47.58 t/s (222 tok) | tg 28.46 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1090  calls | width   1.0 tok | accepted  82.2% (896/1090)
+  ngram-mod    fired   0.1% of 1091  calls | width   8.0 tok | accepted  87.5% (7/8)
+=== m08-02-08 : --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 8 --spec-ngram-mod-n-min 2 --spec-ngram-mod-n-max 8 ===
+  5 prompts | pp 54.63 t/s (222 tok) | tg 29.93 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1075  calls | width   1.0 tok | accepted  82.9% (891/1075)
+  ngram-mod    fired   0.6% of 1081  calls | width   7.3 tok | accepted  50.0% (22/44)
+=== m08-01-04 : --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 8 --spec-ngram-mod-n-min 1 --spec-ngram-mod-n-max 4 ===
+  5 prompts | pp 48.26 t/s (222 tok) | tg 27.98 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1069  calls | width   1.0 tok | accepted  82.3% (880/1069)
+  ngram-mod    fired   1.0% of 1080  calls | width   4.0 tok | accepted  72.7% (32/44)
+Traceback (most recent call last):
+  File "<stdin>", line 10, in <module>
+  File "C:\Python312\Lib\urllib\request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\urllib\request.py", line 515, in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\urllib\request.py", line 532, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\urllib\request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "C:\Python312\Lib\urllib\request.py", line 1373, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\urllib\request.py", line 1348, in do_open
+    r = h.getresponse()
+        ^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\http\client.py", line 1423, in getresponse
+    response.begin()
+  File "C:\Python312\Lib\http\client.py", line 331, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\http\client.py", line 292, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\socket.py", line 707, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+ConnectionResetError: [WinError 10054] An existing connection was forcibly closed by the remote host
+=== m32-08-32 : --spec-type draft-mtp,ngram-mod --spec-draft-n-max 1 --spec-ngram-mod-n-match 32 --spec-ngram-mod-n-min 8 --spec-ngram-mod-n-max 32 ===
+  4 prompts | pp 56.60 t/s (201 tok) | tg 30.67 t/s (1600 tok)
+  draft-mtp    fired 100.0% of 873   calls | width   1.0 tok | accepted  82.6% (721/873)
+  ngram-mod    fired   0.0% of 873   calls | width   0.0 tok | accepted   0.0% (0/0)
+phase0/ngram-ordinary.sh: line 91: unexpected EOF while looking for matching `''
