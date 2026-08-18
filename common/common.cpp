@@ -1274,9 +1274,9 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         const int32_t n_tier   = llama_expert_tier_max_tokens();
         if (n_verify > n_tier) {
             LOG_WRN("the expert hot store (-ehs) is bypassed for every verify batch: the draft is up to "
-                    "%d tokens, so the batch is %d, above the %d token tier limit. lower the draft width "
-                    "(--spec-draft-n-max / --spec-ngram-mod-n-max) or drop -ehs\n",
-                    n_verify - 1, n_verify, n_tier);
+                    "%d tokens, so the batch is %d, above the %d token tier limit. raise it with "
+                    "--expert-tier-max-tokens %d, or lower the draft width, or drop -ehs\n",
+                    n_verify - 1, n_verify, n_tier, n_verify);
         }
     }
 
