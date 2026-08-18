@@ -1,3 +1,17 @@
+> # !!! UNRESOLVED: THE TIER MOVES THE LOGITS BY MORE THAN IT SHOULD !!!
+> #
+> # `-ehs -1` shifts the first generated token's logprobs by **max 3.2e-1, mean 1.0e-1** against
+> # `-ehs 0`, and reorders **20 of 38** shared top-k entries. The argmax survives and 38 of 40
+> # top-k tokens are shared, so it is not gross corruption, but this is far more than last-bit
+> # rounding and **it has not been explained**. Measured 2026-08-17 on UD-Q4_K_S, first token,
+> # `phase0/oracle-logprobs.sh`, raw in `phase0/results/devbox/oracle-q4ks-*.json`.
+> #
+> # **The tier is supposed to be numerically transparent. Until this is explained, every number
+> # measured with `-ehs -1` describes a subtly different model, and section 8.1's premise is
+> # unproven.** Do not ship the hot store on the strength of throughput alone.
+> #
+> # See section 12 for what has been ruled out and what to run next. RE-CHECK THIS.
+
 # PLAN - make `ngram-mod` speculation compatible with the expert hot store (`-ehs -1`)
 
 Goal: let `--spec-type ngram-mod` and `-ehs -1` be used together without one silently disabling
@@ -505,3 +519,71 @@ value falls to the ~15% above.
 `U(64)/256` is 0.48. The plan may proceed. Whether ~15% is worth steps 2-5, ~250 lines in the
 graph builder and 540 MiB of a 6 GiB card is a judgement call, not a gate, and section 6.4's
 "land at 31 first" option is now clearly the wrong first landing.
+
+---
+
+## 12. OPEN: the tier is not numerically transparent, and nobody knows why
+
+**This is the highest-priority open item in this document.** It predates every change made for
+the ngram-mod work and it affects the whole expert cache, not just the wide-draft case.
+
+### 12.1 What was measured
+
+`phase0/oracle-logprobs.sh`, UD-Q4_K_S, prompt "The three laws of thermodynamics state that",
+one generated token, top-40 logprobs, `-ehs 0` against `-ehs -1 -fitt 256`:
+
+| quantity | value |
+|---|---|
+| argmax | same (`':'`) |
+| top-k tokens shared | 38 of 40 |
+| max abs delta logprob | **3.186e-1** |
+| mean abs delta logprob | **1.040e-1** |
+| rank positions moved | **20 of 38** |
+
+Sampled-text comparison also diverges, at character 334 of 3478. `-ehs -1` is deterministic:
+two runs of the same config are byte-identical, so this is not run-to-run noise.
+
+### 12.2 Why this is not acceptable as-is
+
+The tier is meant to compute the same thing as stock `ggml_mul_mat_id`. It holds bit-identical
+copies of the same quantized expert slices; it just splits the routed sum into a hot half and a
+cold half and adds them. A shift of 1e-1 in logprob is 2 to 3 orders of magnitude above what
+last-bit reassociation of one matmul produces.
+
+There is a benign story: the hot half runs on the GPU (MMVQ) and the cold half on the CPU, the
+two accumulate in different orders and possibly different intermediate precision, and a ~1e-3
+relative per-layer difference compounds through 40 residual layers into this range. That story
+is plausible and completely untested.
+
+There is a malign story: a mask, a scale or an id is wrong for some subset of draws, so some
+experts contribute twice, not at all, or with the wrong weight. That would also produce a
+shifted-but-recognisable distribution.
+
+**Both stories fit the evidence. Throughput measured under the malign story is measuring a
+different model, and would be worthless.**
+
+### 12.3 Ruled out so far
+
+- **Not nondeterminism.** Two `-ehs -1` runs are byte-identical.
+- **Not a dirty sentinel slot after a shrink.** `shrink()` re-allocates through `allocate()`,
+  which calls `ggml_backend_buffer_clear(buf, 0)` (`llama-expert-hotstore.cpp:121`), so the
+  sentinel is re-zeroed on every resize.
+- **Not gross id corruption.** The argmax holds and 38 of 40 top-k tokens survive. Duplicate-id
+  compaction damage (section 1.3) would be far more violent than this.
+
+### 12.4 What to run next, cheapest first
+
+1. **Scale with S.** Compare `-ehs 1`, `-ehs 8`, `-ehs 32` against `-ehs 0` on the same oracle.
+   Reassociation predicts the error grows smoothly with how much traffic the hot path takes. A
+   large error already at `S=1` does not fit that and points at the split logic.
+2. **Freeze residency.** Re-run with `--expert-hyst 0 --expert-dwell 0` and a huge sync period so
+   the slot assignment never changes mid-run. Removes resync as a variable.
+3. **`plant_static()`.** Already in the tree (`llama-expert-hotstore.cpp:228`), built exactly to
+   isolate the dual-path graph from the heat and copy path. Wire it to a flag and run the oracle
+   against it.
+4. **Perplexity over a fixed corpus.** The decisive test. Reassociation leaves perplexity flat;
+   dropped or misrouted expert rows do not. Needs the `llama-perplexity` target.
+5. **Scale-factor audit.** `llama_expert_tier_build` applies `w_s` to both paths after the
+   matmuls (`llama-expert-tier.cpp:135-143`). Check that stock `build_lora_mm_id` applies it at
+   the same point and to the same operand, and that `ggml_mul_mat_id_cold`'s masking really
+   contributes exactly zero for hot draws rather than a small residue.
