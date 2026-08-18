@@ -1,0 +1,24 @@
+=== w-m2 : -ehs 0 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 1 --spec-ngram-mod-n-max 1 ===
+  pp 150.23 t/s (1018 tok) | tg 31.69 t/s (900 tok)
+  ngram-mod    fire rate  90.7% (427/471 draft calls), mean draft width 1.0 tok, accepted 427/427 tok
+  verify steps: draft acceptance 0.99766, mean accepted len 2.00; 427 of ~474 decode steps were wide batches (90.1%)
+=== w-m4 : -ehs 0 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 3 --spec-ngram-mod-n-max 3 ===
+  pp 146.64 t/s (1018 tok) | tg 39.67 t/s (900 tok)
+  ngram-mod    fire rate  82.9% (214/258 draft calls), mean draft width 3.0 tok, accepted 641/641 tok
+  verify steps: draft acceptance 0.99844, mean accepted len 3.99; 214 of ~260 decode steps were wide batches (82.3%)
+=== w-m8 : -ehs 0 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 7 --spec-ngram-mod-n-max 7 ===
+  pp 144.95 t/s (1018 tok) | tg 47.15 t/s (900 tok)
+  ngram-mod    fire rate  71.1% (108/152 draft calls), mean draft width 7.0 tok, accepted 747/751 tok
+  verify steps: draft acceptance 0.99334, mean accepted len 7.91; 108 of ~154 decode steps were wide batches (70.1%)
+=== w-m16 : -ehs 0 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 15 --spec-ngram-mod-n-max 15 ===
+  pp 147.91 t/s (1018 tok) | tg 57.59 t/s (900 tok)
+  ngram-mod    fire rate  55.1% (54/98 draft calls), mean draft width 14.9 tok, accepted 801/805 tok
+  verify steps: draft acceptance 0.99379, mean accepted len 15.81; 54 of ~100 decode steps were wide batches (54.0%)
+=== w-m32 : -ehs 0 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 31 --spec-ngram-mod-n-max 31 ===
+  pp 145.13 t/s (1018 tok) | tg 64.09 t/s (900 tok)
+  ngram-mod    fire rate  38.0% (27/71 draft calls), mean draft width 30.8 tok, accepted 828/832 tok
+  verify steps: draft acceptance 0.99399, mean accepted len 31.63; 27 of ~73 decode steps were wide batches (37.0%)
+=== w-m64 : -ehs 0 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 63 --spec-ngram-mod-n-max 63 ===
+  pp 146.06 t/s (1018 tok) | tg 70.88 t/s (900 tok)
+  ngram-mod    fire rate  24.1% (14/58 draft calls), mean draft width 62.6 tok, accepted 841/877 tok
+  verify steps: draft acceptance 0.95781, mean accepted len 61.00; 14 of ~60 decode steps were wide batches (23.3%)
