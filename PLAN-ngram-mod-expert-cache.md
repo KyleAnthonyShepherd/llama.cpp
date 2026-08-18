@@ -603,12 +603,19 @@ tiered one.
 
 174 shared nodes change backend. 160 of them are the whole MoE, every layer:
 
-| node family | op | ehs 0 -> ehs 1 | count |
+| node family | stock | with the tier | count |
 |---|---|---|---|
-| `ffn_moe_gate` | MUL_MAT_ID | **CPU -> CUDA0** | 40 |
-| `ffn_moe_up` | MUL_MAT_ID | **CPU -> CUDA0** | 40 |
-| `ffn_moe_swiglu` | SWIGLU | **CPU -> CUDA0** | 40 |
-| `ffn_moe_down` | MUL_MAT_ID | **CPU -> CUDA0** | 40 |
+| `ffn_moe_gate` | CPU, MUL_MAT_ID | CUDA0, ADD | 40 |
+| `ffn_moe_up` | CPU, MUL_MAT_ID | CUDA0, ADD | 40 |
+| `ffn_moe_down` | CPU, MUL_MAT_ID | CUDA0, ADD | 40 |
+| `ffn_moe_swiglu` | CPU, SWIGLU | **CUDA0, SWIGLU** | 40 |
+
+Three of the four changed identity as well as device: the node carrying the name is now the tier's
+`ggml_add(hot, cold)` rather than the stock `mul_mat_id`, and the cold half necessarily stays on
+the CPU because `GGML_OP_MUL_MAT_ID_COLD` has no CUDA implementation. `ffn_moe_swiglu` is the
+clean case: the same op, same inputs, relocated from CPU to CUDA0 in all 40 layers. It is a
+nonlinearity over the whole FFN intermediate, so a CUDA-versus-CPU difference there lands in the
+residual stream of every layer.
 
 (The remaining 14 are auto-named `node_NNNN` entries. Those names are positional and the two
 graphs have different node counts, so they are name collisions, not real moves.)
