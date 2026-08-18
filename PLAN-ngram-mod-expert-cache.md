@@ -846,3 +846,64 @@ Two consequences, both learned the hard way here:
   concluded the opposite.
 - Any comparison below ~10% on this box needs either ABBA-with-parity-stratification as in 15.2,
   or enough reps to average the state out.
+
+---
+
+## 16. How far the tier keeps winning, and the automatic limit (measured)
+
+### 16.1 The tier wins up to the op-offload threshold and loses past it
+
+ngram-mod with `n_min == n_max` so the verify batch is exact, `-ehs -1`, ABBA order. Each width
+run twice: once with the limit covering it (tier engaged) and once at the default 4 (bypassed).
+`pp` was flat at 160-165 t/s across all eight runs, so the position artifact of section 15.3 was
+quiet and these are comparable.
+
+| verify batch | tier engaged | tier bypassed | delta |
+|---|---|---|---|
+| 32 | 72.64 | 63.32 | +14.7% |
+| 64 | 82.21 | 69.59 | +18.1% |
+| 128 | **84.34** | 64.95 | **+29.9%** |
+| 256 | 75.75 | 83.86 | **-9.7%** |
+
+The crossover is not mysterious, and it is not a property of the tier. It is where **op-offload**
+starts firing. `-ehs` sets `GGML_OP_OFFLOAD_MIN_BATCH` to 128 (section 11.1), so:
+
+- below 128 the bypassed path is the stock CPU matmul, and the tier beats it by 15-30%
+- above 128 the bypassed path moves to the GPU and streams whole `_exps` tensors, which at that
+  batch size beats the tier's CPU-only cold op
+
+The fire-rate lines confirm the mechanism. The 128 arm's mean draft is 126.3 tokens, so its verify
+batch is ~127, just **under** the threshold and never offloaded. The 256 arm's mean draft is 221.8,
+so its batch is ~223, comfortably **over** it. That is why one wins and the other loses.
+
+### 16.2 So the limit follows the draft width, capped at the offload threshold
+
+`common/common.cpp`, when `-ehs` is on and `--expert-tier-max-tokens` was not given:
+
+```
+    limit = min(1 + common_speculative_n_max(), op_offload_min_batch)
+```
+
+Engaging past the offload threshold cannot pay, because that is exactly where the path the tier
+replaces stops being the CPU. The rule is mechanical rather than a tuned constant, and it tracks
+`--op-offload-min-batch` if that is changed.
+
+Verified:
+
+| draft width | resulting limit |
+|---|---|
+| MTP `n_max 1` (batch 2) | unchanged at 4 |
+| ngram-mod `n_max 64` (batch 65) | 65 |
+| ngram-mod `n_max 255` (batch 256) | 128, "capped at the op-offload threshold" |
+
+And it reproduces the explicit flag, on the section 14 combined config:
+
+| | tg t/s |
+|---|---|
+| automatic | 80.65, 79.50 |
+| `--expert-tier-max-tokens 65` | 80.19, 79.02 |
+
+**The section 14 result now needs no tier flag: `-ehs -1` plus the speculators is enough.**
+
+The warning kept for the case the cap bites: it now names the override rather than telling the
+user to narrow the draft, which was the advice before the flag existed.

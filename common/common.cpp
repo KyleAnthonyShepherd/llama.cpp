@@ -1266,16 +1266,31 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
             }
         }
     }
-
-    // a verify batch is 1 + the draft width, and the tier is bypassed above its token limit,
-    // so a wide draft keeps the hot store resident but unread for the whole run
-    if (params.expert_hot_s > 0) {
+    // Follow the draft width. A verify batch is 1 + the draft width and the tier is bypassed
+    // above its limit, so a wide draft would otherwise leave the hot store resident but never
+    // read. Capped at the op-offload threshold: above that the stock path moves to the GPU and
+    // beats the tier's CPU cold op. Measured on 6 GB / PCIe 4.0 x8, the tier wins by 15-30% at
+    // 32 to 128 token batches and loses by 10% at 256. See PLAN-ngram-mod-expert-cache.md 16.
+    if (params.expert_hot_s != 0) {
         const int32_t n_verify = 1 + common_speculative_n_max(&params.speculative);
-        const int32_t n_tier   = llama_expert_tier_max_tokens();
+        const int32_t offload  = params.op_offload_min_batch > 0 ? params.op_offload_min_batch : 32;
+
+        if (params.expert_tier_max_tokens == 0 && n_verify > llama_expert_tier_max_tokens()) {
+            params.expert_tier_max_tokens  = std::min(n_verify, offload);
+            cparams.expert_tier_max_tokens = params.expert_tier_max_tokens;
+
+            LOG_INF("expert tier limit follows the draft width: %d tokens%s\n",
+                    params.expert_tier_max_tokens,
+                    n_verify > offload ? " (capped at the op-offload threshold)" : "");
+        }
+
+        const int32_t n_tier = params.expert_tier_max_tokens > 0
+            ? params.expert_tier_max_tokens : llama_expert_tier_max_tokens();
+
         if (n_verify > n_tier) {
-            LOG_WRN("the expert hot store (-ehs) is bypassed for every verify batch: the draft is up to "
-                    "%d tokens, so the batch is %d, above the %d token tier limit. raise it with "
-                    "--expert-tier-max-tokens %d, or lower the draft width, or drop -ehs\n",
+            LOG_WRN("the expert hot store (-ehs) is bypassed for verify batches: the draft is up to "
+                    "%d tokens, so the batch is %d, above the %d token tier limit. override with "
+                    "--expert-tier-max-tokens %d if the batch should stay on the CPU tier\n",
                     n_verify - 1, n_verify, n_tier, n_verify);
         }
     }

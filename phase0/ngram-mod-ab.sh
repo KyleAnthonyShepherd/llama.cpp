@@ -144,6 +144,19 @@ for c in "${@:-e1}"; do
                 HITRATE=0 run_case "mtponly-cache-r$rep" -ehs -1 -fitt 256 --spec-type draft-mtp --spec-draft-n-max 1
             done
             ;;
+        # E8: how far does the tier keep winning? Each width runs with the limit covering it
+        # (tier on) and at the default 4 (tier bypassed). ABBA order so each arm gets two fast
+        # and two slow slots of the position artifact in section 15.3.
+        e8) w1=63; w2=127; w3=255; w4=31
+            HITRATE=0 run_case "w$((w1+1))-on"  -ehs -1 -fitt 256 --expert-tier-max-tokens $((w1+1)) $(ngram $w1)
+            HITRATE=0 run_case "w$((w1+1))-off" -ehs -1 -fitt 256 $(ngram $w1)
+            HITRATE=0 run_case "w$((w2+1))-off" -ehs -1 -fitt 256 $(ngram $w2)
+            HITRATE=0 run_case "w$((w2+1))-on"  -ehs -1 -fitt 256 --expert-tier-max-tokens $((w2+1)) $(ngram $w2)
+            HITRATE=0 run_case "w$((w3+1))-on"  -ehs -1 -fitt 256 --expert-tier-max-tokens $((w3+1)) $(ngram $w3)
+            HITRATE=0 run_case "w$((w3+1))-off" -ehs -1 -fitt 256 $(ngram $w3)
+            HITRATE=0 run_case "w$((w4+1))-off" -ehs -1 -fitt 256 $(ngram $w4)
+            HITRATE=0 run_case "w$((w4+1))-on"  -ehs -1 -fitt 256 --expert-tier-max-tokens $((w4+1)) $(ngram $w4)
+            ;;
         # wiring check: one short run of the proposed config
         smoke) run_case smoke -ehs 0 --spec-type ngram-mod --spec-ngram-mod-n-match "$N_MATCH" --spec-ngram-mod-n-min 48 --spec-ngram-mod-n-max 64 ;;
         *) echo "unknown case: $c" ;;

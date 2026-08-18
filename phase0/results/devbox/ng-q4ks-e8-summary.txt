@@ -1,0 +1,56 @@
+=== w64-on : -ehs -1 -fitt 256 --expert-tier-max-tokens 64 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 63 --spec-ngram-mod-n-max 63 ===
+  pp 165.11 t/s (1018 tok) | tg 82.21 t/s (900 tok)
+  hot store: S=25 slots
+  ngram-mod    fire rate  24.1% (14/58 draft calls), mean draft width 62.6 tok, accepted 841/877 tok
+  verify steps: draft acceptance 0.95781, mean accepted len 61.00; 14 of ~60 decode steps were wide batches (23.3%)
+  tier ENGAGED at n_tokens: 2
+  tier bypassed at n_tokens: 502
+=== w64-off : -ehs -1 -fitt 256 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 63 --spec-ngram-mod-n-max 63 ===
+  pp 162.14 t/s (1018 tok) | tg 69.59 t/s (900 tok)
+  hot store: S=25 slots
+  ngram-mod    fire rate  24.1% (14/58 draft calls), mean draft width 62.6 tok, accepted 841/877 tok
+  verify steps: draft acceptance 0.95781, mean accepted len 61.00; 14 of ~60 decode steps were wide batches (23.3%)
+  tier ENGAGED at n_tokens: 2
+  tier bypassed at n_tokens: 502
+=== w128-off : -ehs -1 -fitt 256 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 127 --spec-ngram-mod-n-max 127 ===
+  pp 162.44 t/s (1018 tok) | tg 64.95 t/s (900 tok)
+  hot store: S=25 slots
+  ngram-mod    fire rate  13.7% (7/51 draft calls), mean draft width 126.3 tok, accepted 848/884 tok
+  verify steps: draft acceptance 0.95814, mean accepted len 122.00; 7 of ~53 decode steps were wide batches (13.2%)
+  tier ENGAGED at n_tokens: 2
+  tier bypassed at n_tokens: 502
+=== w128-on : -ehs -1 -fitt 256 --expert-tier-max-tokens 128 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 127 --spec-ngram-mod-n-max 127 ===
+  pp 160.54 t/s (1018 tok) | tg 84.34 t/s (900 tok)
+  hot store: S=25 slots
+  ngram-mod    fire rate  13.7% (7/51 draft calls), mean draft width 126.3 tok, accepted 848/884 tok
+  verify steps: draft acceptance 0.95814, mean accepted len 122.00; 7 of ~53 decode steps were wide batches (13.2%)
+  tier ENGAGED at n_tokens: 2
+  tier bypassed at n_tokens: 502
+=== w256-on : -ehs -1 -fitt 256 --expert-tier-max-tokens 256 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 255 --spec-ngram-mod-n-max 255 ===
+  pp 160.86 t/s (1018 tok) | tg 75.75 t/s (900 tok)
+  hot store: S=25 slots
+  ngram-mod    fire rate   8.3% (4/48 draft calls), mean draft width 221.8 tok, accepted 851/887 tok
+  verify steps: draft acceptance 0.95829, mean accepted len 213.50; 4 of ~50 decode steps were wide batches (8.0%)
+  tier ENGAGED at n_tokens: 2
+  tier bypassed at n_tokens: 502
+=== w256-off : -ehs -1 -fitt 256 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 255 --spec-ngram-mod-n-max 255 ===
+  pp 161.66 t/s (1018 tok) | tg 83.86 t/s (900 tok)
+  hot store: S=25 slots
+  ngram-mod    fire rate   8.3% (4/48 draft calls), mean draft width 221.8 tok, accepted 851/887 tok
+  verify steps: draft acceptance 0.95829, mean accepted len 213.50; 4 of ~50 decode steps were wide batches (8.0%)
+  tier ENGAGED at n_tokens: 2
+  tier bypassed at n_tokens: 502
+=== w32-off : -ehs -1 -fitt 256 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 31 --spec-ngram-mod-n-max 31 ===
+  pp 162.29 t/s (1018 tok) | tg 63.32 t/s (900 tok)
+  hot store: S=25 slots
+  ngram-mod    fire rate  38.0% (27/71 draft calls), mean draft width 30.8 tok, accepted 828/832 tok
+  verify steps: draft acceptance 0.99399, mean accepted len 31.63; 27 of ~73 decode steps were wide batches (37.0%)
+  tier ENGAGED at n_tokens: 2
+  tier bypassed at n_tokens: 502
+=== w32-on : -ehs -1 -fitt 256 --expert-tier-max-tokens 32 --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 31 --spec-ngram-mod-n-max 31 ===
+  pp 160.36 t/s (1018 tok) | tg 72.64 t/s (900 tok)
+  hot store: S=25 slots
+  ngram-mod    fire rate  38.0% (27/71 draft calls), mean draft width 30.8 tok, accepted 828/832 tok
+  verify steps: draft acceptance 0.99399, mean accepted len 31.63; 27 of ~73 decode steps were wide batches (37.0%)
+  tier ENGAGED at n_tokens: 2
+  tier bypassed at n_tokens: 502
