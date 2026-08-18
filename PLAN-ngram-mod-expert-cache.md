@@ -798,30 +798,39 @@ do not repeat themselves.
 This is not a tuning failure. It is the mechanism working as designed on a workload it does not
 suit.
 
-### 15.2 What it costs to leave enabled: about 1%, i.e. nothing
+### 15.2 What it costs to leave enabled: about 2%
 
-Measured ABBA, MTP-only against the wide ngram-mod config, stratified by the artifact in 15.3:
+Measured ABBA over 8 runs, MTP-only against the wide ngram-mod config. The design came out
+balanced against the artifact in 15.3 - each arm landed on exactly two fast and two slow positions
+- so the plain mean is a fair estimate:
 
-| state | MTP only | + ngram-mod |
+| arm | runs (tg t/s) | mean |
 |---|---|---|
-| fast | 31.38, 30.25 | 30.13 |
-| slow | 27.69 | 27.94, 27.53 |
+| MTP only | 31.38, 27.69, 30.25, 28.03 | **29.34** |
+| + ngram-mod `n_match 24, n 48-64` | 27.94, 30.13, 27.53, 29.38 | **28.75** |
 
-Within the fast state MTP-only leads by 2.3%; within the slow state ngram-mod leads by 0.2%. The
-idle cost is not resolvable and is at most ~1%.
+**~2.0%.** Stratifying instead of averaging gives +3.6% in the fast state and +0.4% in the slow
+one, so the true cost is somewhere in 0-4% and 2% is the best point estimate.
 
-**Recommendation: leave ngram-mod enabled.** It costs about 1% on prose and is worth 2.2x on
-copy-heavy work (section 14), so the trade is strongly favourable as long as any of the session is
-editing, refactoring or reproducing existing text.
+That cost is real but small, and it is paid for a speculator that never fires on this workload:
+the ngram lookup runs on every draft call, and `common_speculative_n_max` returning 64 instead of
+1 enlarges the output buffer to `1 + 64` rows of logits whether or not a draft is ever produced.
+
+**Recommendation: leave ngram-mod enabled anyway.** 2% on prose against 2.2x on copy-heavy work
+(section 14) is a strongly favourable trade as long as any of the session is editing, refactoring
+or reproducing existing text. Turn it off only for a workload known to be pure prose.
 
 ### 15.3 A benchmark artifact that invalidated two sweeps, unexplained
 
 Successive server runs alternate between two throughput states, **by run position, not by config**:
 
-| position | 1 | 2 | 3 | 4 | 5 | 6 |
-|---|---|---|---|---|---|---|
-| pp t/s | 57.4 | 46.7 | 55.4 | 46.5 | 55.1 | 45.6 |
-| tg t/s | 31.4 | 27.9 | 30.1 | 27.7 | 30.3 | 27.5 |
+| position | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| pp t/s | 57.4 | 46.7 | 55.4 | 46.5 | 55.1 | 45.6 | 49.7 | 45.7 |
+| tg t/s | 31.4 | 27.9 | 30.1 | 27.7 | 30.3 | 27.5 | 29.4 | 28.0 |
+
+Odd positions are the fast state throughout, with a slow downward drift on top of the alternation
+(57.4, 55.4, 55.1, 49.7).
 
 A ~20% swing in pp and ~10% in tg, alternating cleanly, whatever arm occupies the slot. Free VRAM
 is identical (5130 MiB) in every run, the hot store is S=20 in every run, and host RAM free is flat

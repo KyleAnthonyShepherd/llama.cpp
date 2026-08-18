@@ -23,3 +23,6 @@
   5 prompts | pp 49.68 t/s (222 tok) | tg 29.38 t/s (2000 tok)
   draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
   ngram-mod    fired   0.0% of 1095  calls | width   0.0 tok | accepted   0.0% (0/0)
+=== idle-mtp-4 : --spec-type draft-mtp --spec-draft-n-max 1 ===
+  5 prompts | pp 45.66 t/s (222 tok) | tg 28.03 t/s (2000 tok)
+  draft-mtp    fired 100.0% of 1095  calls | width   1.0 tok | accepted  81.9% (897/1095)
