@@ -50,18 +50,6 @@ llama_expert_hotstore::llama_expert_hotstore(
         entries_by_layer[e.layer_idx].push_back(&e);
     }
 
-    // The pad costs n_expert_used slices where the old sentinel cost one, so take the difference
-    // out of the requested slots instead of adding it on top. The store then keeps the VRAM
-    // budget it was sized against, and -ehs -1 cannot over-commit the card. Teaching the fit to
-    // reserve the pad directly is step 4 in PLAN-ngram-mod-expert-cache.md.
-    // note: the ctor parameters shadow the members, so this has to say this->
-    if (this->hot_s > 0 && this->n_expert_used > 1) {
-        const int hot_s_req = this->hot_s;
-        this->hot_s = std::max(1, hot_s_req - (this->n_expert_used - 1));
-        LLAMA_LOG_INFO("%s: expert hot store %d slots -> %d, %d reserved for the landing pad\n",
-                __func__, hot_s_req, this->hot_s, this->n_expert_used);
-    }
-
     if (this->hot_s > 0) {
         slot_to_expert.assign(n_layers, std::vector<int>(this->hot_s, -1));
         dwell_count.assign(n_layers, std::vector<int>(this->hot_s, 0));

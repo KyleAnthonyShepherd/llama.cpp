@@ -83,7 +83,8 @@ struct llama_device_memory_data {
 // TODO: convert to C-style data structure
 using llama_memory_breakdown = std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data>;
 
-LLAMA_API int32_t llama_model_n_expert (const struct llama_model * model);
+LLAMA_API int32_t llama_model_n_expert     (const struct llama_model * model);
+LLAMA_API int32_t llama_model_n_expert_used(const struct llama_model * model);
 LLAMA_API int32_t llama_model_n_devices(const struct llama_model * model);
 
 // Tokens per batch above which the expert hot store is bypassed and the stock

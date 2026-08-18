@@ -34,6 +34,7 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
         uint32_t & hp_ngl,
         uint32_t & hp_n_ctx_train,
         uint32_t & hp_n_expert,
+        uint32_t & hp_n_expert_used,
         ggml_log_level log_level) {
     struct user_data_t {
         struct {
@@ -141,7 +142,8 @@ static std::vector<llama_device_memory_data> common_get_device_memory_data_impl(
         hp_ngl    += llama_model_n_layer_nextn(model);
     }
     hp_n_ctx_train = llama_model_n_ctx_train(model);
-    hp_n_expert    = llama_model_n_expert(model);
+    hp_n_expert      = llama_model_n_expert(model);
+    hp_n_expert_used = llama_model_n_expert_used(model);
 
     common_memory_breakdown_print(ctx);
 
@@ -161,8 +163,9 @@ common_device_memory_data_vec common_get_device_memory_data(
         uint32_t & hp_n_ctx_train,
         uint32_t & hp_n_expert,
         ggml_log_level log_level) {
+    uint32_t hp_neu = 0; // hparams.n_expert_used, not exposed by this wrapper
     std::vector<llama_device_memory_data> impl = common_get_device_memory_data_impl(
-            path_model, mparams, cparams, devs, hp_ngl, hp_n_ctx_train, hp_n_expert, log_level);
+            path_model, mparams, cparams, devs, hp_ngl, hp_n_ctx_train, hp_n_expert, hp_neu, log_level);
 
     common_device_memory_data_vec ret(impl.size());
     for (size_t i = 0; i < impl.size(); i++) {
@@ -190,11 +193,12 @@ static void common_params_fit_impl(
     uint32_t hp_ngl = 0; // hparams.n_gpu_layers
     uint32_t hp_nct = 0; // hparams.n_ctx_train
     uint32_t hp_nex = 0; // hparams.n_expert
+    uint32_t hp_neu = 0; // hparams.n_expert_used
 
     // step 1: get data for default parameters and check whether any changes are necessary in the first place
 
     LOG_TRC("%s: getting device memory data for initial parameters:\n", __func__);
-    const dmds_t dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
+    const dmds_t dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_neu, log_level);
     const size_t nd = devs.size(); // number of devices
 
     std::vector<int64_t> margins; // this function uses int64_t rather than size_t for memory sizes to more conveniently handle deficits
@@ -331,7 +335,7 @@ static void common_params_fit_impl(
 
                     int64_t sum_projected_used_min_ctx = 0;
                     cparams->n_ctx = n_ctx_min;
-                    const dmds_t dmds_min_ctx = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
+                    const dmds_t dmds_min_ctx = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_neu, log_level);
                     if (nd == 0) {
                         sum_projected_used_min_ctx = dmds_min_ctx.back().mb.total();
                     } else {
@@ -510,7 +514,7 @@ static void common_params_fit_impl(
         set_ngl_tensor_split_tbo(ngl_per_device, overflow_bufts, mparams_copy);
 
         const dmds_t dmd_nl = common_get_device_memory_data_impl(
-            path_model, &mparams_copy, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
+            path_model, &mparams_copy, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_neu, log_level);
 
         LOG_TRC("%s: memory for test allocation by device:\n", func_name);
         for (size_t id = 0; id < nd; id++) {
@@ -538,7 +542,7 @@ static void common_params_fit_impl(
 
         LOG_TRC("%s: getting device memory data with all MoE tensors moved to system memory:\n", __func__);
         const dmds_t dmds_cpu_moe = common_get_device_memory_data_impl(
-            path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
+            path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_neu, log_level);
 
         for (size_t id = 0; id < nd; id++) {
             global_surplus_cpu_moe += dmds_cpu_moe[id].free;
@@ -799,14 +803,17 @@ static void common_params_fit_impl(
     // tensors go back on GPU; S = experts-per-layer that fit leaves on GPU.
     if (n_expert_hot_s && total_moe_bytes > 0) {
         const dmds_t dmds_final = common_get_device_memory_data_impl(
-            path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
+            path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_neu, log_level);
         int64_t final_gpu_model = 0;
         for (size_t id = 0; id < nd; id++) {
             final_gpu_model += dmds_final[id].mb.model;
         }
         const int64_t moe_on_gpu = final_gpu_model - dense_model_gpu;
         const int64_t s = moe_on_gpu > 0 ? int64_t(hp_nex) * moe_on_gpu / total_moe_bytes : 0;
-        *n_expert_hot_s = s > 1 ? (int) (s - 1) : 0;
+        // the hot store reserves n_expert_used slices as the landing pad (one zero slot per
+        // draw position, see llama-expert-hotstore.h), so the usable slots are s minus that
+        const int64_t pad = hp_neu > 0 ? (int64_t) hp_neu : 1;
+        *n_expert_hot_s = s > pad ? (int) (s - pad) : 0;
     }
 }
 
@@ -987,8 +994,9 @@ void common_fit_print(
     uint32_t hp_ngl = 0; // hparams.n_gpu_layers
     uint32_t hp_nct = 0; // hparams.n_ctx_train
     uint32_t hp_nex = 0; // hparams.n_expert
+    uint32_t hp_neu = 0; // hparams.n_expert_used
 
-    auto dmd = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, GGML_LOG_LEVEL_ERROR);
+    auto dmd = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_neu, GGML_LOG_LEVEL_ERROR);
     GGML_ASSERT(dmd.size() == devs.size() + 1);
 
     for (size_t id = 0; id < devs.size(); id++) {
