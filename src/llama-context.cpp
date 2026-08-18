@@ -482,6 +482,8 @@ llama_context::llama_context(
     // target context's tier registrations, which are keyed by model tensor in a global table.
     const bool expert_cache_ok = params.ctx_type != LLAMA_CONTEXT_TYPE_MTP;
 
+    expert_heat_defer = params.expert_heat_defer;
+
     if (hparams.n_expert > 0 && !cparams.warmup && expert_cache_ok &&
         (params.expert_heat_log_period != 0 || params.expert_hot_s != 0)) {
         expert_heatmap = std::make_unique<llama_expert_heatmap>(
@@ -844,6 +846,39 @@ llama_memory_t llama_context::get_memory() const {
 
 int64_t llama_context::get_expert_tier_n_bypassed() const {
     return expert_tier_n_bypassed;
+}
+
+// Hold this batch's router selections, and count the one held before it.
+//
+// A speculative verify batch carries 1 + n_draft tokens and only the accepted prefix survives, so
+// counting the whole batch would rank experts that rejected draft tokens picked. Acceptance is not
+// known while the batch runs. It is known one batch later: the next decode starts at the first
+// position that was NOT kept, so the held batch's accepted length is that position minus its own.
+//
+// A driver that rolls back and replays the accepted prefix instead lands on the same total. The
+// rolled-back batch commits 0 (the replay starts where it did) and the replay commits its own
+// length, so those tokens are still counted exactly once.
+void llama_context::expert_heat_update(const llm_graph_result * res, const llama_ubatch & ubatch) {
+    // one position line only: across several sequences a single start position says nothing
+    const bool      one_seq   = ubatch.n_seqs_unq == 1 && ubatch.pos != nullptr;
+    const llama_pos pos_first = one_seq ? ubatch.pos[0] : -1;
+
+    if (expert_heat_held_ok) {
+        int64_t n_kept = expert_heat_held.n_tokens;
+        if (one_seq && expert_heat_held_pos >= 0) {
+            const int64_t delta = pos_first - expert_heat_held_pos;
+            // a context shift or a cache reuse can move the position outside the held batch, and
+            // then the safe reading is the old one: all of it counted
+            if (delta >= 0 && delta <= expert_heat_held.n_tokens) {
+                n_kept = delta;
+            }
+        }
+        expert_heatmap->update_batch(expert_heat_held, n_kept);
+    }
+
+    llama_expert_read_sel(res->moe_sel_experts, expert_heat_held);
+    expert_heat_held_pos = pos_first;
+    expert_heat_held_ok  = expert_heat_held.n_tokens > 0;
 }
 
 bool llama_context::memory_update(bool optimize) {
@@ -1578,7 +1613,11 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
     if (expert_heatmap && (expert_heat_batch || !expert_hotstore || !expert_hotstore->is_filled)) {
         synchronize();
-        expert_heatmap->update_from_graph(res->moe_sel_experts);
+        if (expert_heat_defer) {
+            expert_heat_update(res, ubatch);
+        } else {
+            expert_heatmap->update_from_graph(res->moe_sel_experts);
+        }
     }
     if (expert_heatmap && expert_hotstore) {
         if (!expert_hotstore->is_filled) {
@@ -3753,6 +3792,7 @@ llama_context_params llama_context_default_params() {
         /*.expert_hyst                 =*/ 1.3f,
         /*.expert_dwell                =*/ 0,
         /*.expert_cache_force         =*/ false,
+        /*.expert_heat_defer          =*/ true,
         /*.ctx_other                   =*/ nullptr,
         /*.n_ctx_max                   =*/ 0,
         /*.ctx_grow_factor             =*/ 1.5f,

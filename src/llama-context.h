@@ -387,6 +387,16 @@ private:
     // being read. a wide speculative draft keeps this at 100% for a whole run.
     int64_t expert_tier_n_bypassed = 0;
 
+    // count only the accepted prefix of a draft in the heatmap (--expert-heat-defer)
+    bool expert_heat_defer = true;
+
+    // the batch waiting to be counted, and the first position it held. see expert_heat_update().
+    llama_expert_sel expert_heat_held;
+    llama_pos        expert_heat_held_pos = -1;
+    bool             expert_heat_held_ok  = false;
+
+    void expert_heat_update(const llm_graph_result * res, const llama_ubatch & ubatch);
+
     // KV cell types, kept so set_n_ctx() can size the grown cache without the memory module
     ggml_type kv_type_k = GGML_TYPE_F16;
     ggml_type kv_type_v = GGML_TYPE_F16;

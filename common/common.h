@@ -530,6 +530,7 @@ struct common_params {
     float expert_hyst            = 1.3f;  // hysteresis ratio: only swap when cold >= hyst x hot
     int   expert_dwell           = 0;    // minimum updates a resident slot must keep before a swap
     bool  expert_cache_force      = false;  // bypass the CUDA-only hot store guard
+    bool  expert_heat_defer       = true;   // count only the accepted prefix of a draft in the heatmap
     bool    offline                    = false;
 
     int32_t ppl_stride      = 0;     // stride for perplexity calculations. If left at 0, the pre-existing approach will be used.

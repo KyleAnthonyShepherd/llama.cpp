@@ -74,6 +74,9 @@ for c in "${@:-base cache mtp cachemtp}"; do
         cache)    run_case cache    -ehs -1 -fitt 256 ;;
         mtp)      run_case "mtp-n$N_MAX"      -ehs 0 --spec-type draft-mtp --spec-draft-n-max "$N_MAX" ;;
         cachemtp) run_case "cachemtp-n$N_MAX" -ehs -1 -fitt 256 --spec-type draft-mtp --spec-draft-n-max "$N_MAX" ;;
+        # heat deferral A/B: same config, only the accepted-prefix rule differs
+        defer)    run_case "defer-n$N_MAX"    -ehs -1 -fitt 256 --spec-type draft-mtp --spec-draft-n-max "$N_MAX" --expert-heat-defer ;;
+        nodefer)  run_case "nodefer-n$N_MAX"  -ehs -1 -fitt 256 --spec-type draft-mtp --spec-draft-n-max "$N_MAX" --no-expert-heat-defer ;;
         *) echo "unknown case: $c" ;;
     esac
 done

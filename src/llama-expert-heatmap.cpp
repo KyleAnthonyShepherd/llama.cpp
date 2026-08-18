@@ -25,6 +25,23 @@ int64_t llama_expert_read_sel_ids(const ggml_tensor * t, std::vector<int32_t> & 
     return n_tokens;
 }
 
+void llama_expert_read_sel(const std::vector<std::pair<int, ggml_tensor *>> & moe_sel, llama_expert_sel & out) {
+    out.n_expert_used = 0;
+    out.n_tokens      = 0;
+    out.layers.clear();
+
+    for (const auto & [il, tensor] : moe_sel) {
+        std::vector<int32_t> ids;
+        const int64_t n = llama_expert_read_sel_ids(tensor, ids);
+        if (n == 0) {
+            continue;
+        }
+        out.n_expert_used = (int) tensor->ne[0];
+        out.n_tokens      = n;
+        out.layers.emplace_back(il, std::move(ids));
+    }
+}
+
 llama_expert_heatmap::llama_expert_heatmap(
         int n_layers, int n_experts,
         float decay_rate, int log_period, int hot_s) :
@@ -49,29 +66,28 @@ void llama_expert_heatmap::update(int layer_idx, const int32_t * expert_ids, int
         }
     }
 }
-void llama_expert_heatmap::update_from_graph(const std::vector<std::pair<int, ggml_tensor *>> & moe_sel_experts) {
-    if (moe_sel_experts.empty()) {
+void llama_expert_heatmap::update_batch(const llama_expert_sel & sel, int64_t n_tokens) {
+    n_tokens = std::min(n_tokens, sel.n_tokens);
+    if (n_tokens <= 0 || sel.layers.empty()) {
         return;
     }
 
-    decay_all(moe_sel_experts.front().second->ne[1]);
+    decay_all(n_tokens);
 
-    int64_t n_tokens = 0;
-    std::vector<int32_t> expert_ids;
-    for (const auto & [il, tensor] : moe_sel_experts) {
-        const int64_t n = llama_expert_read_sel_ids(tensor, expert_ids);
-        if (n == 0) {
-            continue;
-        }
-        n_tokens = n;
-
-        update(il, expert_ids.data(), tensor->ne[0], n_tokens);
+    for (const auto & [il, ids] : sel.layers) {
+        update(il, ids.data(), sel.n_expert_used, (int) n_tokens);
     }
 
     tokens_total += n_tokens;
     if (log_period > 0 && tokens_total / log_period > (tokens_total - n_tokens) / log_period) {
         log();
     }
+}
+
+void llama_expert_heatmap::update_from_graph(const std::vector<std::pair<int, ggml_tensor *>> & moe_sel_experts) {
+    llama_expert_sel sel;
+    llama_expert_read_sel(moe_sel_experts, sel);
+    update_batch(sel, sel.n_tokens);
 }
 
 void llama_expert_heatmap::decay_all(int64_t n_tokens) {

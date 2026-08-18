@@ -1708,6 +1708,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.expert_hyst            = params.expert_hyst;
     cparams.expert_dwell           = params.expert_dwell;
     cparams.expert_cache_force      = params.expert_cache_force;
+    cparams.expert_heat_defer       = params.expert_heat_defer;
 
     return cparams;
 }
