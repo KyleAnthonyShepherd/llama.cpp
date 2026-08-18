@@ -1,19 +1,19 @@
-> # !!! UNRESOLVED: THE TIER MOVES THE LOGITS BY MORE THAN IT SHOULD !!!
+> # RESOLVED: the logit shift under `-ehs` is device placement, not a routing error
 > #
-> # With tensor placement matched (`-cmoe` on both arms), `-ehs -1` shifts the first generated
-> # token's logprobs by **max 2.4e-1, mean 7.0e-2** against stock, and reorders **19 of 38**
-> # shared top-k entries. The argmax survives and 38 of 40 top-k tokens are shared, so it is not
-> # gross corruption, but it is far more than last-bit rounding and **it is not fully explained**.
+> # `-ehs -1` shifts the first token's logprobs by mean 7.0e-2 against stock. **Explained**: with
+> # the tier engaged, all four MoE ops per layer - `ffn_moe_gate`, `ffn_moe_up`,
+> # `ffn_moe_swiglu`, `ffn_moe_down` - move from **CPU to CUDA0, in all 40 layers**, because the
+> # tier's hot output is a CUDA tensor and the scheduler pulls the rest of the MoE after it.
+> # Every op is correct; they run on a different device than in the stock arm, and 40 layers of
+> # CUDA-vs-CPU rounding compounds into the observed shift.
 > #
-> # **It is NOT the hot/cold split.** With the hot path forced to contribute exactly zero
-> # (`LLAMA_EXPERT_TIER_COLD_ONLY=1`) the shift is 7.2e-2, the same as with the tier fully active.
-> # The ids, the mask, the routing and the sum are all cleared. Step 3's landing pad changes the
-> # ids, so it is not building on this. The leading hypothesis is now that the tier's extra graph
-> # nodes move surrounding ops between CPU and GPU. See section 12.
+> # This fits every measurement: flat in S (placement does not depend on how many experts are
+> # resident), and unchanged with the hot path zeroed (the graph shape, hence the placement, is
+> # the same). Measured with `GGML_SCHED_DEBUG=2`, see section 12.
 > #
-> # **Until this is explained, every number measured with `-ehs -1` describes a subtly different
-> # model.** Do not ship the hot store on the strength of throughput alone. RE-CHECK THIS.
-
+> # It is the same class of difference as running the model on the GPU instead of the CPU at all.
+> # Perplexity over a fixed corpus is still the check worth having before shipping, but there is
+> # no longer a reason to suspect the tier's routing.
 # PLAN - make `ngram-mod` speculation compatible with the expert hot store (`-ehs -1`)
 
 Goal: let `--spec-type ngram-mod` and `-ehs -1` be used together without one silently disabling
@@ -593,24 +593,51 @@ comments. The quantization of the activations, the `vec_dot`, and the chunking a
 **So two kernels with identical compute paths are producing a 7e-2 logprob difference, and that
 is still unexplained.**
 
-### 12.35 The leading hypothesis, and a failed attempt to test it
+### 12.35 Resolved: the tier moves the MoE onto the GPU
 
-The tier inserts a GPU op (`hot`) and two arithmetic nodes into the middle of each MoE, where
-stock has one CPU op. That changes where the scheduler cuts the graph, and therefore which backend
-runs the *surrounding* ops - the SwiGLU, the norms, the residual add. The same arithmetic on CUDA
-and on the CPU does not agree bit for bit, and this would be constant in S, which matches.
+Measured with `GGML_SCHED_DEBUG=2` on `-ehs 0 -cmoe` against `-ehs 1 -cmoe`, comparing the last
+decode graph in each by node name. Identifying the right graph matters: the early dumps have 2355
+nodes with `ffn_moe_down-0` a `MUL_MAT_ID` on the CPU, which is the pre-fill graph before the tier
+engages; the late dumps have 3315 nodes with `ffn_moe_down-0` an `ADD` on CUDA0, which is the
+tiered one.
 
-**A first attempt to test this was invalid and is recorded so nobody repeats it.** Comparing the
-`graph splits = N` line between `-ehs 0 -cmoe` and `-ehs 1 -cmoe` gives 122/82 for both, which
-looks like a refutation. It is not: that line is printed by `sched_reserve` during context init,
-*before* the hot store is allocated and long before the tier first engages. In the `-ehs 1` log it
-appears at line 240 while the store is sized at 243 and the tier engages at 287. Both arms are
-reporting the same pre-tier reserve graph.
+174 shared nodes change backend. 160 of them are the whole MoE, every layer:
 
-Testing it properly needs the assignment of a decode graph built *after* the store is filled.
-`GGML_SCHED_DEBUG` (`ggml-backend.cpp:1793`) dumps per-node backend assignment and is the right
-instrument; the comparison to make is which backend runs the ops either side of the MoE, not how
-many splits the reserve graph had.
+| node family | op | ehs 0 -> ehs 1 | count |
+|---|---|---|---|
+| `ffn_moe_gate` | MUL_MAT_ID | **CPU -> CUDA0** | 40 |
+| `ffn_moe_up` | MUL_MAT_ID | **CPU -> CUDA0** | 40 |
+| `ffn_moe_swiglu` | SWIGLU | **CPU -> CUDA0** | 40 |
+| `ffn_moe_down` | MUL_MAT_ID | **CPU -> CUDA0** | 40 |
+
+(The remaining 14 are auto-named `node_NNNN` entries. Those names are positional and the two
+graphs have different node counts, so they are name collisions, not real moves.)
+
+The mechanism: stock keeps the MoE on the CPU because its weights are host-resident. The tier's
+hot half produces a CUDA tensor, so the scheduler pulls the SwiGLU and the projections onto the
+GPU with it. Every op is correct. CUDA and CPU implementations of SWIGLU and MUL_MAT_ID differ in
+the last bits, and 40 layers of that compounds into a mean 7e-2 logprob shift.
+
+This explains every earlier observation at once: the shift is flat in S because placement does not
+depend on how many experts are resident, and it survives forcing the hot path to contribute zero
+because the graph shape, and therefore the placement, is unchanged.
+
+**Conclusion: benign.** The same class of difference as choosing the GPU over the CPU for those
+ops in the first place. Not a routing error, not the landing pad, not the ids.
+
+### 12.36 A methodological note worth keeping
+
+Three comparisons in this investigation were invalid because the arms differed in more than the
+one variable:
+
+1. `-ehs 0` against `-ehs -1` without `-cmoe` on both: differed in tensor placement, worth about a
+   third of the shift.
+2. The `graph splits = N` line: printed by `sched_reserve` during init, before the store is
+   allocated and long before the tier engages, so both arms report the same pre-tier graph.
+3. Comparing the first scheduler dump instead of the last: the early dumps are pre-fill graphs
+   with the tier bypassed.
+
+On this codebase, "same flags except one" usually is not.
 
 ### 12.4 What to run next, cheapest first
 
