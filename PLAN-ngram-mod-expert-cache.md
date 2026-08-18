@@ -615,3 +615,54 @@ the per-op backend assignment.
    cause. Needs the `llama-perplexity` target.
 3. **Scale-factor audit.** `llama_expert_tier_build` applies `w_s` to both paths after the
    matmuls. Check stock `build_lora_mm_id` applies it at the same point and to the same operand.
+
+
+---
+
+## 13. Step 3 results (measured)
+
+Landing pad in (`eed82c188`), limit settable (`cbbb8dd99`). UD-Q4_K_S, copy-heavy prompt,
+ngram-mod `n_min 48 / n_max 64`, `-ehs -1 -fitt 256`, arms interleaved against thermal drift.
+
+### 13.1 The pad is a no-op at the old limit
+
+First-token logprobs against stock are unchanged to the last digit, before and after the pad:
+5.469e-2 at `-ehs 1`, 6.154e-2 at `-ehs 32`. The arithmetic remap computes exactly what the
+sentinel scheme computed.
+
+### 13.2 The tier works above 4 tokens
+
+| | limit 4 | limit 65 |
+|---|---|---|
+| bypassed batches | 17 | **2** (the prompt ubatches) |
+| generated text | - | **byte-identical to limit 4**, 4238 chars, both reps |
+| tg t/s | 57.70, 54.29 | **73.38, 72.75** |
+| pp t/s | 118.83, 116.62 | 131.92, 134.18 |
+
+**+30.5% on tg**, well outside this box's ~10% noise, consistent across interleaved reps. The
+duplicate-id hazard of section 1.3 is closed: a 65 token batch through the tier produces the same
+tokens as a 65 token batch around it.
+
+### 13.3 But it only breaks even against not using the store at all
+
+Same workload and the same implied `--op-offload-min-batch 128`:
+
+| config | tg t/s |
+|---|---|
+| no speculation, `-ehs 0` | 28.21 |
+| ngram-mod, `-ehs 0` (no hot store) | 69.88, 70.88, 74.02 -> median **70.9** |
+| ngram-mod, `-ehs -1`, limit 4 | 57.70, 54.29 -> median 56.0 |
+| ngram-mod, `-ehs -1`, limit 65 | 73.38, 72.75 -> median **73.1** |
+
+73.1 against 70.9 is **inside the noise band**. Raising the limit recovers what `-ehs -1` was
+losing; it does not beat leaving the hot store off.
+
+Section 11.5 projected ~82 t/s from `S/U` arithmetic. That over-estimated, and the likely reason
+is that the arithmetic counted only the expert bytes saved and ignored what the split costs: the
+tier puts a GPU op and a CPU op inside every MoE, so the activations cross the bus both ways, 3
+matmuls x 40 layers x 65 tokens x 2048 x 4 B per direction. At m=65 that traffic is the same
+order as the expert bytes the hot slots save.
+
+**So on this workload the hot store is not paying for itself at m=65, whatever the limit.** What
+it is worth at m=2, where the store covers the whole union and `S/U` is above 1, is a different
+question and is the one the MTP `n_max 1` regression guard actually measures.
