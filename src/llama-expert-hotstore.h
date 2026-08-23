@@ -20,15 +20,16 @@ struct llama_expert_hotstore {
     // fitter already weighed that number against everything else on the device.
     int hot_s_max;
 
-    // Landing pad. The old layout sent every cold draw of a token to one sentinel slot, so a
-    // token's id list held duplicates, and the CUDA id compaction miscounts those above 4 tokens
-    // (see llama-expert-tier.h). Give each draw position its own zero slot instead: cold draw j
-    // lands on slot j, residents start at n_expert_used. Then no two draws of a token can name
-    // the same slot, on any dispatch path.
+    // No reserved slices. A cold draw lands on a real slot and its contribution is removed by
+    // the mask llama_expert_tier_build() applies to the hot output, so no slot has to hold
+    // zeros. That gives every slice back to an expert - the old landing pad cost n_expert_used
+    // of them (29 experts instead of 37 in a 2688 MiB store).
     //
-    // Hot tensor layout, n_expert_used + hot_s slices:
-    //   [0, n_expert_used)          pad, always zero, one per draw position
-    //   [n_expert_used, +hot_s)     the resident experts
+    // The cost is that a token's ids are no longer distinct (every cold draw names slot 0), so
+    // the tier stays under the 4 token limit the MMQ/MMF id compaction imposes. See the TODO in
+    // llama-expert-tier.h: fixing that kernel is what buys wide batches back.
+    //
+    // Hot tensor layout, hot_s slices, all resident experts.
     int n_expert_used;
 
     // bytes of a single expert slot per layer, summed over that layer's
@@ -80,9 +81,7 @@ struct llama_expert_hotstore {
     // before it allocates, so it is available to a re-slot on top of what the device reports free
     size_t bytes_resident() const;
 
-    // largest resident slot count whose store fits in `bytes`, clamped to [0, hot_s_max].
-    // Not bytes/bytes_per_slot_total(): every hot tensor also carries n_expert_used pad
-    // slices, so a store of S residents costs (n_expert_used + S) slot-sized slices
+    // largest resident slot count whose store fits in `bytes`, clamped to [0, hot_s_max]
     int slots_that_fit(size_t bytes) const;
 
     // Re-slot the store to new_hot_s, clamped to [0, hot_s_max]. Shrinking hands VRAM back

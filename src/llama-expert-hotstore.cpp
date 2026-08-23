@@ -79,11 +79,10 @@ bool llama_expert_hotstore::allocate(ggml_backend_buffer_type_t gpu_buft) {
         return false;
     }
 
-    // one hot tensor per model expert tensor: n_expert_used pad slots that stay zero, then the
-    // hot_s resident slots. A cold draw reads zeros through the pad slot for its own draw
-    // position, so no two draws of one token name the same slot (landing pad, see the header).
+    // one hot tensor per model expert tensor, hot_s resident slots and nothing reserved -
+    // a cold draw's contribution is masked away at the tier output (see the header)
     for (auto & e : entries) {
-        e.dst = ggml_new_tensor_3d(ctx.get(), e.src->type, e.src->ne[0], e.src->ne[1], n_expert_used + hot_s);
+        e.dst = ggml_new_tensor_3d(ctx.get(), e.src->type, e.src->ne[0], e.src->ne[1], hot_s);
     }
 
     // per-layer LUTs and masks for in-graph routing (oldtricks Trick 4).
@@ -173,7 +172,7 @@ void llama_expert_hotstore::copy_top_s(const llama_expert_heatmap & heatmap) {
                 if (ex < 0) {
                     continue;
                 }
-                ggml_backend_tensor_set(e->dst, src + (size_t) ex * slot, (size_t) (n_expert_used + p) * slot, slot);
+                ggml_backend_tensor_set(e->dst, src + (size_t) ex * slot, (size_t) p * slot, slot);
             }
         }
     }
@@ -202,7 +201,7 @@ int llama_expert_hotstore::slots_that_fit(size_t bytes) const {
         return 0;
     }
 
-    const int n = (int) (bytes / per_slot) - n_expert_used;
+    const int n = (int) (bytes / per_slot);
 
     return std::max(0, std::min(n, hot_s_max));
 }
@@ -299,7 +298,7 @@ void llama_expert_hotstore::plant_static() {
             const char * src = e->src->data ? (const char *) ggml_get_data(e->src) : nullptr;
             if (!src) continue;
             for (int p = 0; p < hot_s && p < n_experts; p++) {
-                ggml_backend_tensor_set(e->dst, src + (size_t) p * slot, (size_t) (n_expert_used + p) * slot, slot);
+                ggml_backend_tensor_set(e->dst, src + (size_t) p * slot, (size_t) p * slot, slot);
             }
         }
     }
@@ -386,7 +385,7 @@ void llama_expert_hotstore::resync_top_s(const llama_expert_heatmap & heatmap) {
                 if (!src) {
                     continue;
                 }
-                ggml_backend_tensor_set(ent->dst, src + (size_t) e_cold * slot, (size_t) (n_expert_used + p) * slot, slot);
+                ggml_backend_tensor_set(ent->dst, src + (size_t) e_cold * slot, (size_t) p * slot, slot);
             }
             ste[p] = e_cold;
             dc[p]  = -elapsed; // fresh dwell: aging below brings it to 0
@@ -461,7 +460,7 @@ void llama_expert_hotstore::update_luts() {
             if (e < 0) {
                 continue;
             }
-            hot_lut_h[e]   = (float) (n_expert_used + p); // its slot, past the pad
+            hot_lut_h[e]   = (float) p; // its slot
             cold_mask_h[e] = 0.0f;
         }
 
@@ -525,11 +524,11 @@ void llama_expert_hotstore::log() const {
     LLAMA_LOG("  total bytes/slot across all layers = %zu (%zu MiB)\n",
         total, total / (1024 * 1024));
     if (buf) {
-        LLAMA_LOG("  GPU hot store allocated: %s, %zu bytes (%zu MiB) for %d+%d slices (%d expert + %d pad)\n",
+        LLAMA_LOG("  GPU hot store allocated: %s, %zu bytes (%zu MiB) for %d slices (%d expert, no pad)\n",
             ggml_backend_buffer_name(buf.get()),
             ggml_backend_buffer_get_size(buf.get()),
             ggml_backend_buffer_get_size(buf.get()) / (1024 * 1024),
-            hot_s, n_expert_used, hot_s, n_expert_used);
+            hot_s, hot_s);
     } else if (hot_s > 0) {
         LLAMA_LOG("  hot store DISABLED (%d slots requested)\n", hot_s);
     }

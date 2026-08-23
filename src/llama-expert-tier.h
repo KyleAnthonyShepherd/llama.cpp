@@ -15,6 +15,23 @@
 // with --expert-tier-max-tokens.
 constexpr int64_t LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT = 4;
 
+// TODO: teach the MMQ/MMF id compaction to count duplicate ids inside one token's list.
+// That is the only thing the landing pad buys, and it is expensive: the pad reserves
+// n_expert_used slices that hold nothing, so a 2688 MiB store on a 6 GB card carries 29
+// experts where the old single sentinel carried 36 - about 19% of the store's hit rate.
+// Fix the kernel and both go away: cold draws can share one slot, the pad's slices go back
+// to holding experts, and a wide verify batch stays safe.
+// Worth doing for a speculator that drafts wide (ngram-mod). MTP at width 1 never exceeds
+// 4 tokens, so it pays the pad and gets nothing for it - measured in
+// PLAN-ngram-mod-expert-cache.md section 17.
+//
+// Separately, and much cheaper: the zero slot is only needed because the hot path output is
+// unmasked (llama_expert_tier_build adds it straight to the cold result). remap_mask() in
+// llama-expert-tier.cpp already builds the per-draw mask for it and is currently unused.
+// Masking the hot output lets a cold draw land on any real slot, which frees the reserved
+// slices without touching the kernel - but it does not make the ids distinct, so the
+// 4-token limit stays.
+
 // current limit, and the setter the context calls at init
 void llama_expert_tier_set_max_tokens(int32_t n);
 

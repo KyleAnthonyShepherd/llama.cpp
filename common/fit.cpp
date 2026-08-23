@@ -810,10 +810,9 @@ static void common_params_fit_impl(
         }
         const int64_t moe_on_gpu = final_gpu_model - dense_model_gpu;
         const int64_t s = moe_on_gpu > 0 ? int64_t(hp_nex) * moe_on_gpu / total_moe_bytes : 0;
-        // the hot store reserves n_expert_used slices as the landing pad (one zero slot per
-        // draw position, see llama-expert-hotstore.h), so the usable slots are s minus that
-        const int64_t pad = hp_neu > 0 ? (int64_t) hp_neu : 1;
-        *n_expert_hot_s = s > pad ? (int) (s - pad) : 0;
+        // every slice holds an expert now - the hot store reserves nothing (a cold draw is
+        // masked away at the tier output instead, see llama-expert-hotstore.h)
+        *n_expert_hot_s = s > 0 ? (int) s : 0;
     }
 }
 

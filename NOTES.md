@@ -1835,3 +1835,156 @@ Deep-drain regression check with the two-slot reserve, three cycles: drained to 
 growing to 65792, recovered to 28, 27, 27 - stable, no `cache is now off`, no failed reserves.
 The ratchet stays gone; what changed is that the store now stops one slot short of the ceiling
 on purpose.
+
+### 6. Try-then-evict: right for the range that fits, and a WDDM spill found on the way
+
+Section 5 concluded 29/29 was unstable. That was the wrong conclusion: the store was not the
+problem, the *prediction* was. `set_n_ctx()` evicted experts from an estimate
+(`kv_new > free_mem`) rather than from a failure. `llama_kv_cache::resize()` does all of its
+allocating before it touches the live cache - its own "everything below this point cannot
+fail" boundary - so a failed attempt leaves the cache exactly as it was and can be repeated.
+It now asks the cache first and only calls `shrink_expert_hotstore_for_kv()` if that fails.
+
+The estimate was badly wrong in the conservative direction. At the default headroom the fit
+reported `KV needs 135 MiB with 86 MiB free` and dropped a slot - yet at rest, with the store
+at 29 slots and that same 135 MiB cache allocated, 404 MiB was free. The reading it acts on
+is stale by several hundred MiB.
+
+Result on the reported workload (4801-token prompt, `n_predict` 16384, then a short request),
+five cycles: **zero evictions, grows of 20-46 ms, store never resized once**. Compare section
+5's table, where every cycle cost a ~600 ms re-plant. The `vram_reserve` in the refit went
+back to 16 MiB - it no longer has to cover the next growth, because the growth asks first.
+
+**But a successful allocation is not proof the memory is there.** Pushing `--ctx-grow-headroom`
+up to force big caches, nothing ever failed - and it should have. The store holds 2688 MiB
+(29 slots x 72 MiB + 8 pad slices) and the card has 6144 MiB, so a 3910 MiB KV cache cannot be
+resident alongside it. Three independent signs it is not:
+
+- VRAM used barely moves with cache size: KV 135 MiB -> 5740 MiB used; KV 3910 MiB -> 5888 MiB
+  used. A 3775 MiB increase in the cache bought 148 MiB of VRAM.
+- Resize time goes superlinear: 65792 cells 0.8 s, 200192 cells 2.1 s, 250112 cells 9.5 s.
+- Generation at n_ctx 200192 runs 18.4 tok/s against ~26 tok/s at small n_ctx, with only ~470
+  cells actually in use - the attention work is identical, so the gap is paging.
+
+On Windows/WDDM a CUDA allocation that does not fit VRAM is backed by system memory instead of
+failing. So above the physical limit `resize()` always succeeds and the fallback never fires;
+the KV cache silently ends up across PCIe. The old pre-emptive estimate was, by accident,
+the only thing stopping that.
+
+Two things follow. Try-then-evict is right inside the range that physically fits, which is the
+whole operating range at the default headroom (n_ctx ~7k, 135 MiB). And `--ctx-max 262144` on
+this card is not a real setting: 262144 cells is 5120 MiB of KV, which cannot coexist with a
+2688 MiB store on a 6144 MiB card under any policy - the old code "handled" it by destroying
+the expert cache, the new one by spilling. Neither is a context that big actually working.
+Bounding `--ctx-max` to what fits, or adding an explicit physical-fit guard that refuses
+rather than spills, is the open item.
+
+## VRAM priority investigation: what is worth keeping resident
+
+Machine as before (RTX 3060 Laptop, 6144 MiB), Qwen3.6-35B-A3B MTP Q4_K_M.
+
+### 1. What the model is made of
+
+Tensor census straight off the GGUF (`gguf.GGUFReader`, 753 tensors, 20761 MiB total):
+
+| class | MiB | share |
+|-------|-----|-------|
+| routed experts (`ffn_{gate,up,down}_exps`) | 19098 | 91.99 % |
+| embeddings / output (`token_embd` 273, `output` 398) | 671 | 3.23 % |
+| attention (`attn_qkv` 328, `attn_gate` 135, `attn_q` 99, `attn_output` 50, `attn_v/k` 14) | 626 | 3.02 % |
+| other (`ssm_out` 197, `ffn_gate_inp` 82, conv/alpha/beta 8, nextn 5) | 291 | 1.40 % |
+| shared expert (`ffn_*_shexp`) | 75 | 0.36 % |
+| norms | ~0 | 0.00 % |
+
+So the dense part of the model is **1663 MiB** and everything else is routed experts.
+`CUDA0 model buffer = 1389 MiB` under `-ehs`, and 1663 - 1389 = 273 MiB = exactly
+`token_embd.weight`, which llama.cpp already leaves on the host. That is the right call and
+already taken: the embedding matrix is indexed one row per token, so its residency buys
+nothing.
+
+Also worth recording: this is a **hybrid** architecture. 11 of 41 blocks carry attention
+(3, 7, 11, ... 39, plus the nextn block 40); the other 30 are recurrent (`ssm_*`). Only those
+11 layers contribute KV, which is why a cell costs 20 KiB rather than the ~75 KiB a
+40-layer dense-attention model of this shape would want. KV is already cheap here.
+
+### 2. Value density: bytes saved per token, per MiB of VRAM
+
+The useful metric is not size, it is how many bytes of host traffic a resident MiB removes
+from each generated token.
+
+| resident thing | VRAM | bytes read per token | saved per MiB |
+|----------------|------|----------------------|---------------|
+| dense weights (attn, output, ssm, shexp) | 1389 | all of it, every token | **1.00** |
+| KV cache | 20 KiB x n_used | all of it, every token | **1.00** |
+| whole expert tensors (normal offload) | 498 / layer | 638/41 = 15.6 MiB per layer | 0.031 |
+| expert hot store, S=29 | 2688 | 8 x (29/256) x 1.945 x 41 = 72 MiB | **0.027** |
+| `token_embd` | 273 | one row | ~0 |
+
+Dense weights and KV are read in full on every token, so every resident byte pays back once
+per token - they are ~37x better per MiB than the hot store. The hot store's problem is the
+one their own A/B prompt already names: a load-balanced router flattens expert popularity, so
+holding the hottest S of 256 captures about S/256 of the draws. At S=29 that is 11 %.
+
+Two structural taxes make it worse. Every hot tensor carries `n_expert_used` = 8 pad slices
+regardless of S, a fixed **581 MiB** that holds nothing - 22 % of the store at S=29 and half
+of it at S=8. And the tier is bypassed for batches wider than 4 tokens, so the store does
+nothing at all during prompt processing.
+
+### 3. RETRACTED: "the hot store costs more than it returns"
+
+This section reported the hot store losing 17% against `-ehs 0`. **That was a benchmark
+artifact, not a property of the store.** The prompt was one sentence repeated 60 times. A
+degenerate prompt like that keeps the routed expert working set tiny, so the *no-store* arm
+gets its experts served out of CPU cache - which is exactly the benefit the hot store exists
+to provide. The benchmark handed the baseline a free substitute for the thing under test.
+
+The store's own throughput barely moved between prompts; only the baseline did:
+
+| prompt | `-ehs 0` | `-ehs -1` |
+|---|---|---|
+| repeated sentence x60, 1098 tok | **32.32** | 31.03 |
+| "What is an angora rabbit?" | **22.67** | 30.65 |
+
+On an ordinary prompt the store **wins by 18-35%**, which matches the user's own experience
+(21 -> 28 t/s) and the +30% recorded when the feature was built. Verified at both `-c 512`
+and `-c 4096`, so context size was not the variable - the prompt was.
+
+The section 2 value-density arithmetic is also too pessimistic for the same reason: it counts
+only expert *bytes* saved, and so predicts ~11% at S=29. The measured win is larger because a
+host-side expert read is latency and cache-miss bound and carries a CPU matmul with it, none
+of which the byte count captures. Treat that table as a lower bound on the store's value, not
+an estimate of it.
+
+What survives from this investigation: the tensor census (section 1), the fact that
+`token_embd` is correctly left on the host, and the hybrid 11-of-41 attention layer count.
+The eviction-order conclusion in section 5 rested on the retracted measurement and is
+withdrawn with it.
+
+### 4. Can the KV cache have a hot store?
+
+Not as a direct analogue. The expert store works because of real sparsity - 8 of 256 experts
+are touched per token, so holding the hot fraction skips work that would otherwise happen.
+Exact attention reads **every** KV cell on every token; there is no cold subset to skip, so a
+top-S store keyed on heat has nothing to rank.
+
+There is a real design, though, and it rests on a different property: attention is
+decomposable. Streaming/online softmax lets you compute attention over the VRAM-resident
+cells and over the host-resident tail separately and merge the partial (max, sum,
+weighted-value) triples exactly. So a KV hot store is "recent window on GPU, cold tail
+computed where it lives, merge" - exact, no approximation. The cost moves from PCIe transfer
+to CPU attention over the tail. This architecture makes that unusually tractable: only 11 of
+41 layers carry KV, so the tail work is a fraction of what a dense-attention model would ask.
+It is still a significant piece of work and touches the attention path.
+
+### 5. What this implies
+
+- Eviction order by value density: dense weights and KV first, then whole expert tensors,
+  then hot-store slots, and `token_embd` never. The order the code already uses - experts
+  before KV - is correct. The claim that the store should not hold 2688 MiB at all is
+  withdrawn: the arithmetic that produced it undercounts what a host-side expert read costs.
+- Do **not** drop `-ehs` on that basis - see the retraction in section 3. On an ordinary
+  prompt the store is worth +18 to +35 %.
+- Ceiling check for `--ctx-max`: the dense weights (1389 MiB) must stay, overhead measures
+  ~1100 MiB, so KV can have at most ~3650 MiB = **~186k cells** with zero expert weights
+  resident. `--ctx-max 262144` (5120 MiB of KV) does not fit on this card under any policy,
+  which is what section 6's spill was. ~180000 is the honest ceiling.

@@ -907,3 +907,116 @@ And it reproduces the explicit flag, on the section 14 combined config:
 
 The warning kept for the case the cap bites: it now names the override rather than telling the
 user to narrow the draft, which was the advice before the flag existed.
+
+---
+
+## 17. TODO: the landing pad costs 19% of the store, and only wide batches get anything back
+
+Measured on the 6 GB box, MTP `--spec-draft-n-max 1`, ordinary prompt, no ngram, temp 0,
+5 samples per launch, median. Bisected across `eed82c188` (the pad):
+
+| build | store composition | `-ehs 0` | `-ehs -1` | store |
+|---|---|---|---|---|
+| `6f751cd48` (pre-pad) | 2688 MiB, **36 expert + 1 sentinel** | 31.10 | **32.70** | **+5.1%** |
+| `56110ca4c` (HEAD)    | 2688 MiB, **29 expert + 8 pad**   | **35.36** | 30.28 | **-14.4%** |
+
+Same VRAM, same `CUDA0 model buffer = 1389 MiB` on both. The only difference is that the pad
+took 7 of the 37 slices, so the hit rate went 36/256 = 14.1% -> 29/256 = 11.3%.
+
+The `-ehs 0` arms differ between builds (31.10 vs 35.36) on an unchanged code path, so some
+of this is the ~10% noise of section 15.2. The within-build ordering flip is the solid part.
+
+### What the pad actually buys
+
+Distinct ids inside one token's draw list, nothing else. That is what the MMQ/MMF id
+compaction miscounts above 4 tokens, and it is the whole reason for
+`LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT`. So the pad is what makes the wide-batch regime of
+section 16.1 (verify batches 32-128, +15 to +30%) reachable at all.
+
+At MTP width 1 the verify batch is 2. That never approaches 4, so the pad is paid for and
+never used. Any workload that does not draft wide is better off with the sentinel.
+
+### Two fixes, in order of value
+
+1. **Fix the kernel** (the real one, not today). Teach the MMQ/MMF id compaction to count
+   duplicates per occurrence rather than advancing the compact index once per token. Then no
+   reserved slices and no token limit: cold draws share one slot, all 37 slices hold experts,
+   and wide batches stay safe. This is the only fix that gets both the capacity and the wide
+   regime.
+2. **Mask the hot output** (cheap, available now). The zero slot exists only because
+   `llama_expert_tier_build()` adds the hot result straight into the cold one, so a cold
+   draw's slot has to contain zeros. `remap_mask()` in `llama-expert-tier.cpp` already builds
+   the per-draw mask and is dead code today. Mask the hot output and cold draws can land on a
+   real slot: the reserved slices go back to holding experts (29 -> 37 here) with no kernel
+   work. It does **not** make the ids distinct, so the 4-token limit comes back - which is
+   free for MTP at width 1 and fatal for ngram-mod. Roughly no extra FLOPs: cold draws
+   already run the matmul against the zero slot, and where `w_s` exists the mask folds into
+   the scale multiply that is already there.
+
+### 17.1 Masking the hot output, measured
+
+Implemented fix 2. `llama_expert_tier_build()` now multiplies the hot result by `1 - cold`
+(the mask `remap_mask()` was already there, unused), so a cold draw can land on a real slot
+and no slice has to hold zeros. `remap_ids()` drops the draw-position term with it. Three
+follow-on sites needed the same treatment: the slot writes in `copy_top_s`/resync still
+offset by `n_expert_used` (crashed with "tensor write out of bounds"), and `common/fit.cpp`
+still held `n_expert_used` slices back when sizing `-ehs -1` (store came out 2107 MiB / 29
+slots until that was fixed).
+
+Store at the same VRAM: **2688 MiB, 37 experts, no pad** (was 29 + 8). Hit rate 11.3% -> 14.5%.
+
+MTP `--spec-draft-n-max 1`, ordinary prompt, temp 0, 5 samples per launch, median:
+
+| build | store composition | `-ehs 0` | `-ehs -1` | store |
+|---|---|---|---|---|
+| `6f751cd48` pre-pad | 36 expert + 1 sentinel | 31.10 | 32.70 | +5.1% |
+| `56110ca4c` HEAD    | 29 expert + 8 pad      | 35.36 | 30.28 | -14.4% |
+| masked (this)       | **37 expert, no pad**  | 32.32 | 31.03 | **-4.0%** |
+
+The store's standing improves by ~10 points, but it still does not beat `-ehs 0` here and
+does not clearly beat the old sentinel. Note the `-ehs 0` control moved 35.36 -> 32.32 across
+sessions on an unchanged code path: 9%, the same order as the effects, so the ranking is
+provisional and only the within-session deltas mean anything.
+
+Why +8 slots does not buy more: the mask costs about four graph nodes per expert tensor per
+layer (get_rows, reshape, scale_bias, mul), so ~123 extra nodes per token across 3 tensors x
+41 layers. The tensors are tiny (512 x 8 x 2), so this is kernel-dispatch overhead rather
+than FLOPs, and it plausibly eats most of the gain. Two cheap follow-ups if this is kept:
+fold the mask into the per-expert `w_s` scale multiply where that exists, and hoist it per
+layer instead of recomputing it for gate/up/down, which share `ids`.
+
+Numerics: top-token ordering preserved, first-token logprob deltas against `-ehs 0` max
+1.3e-1 across the top 8, against 5.5e-2 / 6.2e-2 recorded for the pad design in 13.1 - same
+order, and larger simply because more draws are hot at 37 slots. A leak of cold contributions
+would be orders of magnitude worse.
+
+**Behaviour change:** the auto-raise of the tier limit in `common_init_from_params` is
+disabled, because without the pad a token's ids are not distinct and a wider batch is unsafe
+rather than merely slow. `--expert-tier-max-tokens` still overrides by hand. ngram-mod's
+wide-batch regime is off until the kernel TODO is done.
+
+
+### 17.2 Correction: sections 17 and 17.1 used a degenerate prompt
+
+Both tables above were measured with a prompt that repeated one sentence 60 times. That keeps
+the routed expert working set small enough to sit in CPU cache, so the `-ehs 0` arm gets for
+free what the hot store is for. It inflated every `-ehs 0` column and inverted the verdict.
+
+Re-measured with an ordinary prompt ("What is an angora rabbit?", `n_predict` 200, temp 0,
+`-c 512`, MTP width 1, 5 samples per launch, median):
+
+| build | store | `-ehs 0` | `-ehs -1` | store |
+|---|---|---|---|---|
+| `56110ca4c` pad | 29 expert + 8 pad | 26.46 | 28.04 | **+6.0%** |
+| masked          | **37 expert, no pad** | 22.67 | **30.65** | **+35.2%** |
+
+So the store wins on a real prompt either way, and the masking change is worth about **+9.3%
+on the store arm** (28.04 -> 30.65), in the direction the extra 8 slots predict.
+
+Caveat, and it is a real one: the two `-ehs 0` controls differ by 14% (26.46 vs 22.67) on an
+identical code path, which is session drift of the same order as the effect being measured.
+The +9.3% is the right sign and roughly the right size, but it wants ABBA-interleaved reps
+per section 15.2 before it is worth quoting.
+
+Lesson for the harness: never benchmark a routed-MoE cache with repetitive text. The prompt
+has to exercise a realistic spread of experts or the baseline gets an unearned cache hit.

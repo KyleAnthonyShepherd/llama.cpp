@@ -78,6 +78,10 @@ struct llama_context {
 
     int64_t get_expert_tier_n_bypassed() const;
 
+    // give the expert hot store's VRAM back so a KV cache of n_ctx_seq_new cells fits;
+    // false when nothing was dropped
+    bool shrink_expert_hotstore_for_kv(uint32_t n_ctx_seq_new);
+
     // re-slot the expert hot store to the VRAM free right now, up to hot_s_max.
     // `reserve` re-reserves the compute graph when the store changed - a reserved graph
     // holds pointers into the store's tensors, which the re-slot frees

@@ -79,12 +79,12 @@ static ggml_tensor * remap_ids(ggml_context * ctx,
     base = ggml_reshape_3d(ctx, base, 1, n_expert_used, n_tokens);
     cold = ggml_reshape_3d(ctx, cold, 1, n_expert_used, n_tokens);
 
-    // draw_pos as [1, n_expert_used, 1] repeats over the token axis
-    ggml_tensor * pos = ggml_reshape_3d(ctx, draw_pos, 1, n_expert_used, 1);
+    // a cold expert maps to 0, a real slot whose contribution the caller masks away. Slot 0
+    // always exists whenever the store is registered, so this is always in range
+    GGML_UNUSED(draw_pos);
+    GGML_UNUSED(cold);
 
-    ggml_tensor * ids = ggml_add(ctx, base, ggml_mul(ctx, cold, pos));
-
-    return ggml_cast(ctx, ggml_reshape_2d(ctx, ids, n_expert_used, n_tokens), GGML_TYPE_I32);
+    return ggml_cast(ctx, ggml_reshape_2d(ctx, base, n_expert_used, n_tokens), GGML_TYPE_I32);
 }
 
 // Build a per-(expert_used, token) mask f32 [1, n_expert_used, n_tokens, 1]
@@ -147,11 +147,17 @@ ggml_tensor * llama_expert_tier_build(ggml_context * ctx,
         }
     }
 
-    // hot path: GPU tier tensor. Remap real expert ids through hot_lut
-    // -> hot slot indices (sentinel S for cold experts = zero contribution).
+    // hot path: GPU tier tensor. Remap real expert ids through hot_lut -> hot slot indices.
     ggml_tensor * ids_hot = remap_ids(ctx, ent.hot_lut, ent.cold_mask, ent.draw_pos, ids,
                                       n_experts, n_expert_used, n_tokens);
     ggml_tensor * hot = ggml_mul_mat_id(ctx, ent.dst_hot, cur, ids_hot);
+
+    // A cold draw read a real expert, so drop its contribution here. This is what removes the
+    // need for a reserved zero slot: the store holds experts in every slice instead.
+    {
+        ggml_tensor * cold_d = remap_mask(ctx, ent.cold_mask, ids, n_experts, n_expert_used, n_tokens);
+        hot = ggml_mul(ctx, hot, ggml_scale_bias(ctx, cold_d, -1.0f, 1.0f)); // 1 - cold
+    }
 
     // cold path: dedicated CPU op that computes ONLY cold-selected experts.
     // ent.cold_mask is f32 [n_experts] with 1.0f = cold; the op treats it

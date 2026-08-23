@@ -974,49 +974,22 @@ int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
 
     const bool is_grow = n_ctx_new > cparams.n_ctx;
 
-    // Hand VRAM back from the expert hot store before the KV cache asks for it. The store is
-    // sized once at load against the initial n_ctx, so a context that grows afterwards is
-    // competing with slots that were budgeted while the KV cache was still small.
-    if (is_grow && expert_hotstore && expert_hotstore->hot_s > 0 && expert_hotstore_buft && expert_heatmap) {
-        // Size the new KV from the attention layers directly, mirroring llama_kv_cache's own
-        // tensor shapes. Scaling memory_breakdown() instead would be badly wrong on a hybrid
-        // arch: it also holds the recurrent state, which is constant in context length and
-        // dominates the total at small n_ctx.
-        const auto & hparams = model.hparams;
+    // Ask for the cache first and only take VRAM off the expert hot store if that actually
+    // fails. The estimate in shrink_expert_hotstore_for_kv() has to be pessimistic - resize()
+    // builds the new buffers while the old ones are still live, so it wants the whole new KV
+    // free rather than the difference - and acting on it up front evicts experts an
+    // allocation that would have succeeded never needed. Each of those round trips costs a
+    // ~600 ms re-plant from host, so guessing costs more than asking.
+    // resize() does all of its allocating before it touches the live cache (see its
+    // "everything below this point cannot fail" boundary), so a failed attempt leaves the
+    // cache exactly as it was and can simply be repeated with more room.
+    bool resized = memory->resize(n_ctx_seq_new);
 
-        size_t kv_per_cell = 0;
-        for (uint32_t il = 0; il < hparams.n_layer(); ++il) {
-            if (hparams.is_recr(il)) {
-                continue;
-            }
-            kv_per_cell += ggml_row_size(kv_type_k, hparams.n_embd_k_gqa(il));
-            kv_per_cell += ggml_row_size(kv_type_v, hparams.n_embd_v_gqa(il));
-        }
-
-        const uint32_t n_stream = cparams.kv_unified ? 1 : cparams.n_seq_max;
-        const size_t   kv_new   = kv_per_cell * n_ctx_seq_new * n_stream;
-
-        size_t free_mem = 0, total_mem = 0;
-        ggml_backend_dev_t dev = ggml_backend_buft_get_device(expert_hotstore_buft);
-        if (dev) {
-            ggml_backend_dev_memory(dev, &free_mem, &total_mem);
-        }
-
-        // resize() builds the new buffers while the old ones are still live, so the peak
-        // needs kv_new free on top of the kv_now already allocated, not just the difference
-        if (dev && kv_new > free_mem) {
-            const size_t per_slot = expert_hotstore->bytes_per_slot_total();
-            if (per_slot > 0) {
-                const size_t deficit = kv_new - free_mem;
-                const int    drop    = (int) ((deficit + per_slot - 1) / per_slot);
-                LLAMA_LOG_INFO("%s: KV needs %zu MiB with %zu MiB free, dropping %d hot expert slots\n",
-                        __func__, kv_new / (1024 * 1024), free_mem / (1024 * 1024), drop);
-                expert_hotstore->resize(expert_hotstore->hot_s - drop, *expert_heatmap, expert_hotstore_buft);
-            }
-        }
+    if (!resized && is_grow && shrink_expert_hotstore_for_kv(n_ctx_seq_new)) {
+        resized = memory->resize(n_ctx_seq_new);
     }
 
-    if (!memory->resize(n_ctx_seq_new)) {
+    if (!resized) {
         LLAMA_LOG_WARN("%s: memory->resize(%u) failed (unsupported memory topology or allocation failure)\n", __func__, n_ctx_seq_new);
         return -2;
     }
@@ -1077,6 +1050,62 @@ bool llama_context::reserve_worst_case_graph() {
     return true;
 }
 
+// Hand VRAM back from the expert hot store so a KV cache of n_ctx_seq_new cells can fit. The
+// store is sized once at load against the initial n_ctx, so a context that grows afterwards is
+// competing with slots that were budgeted while the KV cache was still small.
+// Returns whether any slot was actually dropped - false means memory is not what is missing
+// (nothing to give, or the shortfall is not the cache size), so retrying would be pointless.
+bool llama_context::shrink_expert_hotstore_for_kv(uint32_t n_ctx_seq_new) {
+    if (!expert_hotstore || expert_hotstore->hot_s <= 0 || !expert_hotstore_buft || !expert_heatmap) {
+        return false;
+    }
+
+    // Size the new KV from the attention layers directly, mirroring llama_kv_cache's own
+    // tensor shapes. Scaling memory_breakdown() instead would be badly wrong on a hybrid
+    // arch: it also holds the recurrent state, which is constant in context length and
+    // dominates the total at small n_ctx.
+    const auto & hparams = model.hparams;
+
+    size_t kv_per_cell = 0;
+    for (uint32_t il = 0; il < hparams.n_layer(); ++il) {
+        if (hparams.is_recr(il)) {
+            continue;
+        }
+        kv_per_cell += ggml_row_size(kv_type_k, hparams.n_embd_k_gqa(il));
+        kv_per_cell += ggml_row_size(kv_type_v, hparams.n_embd_v_gqa(il));
+    }
+
+    const uint32_t n_stream = cparams.kv_unified ? 1 : cparams.n_seq_max;
+    const size_t   kv_new   = kv_per_cell * n_ctx_seq_new * n_stream;
+
+    ggml_backend_dev_t dev = ggml_backend_buft_get_device(expert_hotstore_buft);
+    if (!dev) {
+        return false;
+    }
+
+    size_t free_mem = 0, total_mem = 0;
+    ggml_backend_dev_memory(dev, &free_mem, &total_mem);
+
+    if (kv_new <= free_mem) {
+        return false;
+    }
+
+    const size_t per_slot = expert_hotstore->bytes_per_slot_total();
+    if (per_slot == 0) {
+        return false;
+    }
+
+    const size_t deficit = kv_new - free_mem;
+    const int    drop    = (int) ((deficit + per_slot - 1) / per_slot);
+
+    LLAMA_LOG_INFO("%s: KV needs %zu MiB with %zu MiB free, dropping %d hot expert slots\n",
+            __func__, kv_new / (1024 * 1024), free_mem / (1024 * 1024), drop);
+
+    expert_hotstore->resize(expert_hotstore->hot_s - drop, *expert_heatmap, expert_hotstore_buft);
+
+    return true;
+}
+
 int32_t llama_context::refit_expert_hotstore(bool reserve) {
     if (!expert_hotstore || !expert_hotstore_buft || !expert_heatmap) {
         return -1;
@@ -1098,16 +1127,11 @@ int32_t llama_context::refit_expert_hotstore(bool reserve) {
     // holds counts as available on top of what the device reports free
     size_t have = free_mem + expert_hotstore->bytes_resident();
 
-    // Hold a margin back rather than taking everything free. This runs at the shrunk
-    // context size, where the KV cache and the compute buffers are at their smallest, so
-    // "free right now" overstates what is free once the next request grows again. A store
-    // that fills to the brim here has to give slots straight back on that growth, and every
-    // round trip costs a ~600 ms re-plant from host. Measured on a 6 GB card with a 4801
-    // token prompt: filling to 29/29 evicted on every single request (~620 ms each), while
-    // stopping at 28 kept the growth inside what was already free (~15 ms). Two slots is
-    // what covers that gap here; it also absorbs fragmentation and a sibling context's
-    // buffers. Raising it trades expert residency for fewer re-plants.
-    const size_t vram_reserve = 2 * expert_hotstore->bytes_per_slot_total();
+    // Keep a small margin for allocations that are not the hot store - fragmentation, a
+    // sibling context's buffers. It does not have to cover the next KV growth: set_n_ctx()
+    // asks the cache for that growth first and only comes back for slots if the allocation
+    // really fails, so an over-full store costs a re-plant only when the memory was needed
+    constexpr size_t vram_reserve = 16ull*1024ull*1024ull;
     have = have > vram_reserve ? have - vram_reserve : 0;
 
     const int fits = expert_hotstore->slots_that_fit(have);
