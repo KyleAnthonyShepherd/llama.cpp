@@ -198,6 +198,15 @@ Guards, all of them necessary:
 - **Forced exploration.** The fit only sees widths that were used. Every K steps (K ~ 32), take
   `W* + 1` or `W* - 1` regardless, so the regression keeps a spread. Without this the controller
   locks onto whatever it tried first.
+- **Width 0 has to be a sample, not a prediction.** *This paragraph was wrong in the first draft
+  and the smoke run caught it.* A step that drafts nothing never reaches the accept block, so the
+  obvious implementation skips it and the fit sees only `m >= 2`. Predicting `m = 1` is then an
+  extrapolation below everything measured, and since `t0` trades freely against `slope` in a
+  two-parameter fit, it lands on "the narrowest batch is nearly free". **Measured**: the controller
+  ran width 0 on 51 of 78 decodes against a draft that was being accepted 86% of the time, walking
+  down to 0, getting pushed back up by exploration, and walking down again. Sampling the width-0
+  step from the plain sampling path anchors the fit and the same run then spends 27 of 44 decodes
+  at width 2.
 - **Hysteresis.** Move `W` by at most one step per decision, and require the predicted gain to beat
   the incumbent by a margin. Width changes the ubatch shape, which changes kernel selection;
   oscillating across that boundary is its own cost.
@@ -338,9 +347,13 @@ the scan is free; confirm it, because it runs on every decode.
 2. **Two-parameter online least squares is a new pattern in this tree.** It is ~30 lines and it is
    defensible, but if E3 says the expert term is weak, prefer the bandit: one array of decayed
    throughput per width, pick the best, explore occasionally. Fewer moving parts, same call site.
-3. **Compute-buffer reservation.** Graph reservation happens at the ceiling width, so varying the
-   width at run time should never need a new allocation. Confirm it on the box anyway - a
-   reallocation mid-generation on a 6 GB card is not a small event.
+3. **The ceiling is not free, and it makes `adapt` an unfair comparison.** Graph reservation
+   happens at the ceiling width, so varying the width at run time never needs a new allocation -
+   but the fitter sizes the compute buffer for that ceiling up front and the hot store gets what
+   is left. **Measured**: `--spec-draft-n-max 3` leaves S=26 slots where `--spec-draft-n-max 1`
+   leaves S=28. An adaptive arm that mostly picks width 1 is still running against a smaller store
+   than the fixed-width-1 arm it is being compared with, so step 5 is measuring two changes at
+   once. Report S for both arms.
 4. **Interaction with `ngram-mod`.** ngram-mod outranks draft-mtp in the impl order
    (`common/speculative.cpp:2449-2459`) and is all-or-nothing at `n_min` (`:1958-1970`). A `dp.n_max`
    of 2 against an `n_min` of 48 means ngram-mod fires, gets truncated to 2, and MTP never runs -

@@ -1,0 +1,3 @@
+<|im_start|>user
+Explain, in flowing prose with no code and no bullet lists, how a work-stealing scheduler decides which queue to take work from, why the victim is chosen at random, and what goes wrong when every worker steals from the same place. Write at least 700 words.<|im_end|>
+<|im_start|>assistant

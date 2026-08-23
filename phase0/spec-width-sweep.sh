@@ -22,6 +22,11 @@
 # The arms below are step 5, and only mean anything once E2 has said yes:
 # verify  adaptive against fixed width 1, temperature 0, completions must be byte identical
 # adapt   adaptive against every fixed width, clean timing
+#
+# Reading `adapt`: the ceiling is not free. The fitter sizes the compute buffer for the widest
+# verify batch the config allows, so a ceiling of 3 leaves fewer hot store slots than a fixed
+# width of 1 does - measured at S=26 against S=28. An adaptive arm that picks width 1 most of
+# the time still runs against a smaller store than the fixed arm it is compared with.
 
 set -u
 
@@ -228,10 +233,12 @@ PY
            python "$PHASE0_DIR/spec-width-report.py" compare "$OUT/$TAG"-ad-*.jsonl
            ;;
 
-    # wiring check: one short run of each prompt at the width in use today
+    # wiring check. Same prompt on all three so the numbers can be read side by side, though
+    # 120 tokens is far too few to mean anything - this checks the plumbing, not the trade.
     smoke) N_PREDICT=120 run_case "smoke-prose" "$OUT/.p-prose.txt" $(mtp 1)
            N_PREDICT=120 INSTRUMENT=1 run_case "smoke-cold" "$OUT/.p-prose.txt" $(mtp 1)
-           N_PREDICT=120 run_case "smoke-auto"  "$OUT/.p-two-phase.txt" $(mtp 3) --spec-adaptive-width
+           N_PREDICT=120 INSTRUMENT=1 run_case "smoke-auto" "$OUT/.p-prose.txt" $(mtp 3) --spec-adaptive-width
+           grep -c "adaptive draft width" "$OUT/$TAG-smoke-auto.log" | xargs echo "  width changes logged:"
            ;;
 
     *) echo "unknown case: $c" ;;

@@ -1,0 +1,82 @@
+<|im_start|>user
+Copy the document below verbatim, over and over, numbering each copy. No commentary.
+
+=== DOCUMENT ===
+The scheduler keeps three queues. The ready queue holds tasks whose inputs are
+present and whose output buffer has already been reserved. The blocked queue
+holds tasks waiting on an input that some other task still has to produce. The
+retired queue holds tasks whose output has been consumed by every reader and
+whose buffer can therefore be handed back to the allocator.
+
+A task moves from blocked to ready when the last of its inputs is marked
+present. A task moves from ready to retired when its kernel has completed and
+every reader has taken a reference. Nothing moves in the other direction. The
+graph is acyclic by construction, so a task that is retired can never become
+blocked again, and a buffer that has been handed back is never reclaimed by the
+task that produced it.
+
+Buffer reservation happens before the kernel is enqueued, not after. This costs
+a small amount of address space that may go unused if the kernel fails, and it
+buys the guarantee that a kernel never stalls waiting for memory that a later
+task is holding. Deadlock through mutual buffer waits is the failure mode this
+ordering exists to remove, and it is worth the wasted address space.
+
+Reference counts are held per reader, not per buffer. A buffer with four readers
+carries four references and is released when the fourth reader drops its own.
+Holding the count per buffer would be smaller, but it would make a double-drop
+by one reader indistinguishable from an honest drop by two, and that bug is
+silent until the buffer is reused by an unrelated task hundreds of steps later.
+
+The allocator itself is a simple bump pointer with a free list of exact-size
+blocks. Exact-size matching is deliberate. Splitting and coalescing would raise
+utilisation, and it would also make the peak footprint depend on the order in
+which tasks happen to retire, which makes a run that fits on one machine fail
+on an identical one. A fixed size class costs memory and buys reproducibility.
+
+Every queue transition is logged behind a compile-time flag. The log records
+the task id, the queue it left, the queue it entered, and the step counter at
+the time of the move. It does not record timestamps. Wall-clock times make the
+log unusable as a diff between two runs, and a diff between two runs is the only
+thing the log has ever been useful for.
+
+=== COPY 1 ===
+The scheduler keeps three queues. The ready queue holds tasks whose inputs are
+present and whose output buffer has already been reserved. The blocked queue
+holds tasks waiting on an input that some other task still has to produce. The
+retired queue holds tasks whose output has been consumed by every reader and
+whose buffer can therefore be handed back to the allocator.
+
+A task moves from blocked to ready when the last of its inputs is marked
+present. A task moves from ready to retired when its kernel has completed and
+every reader has taken a reference. Nothing moves in the other direction. The
+graph is acyclic by construction, so a task that is retired can never become
+blocked again, and a buffer that has been handed back is never reclaimed by the
+task that produced it.
+
+Buffer reservation happens before the kernel is enqueued, not after. This costs
+a small amount of address space that may go unused if the kernel fails, and it
+buys the guarantee that a kernel never stalls waiting for memory that a later
+task is holding. Deadlock through mutual buffer waits is the failure mode this
+ordering exists to remove, and it is worth the wasted address space.
+
+Reference counts are held per reader, not per buffer. A buffer with four readers
+carries four references and is released when the fourth reader drops its own.
+Holding the count per buffer would be smaller, but it would make a double-drop
+by one reader indistinguishable from an honest drop by two, and that bug is
+silent until the buffer is reused by an unrelated task hundreds of steps later.
+
+The allocator itself is a simple bump pointer with a free list of exact-size
+blocks. Exact-size matching is deliberate. Splitting and coalescing would raise
+utilisation, and it would also make the peak footprint depend on the order in
+which tasks happen to retire, which makes a run that fits on one machine fail
+on an identical one. A fixed size class costs memory and buys reproducibility.
+
+Every queue transition is logged behind a compile-time flag. The log records
+the task id, the queue it left, the queue it entered, and the step counter at
+the time of the move. It does not record timestamps. Wall-clock times make the
+log unusable as a diff between two runs, and a diff between two runs is the only
+thing the log has ever been useful for.
+
+=== COPY 2 ===
+<|im_end|>
+<|im_start|>assistant

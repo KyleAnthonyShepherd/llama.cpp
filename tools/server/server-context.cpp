@@ -232,7 +232,13 @@ struct server_spec_width {
     // decayed least squares of t_step_us against the batch's cold expert count
     double s_w = 0.0, s_x = 0.0, s_y = 0.0, s_xx = 0.0, s_xy = 0.0;
 
-    double cold_rate = 0.0; // cold experts per token of the last batch
+    // decayed cold expert count of a batch at each width, and whether that width has run.
+    // measured per width rather than scaled from one rate per token: the count saturates as
+    // the batch grows, because a wider batch shares more of its draws
+    std::vector<double> cold_at;
+    std::vector<char>   cold_ok;
+
+    double cold_rate = 0.0; // cold experts per token of the last batch, for the log line
 
     void reset(int n_max, bool on) {
         enabled    = on;
@@ -243,6 +249,8 @@ struct server_spec_width {
         n_sample   = 0;
         widths_seen = 0;
         acc.assign(std::max(1, n_max), 0.0);
+        cold_at.assign(std::max(1, n_max) + 1, 0.0);
+        cold_ok.assign(cold_at.size(), 0);
         s_w = s_x = s_y = s_xx = s_xy = 0.0;
         cold_rate = 0.0;
     }
@@ -252,8 +260,11 @@ struct server_spec_width {
         return n_sample >= N_WARMUP && (widths_seen & (widths_seen - 1)) != 0;
     }
 
+    // width 0 is a sample like any other. Without one the fit has to extrapolate below every
+    // batch it has seen, and a t0 that trades freely against the slope reads the narrowest
+    // batch as nearly free - measured, the controller then walks to 0 and stays there
     void add_sample(int width, int n_accepted, int64_t t_step_us, int cold_distinct, int n_tokens) {
-        if (!enabled || width <= 0 || t_step_us <= 0 || n_tokens <= 0) {
+        if (!enabled || width < 0 || width >= (int) cold_at.size() || t_step_us <= 0 || n_tokens <= 0) {
             return;
         }
 
@@ -272,10 +283,29 @@ struct server_spec_width {
         s_xx = DECAY*s_xx + x*x;
         s_xy = DECAY*s_xy + x*y;
 
+        cold_at[width] = cold_ok[width] ? DECAY*cold_at[width] + (1.0 - DECAY)*x : x;
+        cold_ok[width] = 1;
         cold_rate = x / n_tokens;
 
         widths_seen |= 1u << std::min(width, 31);
         n_sample++;
+    }
+
+    // cold experts a batch of this width would touch. A width that has never run is guessed
+    // from the widest one that has, at that one's rate per token - an overestimate, since the
+    // count saturates, so an unexplored width has to earn its way in
+    double cold_pred(int w) const {
+        if (cold_ok[w]) {
+            return cold_at[w];
+        }
+
+        for (int k = (int) cold_at.size() - 1; k >= 0; --k) {
+            if (cold_ok[k]) {
+                return cold_at[k]*(1 + w)/(1 + k);
+            }
+        }
+
+        return 0.0;
     }
 
     // predicted tokens per microsecond at draft width w
@@ -285,7 +315,7 @@ struct server_spec_width {
             gain += acc[i];
         }
 
-        const double t = t0 + slope*cold_rate*(1 + w);
+        const double t = t0 + slope*cold_pred(w);
 
         return t > 0.0 ? gain/t : 0.0;
     }
@@ -304,7 +334,7 @@ struct server_spec_width {
         }
 
         const double den = s_w*s_xx - s_x*s_x;
-        if (den <= 0.0 || cold_rate <= 0.0) {
+        if (den <= 0.0) {
             return n_max_cur;
         }
 
@@ -3475,8 +3505,8 @@ private:
 
                     n_draft_max = std::min(n_draft_max, slot.spec_w.pick());
 
-                    if (slot.spec_w.n_max_cur != w_prev) {
-                        SLT_DBG(slot, "adaptive draft width %d -> %d (cold rate %.2f per token)\n",
+                    if (trace > 0 && slot.spec_w.n_max_cur != w_prev) {
+                        SLT_INF(slot, "adaptive draft width %d -> %d (cold rate %.2f per token)\n",
                                 w_prev, slot.spec_w.n_max_cur, slot.spec_w.cold_rate);
                     }
                 }
@@ -4408,6 +4438,16 @@ private:
             }
 
             slot.t_token_generation = std::max<int64_t>(1, t_now - slot.t_start_generation) / 1e3;
+
+            // a step that drafted nothing is the fit's only anchor at the narrowest batch
+            if (slot.spec_w.enabled && n_generating_last == 1) {
+                int32_t cold = 0;
+                int32_t n_tokens = 0;
+
+                if (llama_expert_cold_last(slot.ctx_tgt, &cold, &n_tokens) && n_tokens == 1) {
+                    slot.spec_w.add_sample(0, 0, t_now - slot.spec_w.t_step_beg, cold, n_tokens);
+                }
+            }
 
             completion_token_output result;
             result.tok          = id;
