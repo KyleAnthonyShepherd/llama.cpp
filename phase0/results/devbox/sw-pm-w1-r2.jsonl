@@ -1,0 +1,1201 @@
+{"tok": 0, "t_us": 0, "text": "Here"}
+{"tok": 1, "t_us": 250000, "text": "'s"}
+{"tok": 2, "t_us": 250000, "text": " a"}
+{"tok": 3, "t_us": 500000, "text": " thinking"}
+{"tok": 4, "t_us": 500000, "text": " process"}
+{"tok": 5, "t_us": 625000, "text": ":"}
+{"tok": 6, "t_us": 625000, "text": "\n\n"}
+{"tok": 7, "t_us": 717999, "text": "1"}
+{"tok": 8, "t_us": 717999, "text": "."}
+{"tok": 9, "t_us": 842999, "text": " "}
+{"tok": 10, "t_us": 842999, "text": " **"}
+{"tok": 11, "t_us": 967999, "text": "Under"}
+{"tok": 12, "t_us": 967999, "text": "stand"}
+{"tok": 13, "t_us": 1077999, "text": " User"}
+{"tok": 14, "t_us": 1077999, "text": " Query"}
+{"tok": 15, "t_us": 1186999, "text": "**:"}
+{"tok": 16, "t_us": 1186999, "text": " The"}
+{"tok": 17, "t_us": 1295999, "text": " user"}
+{"tok": 18, "t_us": 1295999, "text": " asks"}
+{"tok": 19, "t_us": 1420999, "text": " \""}
+{"tok": 20, "t_us": 1420999, "text": "What"}
+{"tok": 21, "t_us": 1515000, "text": " is"}
+{"tok": 22, "t_us": 1515000, "text": " an"}
+{"tok": 23, "t_us": 1592999, "text": " an"}
+{"tok": 24, "t_us": 1592999, "text": "gor"}
+{"tok": 25, "t_us": 1670999, "text": "a"}
+{"tok": 26, "t_us": 1670999, "text": " rabbit"}
+{"tok": 27, "t_us": 1781000, "text": "?\""}
+{"tok": 28, "t_us": 1781000, "text": " This"}
+{"tok": 29, "t_us": 1890000, "text": " is"}
+{"tok": 30, "t_us": 1890000, "text": " a"}
+{"tok": 31, "t_us": 2000000, "text": " straightforward"}
+{"tok": 32, "t_us": 2000000, "text": " factual"}
+{"tok": 33, "t_us": 2108999, "text": " question"}
+{"tok": 34, "t_us": 2108999, "text": " about"}
+{"tok": 35, "t_us": 2217999, "text": " a"}
+{"tok": 36, "t_us": 2217999, "text": " specific"}
+{"tok": 37, "t_us": 2311999, "text": " breed"}
+{"tok": 38, "t_us": 2311999, "text": " of"}
+{"tok": 39, "t_us": 2390000, "text": " rabbit"}
+{"tok": 40, "t_us": 2390000, "text": " known"}
+{"tok": 41, "t_us": 2500000, "text": " for"}
+{"tok": 42, "t_us": 2500000, "text": " its"}
+{"tok": 43, "t_us": 2577999, "text": " wool"}
+{"tok": 44, "t_us": 2592999, "text": "/f"}
+{"tok": 45, "t_us": 3045999, "text": "ur"}
+{"tok": 46, "t_us": 3140000, "text": "."}
+{"tok": 47, "t_us": 3140000, "text": "\n\n"}
+{"tok": 48, "t_us": 3217999, "text": "2"}
+{"tok": 49, "t_us": 3217999, "text": "."}
+{"tok": 50, "t_us": 3311999, "text": " "}
+{"tok": 51, "t_us": 3311999, "text": " **"}
+{"tok": 52, "t_us": 3375000, "text": "Ident"}
+{"tok": 53, "t_us": 3375000, "text": "ify"}
+{"tok": 54, "t_us": 3452999, "text": " Key"}
+{"tok": 55, "t_us": 3452999, "text": " Information"}
+{"tok": 56, "t_us": 3545999, "text": " Needed"}
+{"tok": 57, "t_us": 3545999, "text": "**:"}
+{"tok": 58, "t_us": 3608999, "text": "\n"}
+{"tok": 59, "t_us": 3608999, "text": "  "}
+{"tok": 60, "t_us": 3686999, "text": " -"}
+{"tok": 61, "t_us": 3686999, "text": " Definition"}
+{"tok": 62, "t_us": 3765000, "text": "/"}
+{"tok": 63, "t_us": 3765000, "text": "Basic"}
+{"tok": 64, "t_us": 3842999, "text": " description"}
+{"tok": 65, "t_us": 3842999, "text": "\n"}
+{"tok": 66, "t_us": 3920999, "text": "  "}
+{"tok": 67, "t_us": 3920999, "text": " -"}
+{"tok": 68, "t_us": 4000000, "text": " Origin"}
+{"tok": 69, "t_us": 4000000, "text": "/B"}
+{"tok": 70, "t_us": 4077999, "text": "reed"}
+{"tok": 71, "t_us": 4077999, "text": " history"}
+{"tok": 72, "t_us": 4156000, "text": "\n"}
+{"tok": 73, "t_us": 4156000, "text": "  "}
+{"tok": 74, "t_us": 4233999, "text": " -"}
+{"tok": 75, "t_us": 4233999, "text": " Physical"}
+{"tok": 76, "t_us": 4311999, "text": " characteristics"}
+{"tok": 77, "t_us": 4311999, "text": " ("}
+{"tok": 78, "t_us": 4390000, "text": "especially"}
+{"tok": 79, "t_us": 4390000, "text": " the"}
+{"tok": 80, "t_us": 4452999, "text": " famous"}
+{"tok": 81, "t_us": 4515000, "text": " long"}
+{"tok": 82, "t_us": 4577999, "text": ","}
+{"tok": 83, "t_us": 4656000, "text": " soft"}
+{"tok": 84, "t_us": 4656000, "text": " fur"}
+{"tok": 85, "t_us": 4750000, "text": ")"}
+{"tok": 86, "t_us": 4750000, "text": "\n"}
+{"tok": 87, "t_us": 4827999, "text": "  "}
+{"tok": 88, "t_us": 4827999, "text": " -"}
+{"tok": 89, "t_us": 4890000, "text": " Types"}
+{"tok": 90, "t_us": 4890000, "text": "/V"}
+{"tok": 91, "t_us": 4967999, "text": "ari"}
+{"tok": 92, "t_us": 4967999, "text": "eties"}
+{"tok": 93, "t_us": 5031000, "text": " ("}
+{"tok": 94, "t_us": 5031000, "text": "English"}
+{"tok": 95, "t_us": 5186999, "text": " Ang"}
+{"tok": 96, "t_us": 5250000, "text": "ora"}
+{"tok": 97, "t_us": 5250000, "text": ","}
+{"tok": 98, "t_us": 5327999, "text": " French"}
+{"tok": 99, "t_us": 5327999, "text": " Ang"}
+{"tok": 100, "t_us": 5406000, "text": "ora"}
+{"tok": 101, "t_us": 5406000, "text": ","}
+{"tok": 102, "t_us": 5467999, "text": " Giant"}
+{"tok": 103, "t_us": 5467999, "text": " Ang"}
+{"tok": 104, "t_us": 5545999, "text": "ora"}
+{"tok": 105, "t_us": 5545999, "text": ","}
+{"tok": 106, "t_us": 5608999, "text": " Sat"}
+{"tok": 107, "t_us": 5608999, "text": "in"}
+{"tok": 108, "t_us": 5686999, "text": " Ang"}
+{"tok": 109, "t_us": 5686999, "text": "ora"}
+{"tok": 110, "t_us": 5765000, "text": ")"}
+{"tok": 111, "t_us": 5765000, "text": "\n"}
+{"tok": 112, "t_us": 5827999, "text": "  "}
+{"tok": 113, "t_us": 5827999, "text": " -"}
+{"tok": 114, "t_us": 5890000, "text": " Care"}
+{"tok": 115, "t_us": 5890000, "text": " requirements"}
+{"tok": 116, "t_us": 5952999, "text": " ("}
+{"tok": 117, "t_us": 5952999, "text": "g"}
+{"tok": 118, "t_us": 6031000, "text": "room"}
+{"tok": 119, "t_us": 6031000, "text": "ing"}
+{"tok": 120, "t_us": 6092999, "text": " needs"}
+{"tok": 121, "t_us": 6156000, "text": " are"}
+{"tok": 122, "t_us": 6233999, "text": " significant"}
+{"tok": 123, "t_us": 6311999, "text": " due"}
+{"tok": 124, "t_us": 6390000, "text": " to"}
+{"tok": 125, "t_us": 6390000, "text": " long"}
+{"tok": 126, "t_us": 6452999, "text": " wool"}
+{"tok": 127, "t_us": 6515000, "text": ")"}
+{"tok": 128, "t_us": 6515000, "text": "\n"}
+{"tok": 129, "t_us": 6577999, "text": "  "}
+{"tok": 130, "t_us": 6577999, "text": " -"}
+{"tok": 131, "t_us": 6640000, "text": " Uses"}
+{"tok": 132, "t_us": 6640000, "text": "/P"}
+{"tok": 133, "t_us": 6702999, "text": "urpose"}
+{"tok": 134, "t_us": 6702999, "text": " ("}
+{"tok": 135, "t_us": 6765000, "text": "wo"}
+{"tok": 136, "t_us": 6765000, "text": "ol"}
+{"tok": 137, "t_us": 6827999, "text": " production"}
+{"tok": 138, "t_us": 6827999, "text": ","}
+{"tok": 139, "t_us": 6890000, "text": " pets"}
+{"tok": 140, "t_us": 6952999, "text": "/show"}
+{"tok": 141, "t_us": 7031000, "text": " rabbits"}
+{"tok": 142, "t_us": 7092999, "text": ")"}
+{"tok": 143, "t_us": 7092999, "text": "\n"}
+{"tok": 144, "t_us": 7156000, "text": "  "}
+{"tok": 145, "t_us": 7156000, "text": " -"}
+{"tok": 146, "t_us": 7281000, "text": " Temper"}
+{"tok": 147, "t_us": 7281000, "text": "ament"}
+{"tok": 148, "t_us": 7342999, "text": "/"}
+{"tok": 149, "t_us": 7342999, "text": "Behavior"}
+{"tok": 150, "t_us": 7406000, "text": "\n"}
+{"tok": 151, "t_us": 7406000, "text": "  "}
+{"tok": 152, "t_us": 7452999, "text": " -"}
+{"tok": 153, "t_us": 7452999, "text": " Any"}
+{"tok": 154, "t_us": 7515000, "text": " notable"}
+{"tok": 155, "t_us": 7515000, "text": " facts"}
+{"tok": 156, "t_us": 7577999, "text": " or"}
+{"tok": 157, "t_us": 7577999, "text": " controversies"}
+{"tok": 158, "t_us": 7640000, "text": " ("}
+{"tok": 159, "t_us": 7717999, "text": "e"}
+{"tok": 160, "t_us": 7717999, "text": ".g"}
+{"tok": 161, "t_us": 7781000, "text": ".,"}
+{"tok": 162, "t_us": 7781000, "text": " ethical"}
+{"tok": 163, "t_us": 7842999, "text": " concerns"}
+{"tok": 164, "t_us": 7920999, "text": " about"}
+{"tok": 165, "t_us": 7920999, "text": " moh"}
+{"tok": 166, "t_us": 7967999, "text": "air"}
+{"tok": 167, "t_us": 7967999, "text": "/m"}
+{"tok": 168, "t_us": 8031000, "text": "oh"}
+{"tok": 169, "t_us": 8031000, "text": "air"}
+{"tok": 170, "t_us": 8092999, "text": "-like"}
+{"tok": 171, "t_us": 8156000, "text": " fiber"}
+{"tok": 172, "t_us": 8202999, "text": " harvesting"}
+{"tok": 173, "t_us": 8281000, "text": ")"}
+{"tok": 174, "t_us": 8281000, "text": "\n\n"}
+{"tok": 175, "t_us": 8342999, "text": "3"}
+{"tok": 176, "t_us": 8342999, "text": "."}
+{"tok": 177, "t_us": 8406000, "text": " "}
+{"tok": 178, "t_us": 8406000, "text": " **"}
+{"tok": 179, "t_us": 8467999, "text": "Draft"}
+{"tok": 180, "t_us": 8467999, "text": " -"}
+{"tok": 181, "t_us": 8531000, "text": " Mental"}
+{"tok": 182, "t_us": 8531000, "text": " Ref"}
+{"tok": 183, "t_us": 8608999, "text": "inement"}
+{"tok": 184, "t_us": 8608999, "text": "**:"}
+{"tok": 185, "t_us": 8670999, "text": "\n"}
+{"tok": 186, "t_us": 8670999, "text": "  "}
+{"tok": 187, "t_us": 8717999, "text": " An"}
+{"tok": 188, "t_us": 8781000, "text": " Ang"}
+{"tok": 189, "t_us": 8827999, "text": "ora"}
+{"tok": 190, "t_us": 8827999, "text": " rabbit"}
+{"tok": 191, "t_us": 8890000, "text": " is"}
+{"tok": 192, "t_us": 8890000, "text": " a"}
+{"tok": 193, "t_us": 8952999, "text": " domestic"}
+{"tok": 194, "t_us": 8952999, "text": "ated"}
+{"tok": 195, "t_us": 9031000, "text": " breed"}
+{"tok": 196, "t_us": 9031000, "text": " of"}
+{"tok": 197, "t_us": 9092999, "text": " lag"}
+{"tok": 198, "t_us": 9156000, "text": "om"}
+{"tok": 199, "t_us": 9156000, "text": "orph"}
+{"tok": 200, "t_us": 9217999, "text": " known"}
+{"tok": 201, "t_us": 9217999, "text": " for"}
+{"tok": 202, "t_us": 9281000, "text": " its"}
+{"tok": 203, "t_us": 9281000, "text": " long"}
+{"tok": 204, "t_us": 9327999, "text": ","}
+{"tok": 205, "t_us": 9327999, "text": " soft"}
+{"tok": 206, "t_us": 9390000, "text": " wool"}
+{"tok": 207, "t_us": 9436999, "text": " that"}
+{"tok": 208, "t_us": 9500000, "text": " can"}
+{"tok": 209, "t_us": 9561999, "text": " be"}
+{"tok": 210, "t_us": 9561999, "text": " harvested"}
+{"tok": 211, "t_us": 9625000, "text": " and"}
+{"tok": 212, "t_us": 9686999, "text": " spun"}
+{"tok": 213, "t_us": 9686999, "text": " into"}
+{"tok": 214, "t_us": 9750000, "text": " yarn"}
+{"tok": 215, "t_us": 9750000, "text": " called"}
+{"tok": 216, "t_us": 9795999, "text": " \""}
+{"tok": 217, "t_us": 9858999, "text": "ang"}
+{"tok": 218, "t_us": 9858999, "text": "ora"}
+{"tok": 219, "t_us": 9920999, "text": "\""}
+{"tok": 220, "t_us": 9920999, "text": " or"}
+{"tok": 221, "t_us": 9983999, "text": " sometimes"}
+{"tok": 222, "t_us": 10031000, "text": " confused"}
+{"tok": 223, "t_us": 10108999, "text": " with"}
+{"tok": 224, "t_us": 10108999, "text": " moh"}
+{"tok": 225, "t_us": 10156000, "text": "air"}
+{"tok": 226, "t_us": 10156000, "text": " ("}
+{"tok": 227, "t_us": 10217999, "text": "though"}
+{"tok": 228, "t_us": 10281000, "text": " true"}
+{"tok": 229, "t_us": 10342999, "text": " an"}
+{"tok": 230, "t_us": 10406000, "text": "gor"}
+{"tok": 231, "t_us": 10406000, "text": "a"}
+{"tok": 232, "t_us": 10467999, "text": " comes"}
+{"tok": 233, "t_us": 10467999, "text": " from"}
+{"tok": 234, "t_us": 10515000, "text": " these"}
+{"tok": 235, "t_us": 10577999, "text": " rabbits"}
+{"tok": 236, "t_us": 10577999, "text": ")."}
+{"tok": 237, "t_us": 10640000, "text": " They"}
+{"tok": 238, "t_us": 10733999, "text": " originated"}
+{"tok": 239, "t_us": 10733999, "text": " in"}
+{"tok": 240, "t_us": 10827999, "text": " Ankara"}
+{"tok": 241, "t_us": 10890000, "text": ","}
+{"tok": 242, "t_us": 10890000, "text": " Turkey"}
+{"tok": 243, "t_us": 10967999, "text": " ("}
+{"tok": 244, "t_us": 10967999, "text": "formerly"}
+{"tok": 245, "t_us": 11061999, "text": " Ang"}
+{"tok": 246, "t_us": 11061999, "text": "ora"}
+{"tok": 247, "t_us": 11125000, "text": "),"}
+{"tok": 248, "t_us": 11125000, "text": " hence"}
+{"tok": 249, "t_us": 11202999, "text": " the"}
+{"tok": 250, "t_us": 11202999, "text": " name"}
+{"tok": 251, "t_us": 11265000, "text": "."}
+{"tok": 252, "t_us": 11265000, "text": " There"}
+{"tok": 253, "t_us": 11327999, "text": " are"}
+{"tok": 254, "t_us": 11327999, "text": " several"}
+{"tok": 255, "t_us": 11390000, "text": " recognized"}
+{"tok": 256, "t_us": 11390000, "text": " varieties"}
+{"tok": 257, "t_us": 11452999, "text": ":"}
+{"tok": 258, "t_us": 11452999, "text": " English"}
+{"tok": 259, "t_us": 11515000, "text": ","}
+{"tok": 260, "t_us": 11577999, "text": " French"}
+{"tok": 261, "t_us": 11577999, "text": ","}
+{"tok": 262, "t_us": 11640000, "text": " Giant"}
+{"tok": 263, "t_us": 11640000, "text": ","}
+{"tok": 264, "t_us": 11702999, "text": " and"}
+{"tok": 265, "t_us": 11702999, "text": " Sat"}
+{"tok": 266, "t_us": 11765000, "text": "in"}
+{"tok": 267, "t_us": 11765000, "text": "."}
+{"tok": 268, "t_us": 11827999, "text": " The"}
+{"tok": 269, "t_us": 11827999, "text": " English"}
+{"tok": 270, "t_us": 11875000, "text": " has"}
+{"tok": 271, "t_us": 11952999, "text": " wool"}
+{"tok": 272, "t_us": 12015000, "text": " covering"}
+{"tok": 273, "t_us": 12077999, "text": " its"}
+{"tok": 274, "t_us": 12077999, "text": " face"}
+{"tok": 275, "t_us": 12140000, "text": " and"}
+{"tok": 276, "t_us": 12140000, "text": " ears"}
+{"tok": 277, "t_us": 12202999, "text": ";"}
+{"tok": 278, "t_us": 12281000, "text": " the"}
+{"tok": 279, "t_us": 12342999, "text": " others"}
+{"tok": 280, "t_us": 12406000, "text": " have"}
+{"tok": 281, "t_us": 12406000, "text": " less"}
+{"tok": 282, "t_us": 12483999, "text": " facial"}
+{"tok": 283, "t_us": 12545999, "text": " wool"}
+{"tok": 284, "t_us": 12545999, "text": " but"}
+{"tok": 285, "t_us": 12608999, "text": " still"}
+{"tok": 286, "t_us": 12686999, "text": " require"}
+{"tok": 287, "t_us": 12750000, "text": " regular"}
+{"tok": 288, "t_us": 12750000, "text": " grooming"}
+{"tok": 289, "t_us": 12811999, "text": " due"}
+{"tok": 290, "t_us": 12875000, "text": " to"}
+{"tok": 291, "t_us": 12875000, "text": " their"}
+{"tok": 292, "t_us": 12936999, "text": " dense"}
+{"tok": 293, "t_us": 13000000, "text": " coat"}
+{"tok": 294, "t_us": 13061999, "text": "."}
+{"tok": 295, "t_us": 13061999, "text": " Their"}
+{"tok": 296, "t_us": 13156000, "text": " fur"}
+{"tok": 297, "t_us": 13217999, "text": " grows"}
+{"tok": 298, "t_us": 13281000, "text": " continuously"}
+{"tok": 299, "t_us": 13281000, "text": " and"}
+{"tok": 300, "t_us": 13342999, "text": " must"}
+{"tok": 301, "t_us": 13406000, "text": " be"}
+{"tok": 302, "t_us": 13406000, "text": " she"}
+{"tok": 303, "t_us": 13483999, "text": "ared"}
+{"tok": 304, "t_us": 13483999, "text": " or"}
+{"tok": 305, "t_us": 13545999, "text": " pl"}
+{"tok": 306, "t_us": 13625000, "text": "ucked"}
+{"tok": 307, "t_us": 13625000, "text": " every"}
+{"tok": 308, "t_us": 13733999, "text": " "}
+{"tok": 309, "t_us": 13733999, "text": "3"}
+{"tok": 310, "t_us": 13842999, "text": "-"}
+{"tok": 311, "t_us": 13842999, "text": "4"}
+{"tok": 312, "t_us": 13936999, "text": " months"}
+{"tok": 313, "t_us": 13936999, "text": "."}
+{"tok": 314, "t_us": 14000000, "text": " They"}
+{"tok": 315, "t_us": 14077999, "text": "'re"}
+{"tok": 316, "t_us": 14077999, "text": " popular"}
+{"tok": 317, "t_us": 14125000, "text": " as"}
+{"tok": 318, "t_us": 14125000, "text": " pets"}
+{"tok": 319, "t_us": 14186999, "text": ","}
+{"tok": 320, "t_us": 14186999, "text": " show"}
+{"tok": 321, "t_us": 14250000, "text": " animals"}
+{"tok": 322, "t_us": 14327999, "text": ","}
+{"tok": 323, "t_us": 14327999, "text": " and"}
+{"tok": 324, "t_us": 14390000, "text": " fiber"}
+{"tok": 325, "t_us": 14390000, "text": " producers"}
+{"tok": 326, "t_us": 14452999, "text": "."}
+{"tok": 327, "t_us": 14452999, "text": " Temper"}
+{"tok": 328, "t_us": 14531000, "text": "ament"}
+{"tok": 329, "t_us": 14531000, "text": " varies"}
+{"tok": 330, "t_us": 14592999, "text": " by"}
+{"tok": 331, "t_us": 14608999, "text": " breed"}
+{"tok": 332, "t_us": 14670999, "text": " but"}
+{"tok": 333, "t_us": 14670999, "text": " they"}
+{"tok": 334, "t_us": 14750000, "text": "'re"}
+{"tok": 335, "t_us": 14750000, "text": " generally"}
+{"tok": 336, "t_us": 14827999, "text": " doc"}
+{"tok": 337, "t_us": 14906000, "text": "ile"}
+{"tok": 338, "t_us": 14906000, "text": "."}
+{"tok": 339, "t_us": 15000000, "text": " Important"}
+{"tok": 340, "t_us": 15061999, "text": " note"}
+{"tok": 341, "t_us": 15140000, "text": ":"}
+{"tok": 342, "t_us": 15140000, "text": " ethical"}
+{"tok": 343, "t_us": 15202999, "text": " sourcing"}
+{"tok": 344, "t_us": 15217999, "text": " is"}
+{"tok": 345, "t_us": 15311999, "text": " a"}
+{"tok": 346, "t_us": 15390000, "text": " consideration"}
+{"tok": 347, "t_us": 15467999, "text": " since"}
+{"tok": 348, "t_us": 15467999, "text": " improper"}
+{"tok": 349, "t_us": 15531000, "text": " care"}
+{"tok": 350, "t_us": 15592999, "text": " can"}
+{"tok": 351, "t_us": 15592999, "text": " lead"}
+{"tok": 352, "t_us": 15656000, "text": " to"}
+{"tok": 353, "t_us": 15656000, "text": " health"}
+{"tok": 354, "t_us": 15733999, "text": " issues"}
+{"tok": 355, "t_us": 15733999, "text": " like"}
+{"tok": 356, "t_us": 15795999, "text": " wool"}
+{"tok": 357, "t_us": 15795999, "text": " block"}
+{"tok": 358, "t_us": 15875000, "text": " ("}
+{"tok": 359, "t_us": 15936999, "text": "g"}
+{"tok": 360, "t_us": 16000000, "text": "astro"}
+{"tok": 361, "t_us": 16000000, "text": "intestinal"}
+{"tok": 362, "t_us": 16077999, "text": " st"}
+{"tok": 363, "t_us": 16140000, "text": "asis"}
+{"tok": 364, "t_us": 16140000, "text": " from"}
+{"tok": 365, "t_us": 16202999, "text": " ing"}
+{"tok": 366, "t_us": 16202999, "text": "esting"}
+{"tok": 367, "t_us": 16265000, "text": " fur"}
+{"tok": 368, "t_us": 16265000, "text": ")."}
+{"tok": 369, "t_us": 16342999, "text": "\n\n"}
+{"tok": 370, "t_us": 16342999, "text": "4"}
+{"tok": 371, "t_us": 16406000, "text": "."}
+{"tok": 372, "t_us": 16406000, "text": " "}
+{"tok": 373, "t_us": 16500000, "text": " **"}
+{"tok": 374, "t_us": 16500000, "text": "Structure"}
+{"tok": 375, "t_us": 16577999, "text": " the"}
+{"tok": 376, "t_us": 16577999, "text": " Response"}
+{"tok": 377, "t_us": 16656000, "text": "**:"}
+{"tok": 378, "t_us": 16656000, "text": "\n"}
+{"tok": 379, "t_us": 16733999, "text": "  "}
+{"tok": 380, "t_us": 16733999, "text": " -"}
+{"tok": 381, "t_us": 16811999, "text": " Introduction"}
+{"tok": 382, "t_us": 16811999, "text": "/"}
+{"tok": 383, "t_us": 16890000, "text": "Definition"}
+{"tok": 384, "t_us": 16890000, "text": "\n"}
+{"tok": 385, "t_us": 16952999, "text": "  "}
+{"tok": 386, "t_us": 16952999, "text": " -"}
+{"tok": 387, "t_us": 17015000, "text": " Origin"}
+{"tok": 388, "t_us": 17015000, "text": " &"}
+{"tok": 389, "t_us": 17092999, "text": " History"}
+{"tok": 390, "t_us": 17092999, "text": "\n"}
+{"tok": 391, "t_us": 17156000, "text": "  "}
+{"tok": 392, "t_us": 17156000, "text": " -"}
+{"tok": 393, "t_us": 17217999, "text": " Physical"}
+{"tok": 394, "t_us": 17281000, "text": " Characteristics"}
+{"tok": 395, "t_us": 17281000, "text": " &"}
+{"tok": 396, "t_us": 17342999, "text": " Bre"}
+{"tok": 397, "t_us": 17406000, "text": "eds"}
+{"tok": 398, "t_us": 17406000, "text": "/V"}
+{"tok": 399, "t_us": 17483999, "text": "ari"}
+{"tok": 400, "t_us": 17483999, "text": "eties"}
+{"tok": 401, "t_us": 17561999, "text": "\n"}
+{"tok": 402, "t_us": 17561999, "text": "  "}
+{"tok": 403, "t_us": 17625000, "text": " -"}
+{"tok": 404, "t_us": 17625000, "text": " G"}
+{"tok": 405, "t_us": 17686999, "text": "room"}
+{"tok": 406, "t_us": 17686999, "text": "ing"}
+{"tok": 407, "t_us": 17750000, "text": " &"}
+{"tok": 408, "t_us": 17750000, "text": " Care"}
+{"tok": 409, "t_us": 17811999, "text": " Needs"}
+{"tok": 410, "t_us": 17875000, "text": "\n"}
+{"tok": 411, "t_us": 17875000, "text": "  "}
+{"tok": 412, "t_us": 17936999, "text": " -"}
+{"tok": 413, "t_us": 17936999, "text": " Uses"}
+{"tok": 414, "t_us": 18000000, "text": " &"}
+{"tok": 415, "t_us": 18000000, "text": " Purpose"}
+{"tok": 416, "t_us": 18077999, "text": "\n"}
+{"tok": 417, "t_us": 18077999, "text": "  "}
+{"tok": 418, "t_us": 18140000, "text": " -"}
+{"tok": 419, "t_us": 18156000, "text": " Temper"}
+{"tok": 420, "t_us": 18202999, "text": "ament"}
+{"tok": 421, "t_us": 18202999, "text": " &"}
+{"tok": 422, "t_us": 18265000, "text": " Lif"}
+{"tok": 423, "t_us": 18342999, "text": "es"}
+{"tok": 424, "t_us": 18342999, "text": "pan"}
+{"tok": 425, "t_us": 18406000, "text": "\n"}
+{"tok": 426, "t_us": 18406000, "text": "  "}
+{"tok": 427, "t_us": 18467999, "text": " -"}
+{"tok": 428, "t_us": 18467999, "text": " Eth"}
+{"tok": 429, "t_us": 18531000, "text": "ical"}
+{"tok": 430, "t_us": 18531000, "text": " Consider"}
+{"tok": 431, "t_us": 18592999, "text": "ations"}
+{"tok": 432, "t_us": 18592999, "text": " ("}
+{"tok": 433, "t_us": 18656000, "text": "brief"}
+{"tok": 434, "t_us": 18656000, "text": ","}
+{"tok": 435, "t_us": 18733999, "text": " factual"}
+{"tok": 436, "t_us": 18733999, "text": ")"}
+{"tok": 437, "t_us": 18811999, "text": "\n"}
+{"tok": 438, "t_us": 18811999, "text": "  "}
+{"tok": 439, "t_us": 18875000, "text": " -"}
+{"tok": 440, "t_us": 18875000, "text": " Conclusion"}
+{"tok": 441, "t_us": 18952999, "text": "\n\n"}
+{"tok": 442, "t_us": 18952999, "text": "5"}
+{"tok": 443, "t_us": 19031000, "text": "."}
+{"tok": 444, "t_us": 19031000, "text": " "}
+{"tok": 445, "t_us": 19125000, "text": " **"}
+{"tok": 446, "t_us": 19125000, "text": "Fact"}
+{"tok": 447, "t_us": 19202999, "text": "-"}
+{"tok": 448, "t_us": 19202999, "text": "Check"}
+{"tok": 449, "t_us": 19265000, "text": "/"}
+{"tok": 450, "t_us": 19342999, "text": "Verify"}
+{"tok": 451, "t_us": 19342999, "text": " Key"}
+{"tok": 452, "t_us": 19406000, "text": " Points"}
+{"tok": 453, "t_us": 19406000, "text": "**:"}
+{"tok": 454, "t_us": 19467999, "text": "\n"}
+{"tok": 455, "t_us": 19467999, "text": "  "}
+{"tok": 456, "t_us": 19545999, "text": " -"}
+{"tok": 457, "t_us": 19545999, "text": " Origin"}
+{"tok": 458, "t_us": 19608999, "text": ":"}
+{"tok": 459, "t_us": 19608999, "text": " Ankara"}
+{"tok": 460, "t_us": 19670999, "text": " region"}
+{"tok": 461, "t_us": 19733999, "text": " of"}
+{"tok": 462, "t_us": 19827999, "text": " Turkey"}
+{"tok": 463, "t_us": 19827999, "text": " ("}
+{"tok": 464, "t_us": 19906000, "text": "histor"}
+{"tok": 465, "t_us": 19906000, "text": "ically"}
+{"tok": 466, "t_us": 19967999, "text": " called"}
+{"tok": 467, "t_us": 20045999, "text": " Ang"}
+{"tok": 468, "t_us": 20045999, "text": "ora"}
+{"tok": 469, "t_us": 20125000, "text": ")."}
+{"tok": 470, "t_us": 20202999, "text": " Correct"}
+{"tok": 471, "t_us": 20202999, "text": "."}
+{"tok": 472, "t_us": 20281000, "text": "\n"}
+{"tok": 473, "t_us": 20281000, "text": "  "}
+{"tok": 474, "t_us": 20342999, "text": " -"}
+{"tok": 475, "t_us": 20342999, "text": " Wool"}
+{"tok": 476, "t_us": 20406000, "text": " types"}
+{"tok": 477, "t_us": 20406000, "text": ":"}
+{"tok": 478, "t_us": 20467999, "text": " English"}
+{"tok": 479, "t_us": 20467999, "text": ","}
+{"tok": 480, "t_us": 20545999, "text": " French"}
+{"tok": 481, "t_us": 20545999, "text": ","}
+{"tok": 482, "t_us": 20608999, "text": " Giant"}
+{"tok": 483, "t_us": 20608999, "text": ","}
+{"tok": 484, "t_us": 20686999, "text": " Sat"}
+{"tok": 485, "t_us": 20686999, "text": "in"}
+{"tok": 486, "t_us": 20750000, "text": " are"}
+{"tok": 487, "t_us": 20827999, "text": " the"}
+{"tok": 488, "t_us": 20827999, "text": " main"}
+{"tok": 489, "t_us": 20890000, "text": " recognized"}
+{"tok": 490, "t_us": 20890000, "text": " breeds"}
+{"tok": 491, "t_us": 20952999, "text": " by"}
+{"tok": 492, "t_us": 21045999, "text": " AR"}
+{"tok": 493, "t_us": 21045999, "text": "BA"}
+{"tok": 494, "t_us": 21140000, "text": " and"}
+{"tok": 495, "t_us": 21250000, "text": " international"}
+{"tok": 496, "t_us": 21327999, "text": " bodies"}
+{"tok": 497, "t_us": 21390000, "text": "."}
+{"tok": 498, "t_us": 21390000, "text": " Correct"}
+{"tok": 499, "t_us": 21483999, "text": "."}
+{"tok": 500, "t_us": 21483999, "text": "\n"}
+{"tok": 501, "t_us": 21545999, "text": "  "}
+{"tok": 502, "t_us": 21545999, "text": " -"}
+{"tok": 503, "t_us": 21625000, "text": " G"}
+{"tok": 504, "t_us": 21625000, "text": "room"}
+{"tok": 505, "t_us": 21686999, "text": "ing"}
+{"tok": 506, "t_us": 21686999, "text": ":"}
+{"tok": 507, "t_us": 21750000, "text": " Requires"}
+{"tok": 508, "t_us": 21811999, "text": " frequent"}
+{"tok": 509, "t_us": 21875000, "text": " brushing"}
+{"tok": 510, "t_us": 21875000, "text": "/sh"}
+{"tok": 511, "t_us": 21920999, "text": "aving"}
+{"tok": 512, "t_us": 22000000, "text": " every"}
+{"tok": 513, "t_us": 22000000, "text": " "}
+{"tok": 514, "t_us": 22092999, "text": "3"}
+{"tok": 515, "t_us": 22092999, "text": "-"}
+{"tok": 516, "t_us": 22170999, "text": "4"}
+{"tok": 517, "t_us": 22170999, "text": " months"}
+{"tok": 518, "t_us": 22250000, "text": " due"}
+{"tok": 519, "t_us": 22311999, "text": " to"}
+{"tok": 520, "t_us": 22311999, "text": " fast"}
+{"tok": 521, "t_us": 22375000, "text": "-growing"}
+{"tok": 522, "t_us": 22375000, "text": " wool"}
+{"tok": 523, "t_us": 22436999, "text": "."}
+{"tok": 524, "t_us": 22436999, "text": " Risk"}
+{"tok": 525, "t_us": 22500000, "text": " of"}
+{"tok": 526, "t_us": 22500000, "text": " \""}
+{"tok": 527, "t_us": 22561999, "text": "wo"}
+{"tok": 528, "t_us": 22561999, "text": "ol"}
+{"tok": 529, "t_us": 22625000, "text": " block"}
+{"tok": 530, "t_us": 22625000, "text": "\""}
+{"tok": 531, "t_us": 22686999, "text": " if"}
+{"tok": 532, "t_us": 22686999, "text": " they"}
+{"tok": 533, "t_us": 22765000, "text": " ingest"}
+{"tok": 534, "t_us": 22765000, "text": " fur"}
+{"tok": 535, "t_us": 22827999, "text": " while"}
+{"tok": 536, "t_us": 22890000, "text": " grooming"}
+{"tok": 537, "t_us": 22890000, "text": "."}
+{"tok": 538, "t_us": 22967999, "text": " Correct"}
+{"tok": 539, "t_us": 22967999, "text": "."}
+{"tok": 540, "t_us": 23031000, "text": "\n"}
+{"tok": 541, "t_us": 23031000, "text": "  "}
+{"tok": 542, "t_us": 23092999, "text": " -"}
+{"tok": 543, "t_us": 23092999, "text": " Fiber"}
+{"tok": 544, "t_us": 23156000, "text": " name"}
+{"tok": 545, "t_us": 23233999, "text": ":"}
+{"tok": 546, "t_us": 23233999, "text": " Called"}
+{"tok": 547, "t_us": 23295999, "text": " an"}
+{"tok": 548, "t_us": 23358999, "text": "gor"}
+{"tok": 549, "t_us": 23358999, "text": "a"}
+{"tok": 550, "t_us": 23420999, "text": " fiber"}
+{"tok": 551, "t_us": 23420999, "text": ","}
+{"tok": 552, "t_us": 23483999, "text": " not"}
+{"tok": 553, "t_us": 23483999, "text": " moh"}
+{"tok": 554, "t_us": 23545999, "text": "air"}
+{"tok": 555, "t_us": 23545999, "text": " ("}
+{"tok": 556, "t_us": 23608999, "text": "which"}
+{"tok": 557, "t_us": 23608999, "text": " comes"}
+{"tok": 558, "t_us": 23670999, "text": " from"}
+{"tok": 559, "t_us": 23670999, "text": " Ang"}
+{"tok": 560, "t_us": 23733999, "text": "ora"}
+{"tok": 561, "t_us": 23733999, "text": " goats"}
+{"tok": 562, "t_us": 23811999, "text": ")."}
+{"tok": 563, "t_us": 23811999, "text": " Important"}
+{"tok": 564, "t_us": 23875000, "text": " distinction"}
+{"tok": 565, "t_us": 23875000, "text": "."}
+{"tok": 566, "t_us": 23952999, "text": "\n"}
+{"tok": 567, "t_us": 23952999, "text": "  "}
+{"tok": 568, "t_us": 24015000, "text": " -"}
+{"tok": 569, "t_us": 24015000, "text": " Lif"}
+{"tok": 570, "t_us": 24077999, "text": "es"}
+{"tok": 571, "t_us": 24077999, "text": "pan"}
+{"tok": 572, "t_us": 24140000, "text": ":"}
+{"tok": 573, "t_us": 24140000, "text": " Typically"}
+{"tok": 574, "t_us": 24202999, "text": " "}
+{"tok": 575, "t_us": 24202999, "text": "7"}
+{"tok": 576, "t_us": 24281000, "text": "-"}
+{"tok": 577, "t_us": 24281000, "text": "1"}
+{"tok": 578, "t_us": 24358999, "text": "2"}
+{"tok": 579, "t_us": 24358999, "text": " years"}
+{"tok": 580, "t_us": 24420999, "text": " with"}
+{"tok": 581, "t_us": 24500000, "text": " proper"}
+{"tok": 582, "t_us": 24500000, "text": " care"}
+{"tok": 583, "t_us": 24577999, "text": "."}
+{"tok": 584, "t_us": 24577999, "text": " Reason"}
+{"tok": 585, "t_us": 24640000, "text": "able"}
+{"tok": 586, "t_us": 24640000, "text": "."}
+{"tok": 587, "t_us": 24717999, "text": "\n"}
+{"tok": 588, "t_us": 24717999, "text": "  "}
+{"tok": 589, "t_us": 24781000, "text": " -"}
+{"tok": 590, "t_us": 24781000, "text": " Temper"}
+{"tok": 591, "t_us": 24842999, "text": "ament"}
+{"tok": 592, "t_us": 24842999, "text": ":"}
+{"tok": 593, "t_us": 24906000, "text": " Generally"}
+{"tok": 594, "t_us": 24920999, "text": " calm"}
+{"tok": 595, "t_us": 25000000, "text": " but"}
+{"tok": 596, "t_us": 25061999, "text": " can"}
+{"tok": 597, "t_us": 25061999, "text": " be"}
+{"tok": 598, "t_us": 25125000, "text": " sk"}
+{"tok": 599, "t_us": 25125000, "text": "itt"}
+{"tok": 600, "t_us": 25186999, "text": "ish"}
+{"tok": 601, "t_us": 25186999, "text": ";"}
+{"tok": 602, "t_us": 25250000, "text": " varies"}
+{"tok": 603, "t_us": 25311999, "text": " by"}
+{"tok": 604, "t_us": 25311999, "text": " breed"}
+{"tok": 605, "t_us": 25375000, "text": " and"}
+{"tok": 606, "t_us": 25436999, "text": " social"}
+{"tok": 607, "t_us": 25500000, "text": "ization"}
+{"tok": 608, "t_us": 25500000, "text": "."}
+{"tok": 609, "t_us": 25577999, "text": " Correct"}
+{"tok": 610, "t_us": 25640000, "text": "."}
+{"tok": 611, "t_us": 25640000, "text": "\n\n"}
+{"tok": 612, "t_us": 25717999, "text": "6"}
+{"tok": 613, "t_us": 25717999, "text": "."}
+{"tok": 614, "t_us": 25795999, "text": " "}
+{"tok": 615, "t_us": 25795999, "text": " **"}
+{"tok": 616, "t_us": 25875000, "text": "Draft"}
+{"tok": 617, "t_us": 25875000, "text": " Response"}
+{"tok": 618, "t_us": 25936999, "text": "**"}
+{"tok": 619, "t_us": 26015000, "text": " ("}
+{"tok": 620, "t_us": 26015000, "text": "M"}
+{"tok": 621, "t_us": 26092999, "text": "ental"}
+{"tok": 622, "t_us": 26092999, "text": " to"}
+{"tok": 623, "t_us": 26170999, "text": " Text"}
+{"tok": 624, "t_us": 26170999, "text": "):"}
+{"tok": 625, "t_us": 26233999, "text": "\n"}
+{"tok": 626, "t_us": 26250000, "text": "  "}
+{"tok": 627, "t_us": 26311999, "text": " An"}
+{"tok": 628, "t_us": 26311999, "text": " Ang"}
+{"tok": 629, "t_us": 26375000, "text": "ora"}
+{"tok": 630, "t_us": 26375000, "text": " rabbit"}
+{"tok": 631, "t_us": 26436999, "text": " is"}
+{"tok": 632, "t_us": 26436999, "text": " a"}
+{"tok": 633, "t_us": 26500000, "text": " domestic"}
+{"tok": 634, "t_us": 26500000, "text": "ated"}
+{"tok": 635, "t_us": 26561999, "text": " breed"}
+{"tok": 636, "t_us": 26561999, "text": " of"}
+{"tok": 637, "t_us": 26625000, "text": " lag"}
+{"tok": 638, "t_us": 26625000, "text": "om"}
+{"tok": 639, "t_us": 26686999, "text": "orph"}
+{"tok": 640, "t_us": 26686999, "text": " famous"}
+{"tok": 641, "t_us": 26750000, "text": " for"}
+{"tok": 642, "t_us": 26750000, "text": " its"}
+{"tok": 643, "t_us": 26811999, "text": " exceptionally"}
+{"tok": 644, "t_us": 26811999, "text": " long"}
+{"tok": 645, "t_us": 26890000, "text": ","}
+{"tok": 646, "t_us": 26890000, "text": " soft"}
+{"tok": 647, "t_us": 26952999, "text": ","}
+{"tok": 648, "t_us": 26952999, "text": " and"}
+{"tok": 649, "t_us": 27000000, "text": " luxurious"}
+{"tok": 650, "t_us": 27000000, "text": " wool"}
+{"tok": 651, "t_us": 27077999, "text": "."}
+{"tok": 652, "t_us": 27140000, "text": " The"}
+{"tok": 653, "t_us": 27217999, "text": " name"}
+{"tok": 654, "t_us": 27217999, "text": " \""}
+{"tok": 655, "t_us": 27295999, "text": "Ang"}
+{"tok": 656, "t_us": 27295999, "text": "ora"}
+{"tok": 657, "t_us": 27358999, "text": "\""}
+{"tok": 658, "t_us": 27358999, "text": " comes"}
+{"tok": 659, "t_us": 27436999, "text": " from"}
+{"tok": 660, "t_us": 27436999, "text": " Ankara"}
+{"tok": 661, "t_us": 27500000, "text": ","}
+{"tok": 662, "t_us": 27500000, "text": " Turkey"}
+{"tok": 663, "t_us": 27561999, "text": " ("}
+{"tok": 664, "t_us": 27561999, "text": "histor"}
+{"tok": 665, "t_us": 27625000, "text": "ically"}
+{"tok": 666, "t_us": 27625000, "text": " known"}
+{"tok": 667, "t_us": 27686999, "text": " as"}
+{"tok": 668, "t_us": 27686999, "text": " Ang"}
+{"tok": 669, "t_us": 27765000, "text": "ora"}
+{"tok": 670, "t_us": 27765000, "text": "),"}
+{"tok": 671, "t_us": 27827999, "text": " where"}
+{"tok": 672, "t_us": 27827999, "text": " the"}
+{"tok": 673, "t_us": 27890000, "text": " breed"}
+{"tok": 674, "t_us": 27890000, "text": " originated"}
+{"tok": 675, "t_us": 27952999, "text": " centuries"}
+{"tok": 676, "t_us": 28031000, "text": " ago"}
+{"tok": 677, "t_us": 28092999, "text": " before"}
+{"tok": 678, "t_us": 28170999, "text": " being"}
+{"tok": 679, "t_us": 28170999, "text": " brought"}
+{"tok": 680, "t_us": 28233999, "text": " to"}
+{"tok": 681, "t_us": 28233999, "text": " Europe"}
+{"tok": 682, "t_us": 28295999, "text": " in"}
+{"tok": 683, "t_us": 28358999, "text": " the"}
+{"tok": 684, "t_us": 28358999, "text": " "}
+{"tok": 685, "t_us": 28436999, "text": "1"}
+{"tok": 686, "t_us": 28452999, "text": "8"}
+{"tok": 687, "t_us": 28515000, "text": "th"}
+{"tok": 688, "t_us": 28515000, "text": " century"}
+{"tok": 689, "t_us": 28592999, "text": "."}
+{"tok": 690, "t_us": 28592999, "text": "\n\n"}
+{"tok": 691, "t_us": 28656000, "text": "  "}
+{"tok": 692, "t_us": 28656000, "text": " **"}
+{"tok": 693, "t_us": 28717999, "text": "Key"}
+{"tok": 694, "t_us": 28717999, "text": " Characteristics"}
+{"tok": 695, "t_us": 28795999, "text": ":**"}
+{"tok": 696, "t_us": 28795999, "text": "\n"}
+{"tok": 697, "t_us": 28875000, "text": "  "}
+{"tok": 698, "t_us": 28875000, "text": " -"}
+{"tok": 699, "t_us": 28936999, "text": " **"}
+{"tok": 700, "t_us": 28936999, "text": "F"}
+{"tok": 701, "t_us": 29000000, "text": "ur"}
+{"tok": 702, "t_us": 29061999, "text": "**:"}
+{"tok": 703, "t_us": 29125000, "text": " Their"}
+{"tok": 704, "t_us": 29186999, "text": " most"}
+{"tok": 705, "t_us": 29265000, "text": " defining"}
+{"tok": 706, "t_us": 29265000, "text": " feature"}
+{"tok": 707, "t_us": 29327999, "text": " is"}
+{"tok": 708, "t_us": 29327999, "text": " a"}
+{"tok": 709, "t_us": 29390000, "text": " dense"}
+{"tok": 710, "t_us": 29436999, "text": " coat"}
+{"tok": 711, "t_us": 29436999, "text": " of"}
+{"tok": 712, "t_us": 29500000, "text": " continuous"}
+{"tok": 713, "t_us": 29545999, "text": "-growing"}
+{"tok": 714, "t_us": 29608999, "text": " hair"}
+{"tok": 715, "t_us": 29670999, "text": " that"}
+{"tok": 716, "t_us": 29670999, "text": " can"}
+{"tok": 717, "t_us": 29717999, "text": " reach"}
+{"tok": 718, "t_us": 29781000, "text": " several"}
+{"tok": 719, "t_us": 29858999, "text": " inches"}
+{"tok": 720, "t_us": 29858999, "text": " long"}
+{"tok": 721, "t_us": 29920999, "text": "."}
+{"tok": 722, "t_us": 29920999, "text": " This"}
+{"tok": 723, "t_us": 29983999, "text": " fiber"}
+{"tok": 724, "t_us": 29983999, "text": " is"}
+{"tok": 725, "t_us": 30045999, "text": " hand"}
+{"tok": 726, "t_us": 30092999, "text": "-com"}
+{"tok": 727, "t_us": 30156000, "text": "bed"}
+{"tok": 728, "t_us": 30217999, "text": " or"}
+{"tok": 729, "t_us": 30217999, "text": " she"}
+{"tok": 730, "t_us": 30265000, "text": "ared"}
+{"tok": 731, "t_us": 30265000, "text": " every"}
+{"tok": 732, "t_us": 30342999, "text": " "}
+{"tok": 733, "t_us": 30342999, "text": "3"}
+{"tok": 734, "t_us": 30406000, "text": "\u2013"}
+{"tok": 735, "t_us": 30420999, "text": "4"}
+{"tok": 736, "t_us": 30483999, "text": " months"}
+{"tok": 737, "t_us": 30483999, "text": " and"}
+{"tok": 738, "t_us": 30531000, "text": " spun"}
+{"tok": 739, "t_us": 30592999, "text": " into"}
+{"tok": 740, "t_us": 30592999, "text": " yarn"}
+{"tok": 741, "t_us": 30656000, "text": " known"}
+{"tok": 742, "t_us": 30717999, "text": " as"}
+{"tok": 743, "t_us": 30717999, "text": " *"}
+{"tok": 744, "t_us": 30781000, "text": "ang"}
+{"tok": 745, "t_us": 30781000, "text": "ora"}
+{"tok": 746, "t_us": 30842999, "text": " wool"}
+{"tok": 747, "t_us": 30906000, "text": "*,"}
+{"tok": 748, "t_us": 30967999, "text": " prized"}
+{"tok": 749, "t_us": 30967999, "text": " for"}
+{"tok": 750, "t_us": 31061999, "text": " its"}
+{"tok": 751, "t_us": 31156000, "text": " warmth"}
+{"tok": 752, "t_us": 31156000, "text": ","}
+{"tok": 753, "t_us": 31217999, "text": " light"}
+{"tok": 754, "t_us": 31217999, "text": "ness"}
+{"tok": 755, "t_us": 31265000, "text": ","}
+{"tok": 756, "t_us": 31265000, "text": " and"}
+{"tok": 757, "t_us": 31327999, "text": " soft"}
+{"tok": 758, "t_us": 31327999, "text": "ness"}
+{"tok": 759, "t_us": 31406000, "text": " ("}
+{"tok": 760, "t_us": 31467999, "text": "note"}
+{"tok": 761, "t_us": 31467999, "text": ":"}
+{"tok": 762, "t_us": 31531000, "text": " it"}
+{"tok": 763, "t_us": 31531000, "text": "\u2019s"}
+{"tok": 764, "t_us": 31592999, "text": " not"}
+{"tok": 765, "t_us": 31656000, "text": " moh"}
+{"tok": 766, "t_us": 31717999, "text": "air"}
+{"tok": 767, "t_us": 31717999, "text": ","}
+{"tok": 768, "t_us": 31781000, "text": " which"}
+{"tok": 769, "t_us": 31781000, "text": " comes"}
+{"tok": 770, "t_us": 31842999, "text": " from"}
+{"tok": 771, "t_us": 31842999, "text": " Ang"}
+{"tok": 772, "t_us": 31906000, "text": "ora"}
+{"tok": 773, "t_us": 31906000, "text": " goats"}
+{"tok": 774, "t_us": 31983999, "text": ")."}
+{"tok": 775, "t_us": 31983999, "text": "\n"}
+{"tok": 776, "t_us": 32045999, "text": "  "}
+{"tok": 777, "t_us": 32045999, "text": " -"}
+{"tok": 778, "t_us": 32108999, "text": " **"}
+{"tok": 779, "t_us": 32108999, "text": "Bre"}
+{"tok": 780, "t_us": 32170999, "text": "eds"}
+{"tok": 781, "t_us": 32170999, "text": "/V"}
+{"tok": 782, "t_us": 32233999, "text": "ari"}
+{"tok": 783, "t_us": 32233999, "text": "eties"}
+{"tok": 784, "t_us": 32295999, "text": "**:"}
+{"tok": 785, "t_us": 32295999, "text": " The"}
+{"tok": 786, "t_us": 32358999, "text": " four"}
+{"tok": 787, "t_us": 32358999, "text": " main"}
+{"tok": 788, "t_us": 32420999, "text": " recognized"}
+{"tok": 789, "t_us": 32420999, "text": " breeds"}
+{"tok": 790, "t_us": 32500000, "text": " are"}
+{"tok": 791, "t_us": 32500000, "text": " the"}
+{"tok": 792, "t_us": 32561999, "text": " English"}
+{"tok": 793, "t_us": 32561999, "text": " Ang"}
+{"tok": 794, "t_us": 32625000, "text": "ora"}
+{"tok": 795, "t_us": 32625000, "text": " ("}
+{"tok": 796, "t_us": 32686999, "text": "full"}
+{"tok": 797, "t_us": 32686999, "text": " face"}
+{"tok": 798, "t_us": 32750000, "text": "/"}
+{"tok": 799, "t_us": 32811999, "text": "ear"}
+{"tok": 800, "t_us": 32811999, "text": " coverage"}
+{"tok": 801, "t_us": 32890000, "text": "),"}
+{"tok": 802, "t_us": 32890000, "text": " French"}
+{"tok": 803, "t_us": 32952999, "text": " Ang"}
+{"tok": 804, "t_us": 32952999, "text": "ora"}
+{"tok": 805, "t_us": 33015000, "text": " ("}
+{"tok": 806, "t_us": 33015000, "text": "less"}
+{"tok": 807, "t_us": 33092999, "text": " facial"}
+{"tok": 808, "t_us": 33092999, "text": " wool"}
+{"tok": 809, "t_us": 33156000, "text": " but"}
+{"tok": 810, "t_us": 33202999, "text": " very"}
+{"tok": 811, "t_us": 33265000, "text": " dense"}
+{"tok": 812, "t_us": 33265000, "text": " body"}
+{"tok": 813, "t_us": 33327999, "text": " coat"}
+{"tok": 814, "t_us": 33390000, "text": "),"}
+{"tok": 815, "t_us": 33390000, "text": " Giant"}
+{"tok": 816, "t_us": 33452999, "text": " Ang"}
+{"tok": 817, "t_us": 33452999, "text": "ora"}
+{"tok": 818, "t_us": 33515000, "text": " ("}
+{"tok": 819, "t_us": 33515000, "text": "larg"}
+{"tok": 820, "t_us": 33561999, "text": "est"}
+{"tok": 821, "t_us": 33561999, "text": " breed"}
+{"tok": 822, "t_us": 33625000, "text": ","}
+{"tok": 823, "t_us": 33625000, "text": " bred"}
+{"tok": 824, "t_us": 33686999, "text": " for"}
+{"tok": 825, "t_us": 33686999, "text": " fiber"}
+{"tok": 826, "t_us": 33733999, "text": " production"}
+{"tok": 827, "t_us": 33733999, "text": "),"}
+{"tok": 828, "t_us": 33811999, "text": " and"}
+{"tok": 829, "t_us": 33811999, "text": " Sat"}
+{"tok": 830, "t_us": 33858999, "text": "in"}
+{"tok": 831, "t_us": 33858999, "text": " Ang"}
+{"tok": 832, "t_us": 33920999, "text": "ora"}
+{"tok": 833, "t_us": 33920999, "text": " ("}
+{"tok": 834, "t_us": 34000000, "text": "has"}
+{"tok": 835, "t_us": 34000000, "text": " a"}
+{"tok": 836, "t_us": 34045999, "text": " unique"}
+{"tok": 837, "t_us": 34108999, "text": " glossy"}
+{"tok": 838, "t_us": 34170999, "text": ","}
+{"tok": 839, "t_us": 34170999, "text": " thinner"}
+{"tok": 840, "t_us": 34233999, "text": " hair"}
+{"tok": 841, "t_us": 34281000, "text": " structure"}
+{"tok": 842, "t_us": 34342999, "text": " that"}
+{"tok": 843, "t_us": 34406000, "text": " gives"}
+{"tok": 844, "t_us": 34467999, "text": " it"}
+{"tok": 845, "t_us": 34467999, "text": " a"}
+{"tok": 846, "t_us": 34545999, "text": " shiny"}
+{"tok": 847, "t_us": 34608999, "text": " appearance"}
+{"tok": 848, "t_us": 34608999, "text": ")."}
+{"tok": 849, "t_us": 34670999, "text": "\n"}
+{"tok": 850, "t_us": 34670999, "text": "  "}
+{"tok": 851, "t_us": 34733999, "text": " -"}
+{"tok": 852, "t_us": 34733999, "text": " **"}
+{"tok": 853, "t_us": 34795999, "text": "Size"}
+{"tok": 854, "t_us": 34842999, "text": "**:"}
+{"tok": 855, "t_us": 34906000, "text": " V"}
+{"tok": 856, "t_us": 34906000, "text": "aries"}
+{"tok": 857, "t_us": 34967999, "text": " by"}
+{"tok": 858, "t_us": 34967999, "text": " type"}
+{"tok": 859, "t_us": 35031000, "text": "\u2014from"}
+{"tok": 860, "t_us": 35092999, "text": " about"}
+{"tok": 861, "t_us": 35170999, "text": " "}
+{"tok": 862, "t_us": 35170999, "text": "4"}
+{"tok": 863, "t_us": 35250000, "text": "\u2013"}
+{"tok": 864, "t_us": 35250000, "text": "5"}
+{"tok": 865, "t_us": 35311999, "text": " lbs"}
+{"tok": 866, "t_us": 35311999, "text": " ("}
+{"tok": 867, "t_us": 35390000, "text": "English"}
+{"tok": 868, "t_us": 35390000, "text": ")"}
+{"tok": 869, "t_us": 35452999, "text": " to"}
+{"tok": 870, "t_us": 35452999, "text": " up"}
+{"tok": 871, "t_us": 35531000, "text": " to"}
+{"tok": 872, "t_us": 35531000, "text": " "}
+{"tok": 873, "t_us": 35592999, "text": "1"}
+{"tok": 874, "t_us": 35592999, "text": "0"}
+{"tok": 875, "t_us": 35670999, "text": "+"}
+{"tok": 876, "t_us": 35670999, "text": " lbs"}
+{"tok": 877, "t_us": 35750000, "text": " ("}
+{"tok": 878, "t_us": 35750000, "text": "G"}
+{"tok": 879, "t_us": 35811999, "text": "iant"}
+{"tok": 880, "t_us": 35811999, "text": ")."}
+{"tok": 881, "t_us": 35875000, "text": "\n\n"}
+{"tok": 882, "t_us": 35936999, "text": "  "}
+{"tok": 883, "t_us": 35936999, "text": " **"}
+{"tok": 884, "t_us": 36000000, "text": "Care"}
+{"tok": 885, "t_us": 36000000, "text": " &"}
+{"tok": 886, "t_us": 36061999, "text": " G"}
+{"tok": 887, "t_us": 36061999, "text": "room"}
+{"tok": 888, "t_us": 36125000, "text": "ing"}
+{"tok": 889, "t_us": 36125000, "text": ":**"}
+{"tok": 890, "t_us": 36186999, "text": "\n"}
+{"tok": 891, "t_us": 36186999, "text": "  "}
+{"tok": 892, "t_us": 36265000, "text": " Their"}
+{"tok": 893, "t_us": 36327999, "text": " fast"}
+{"tok": 894, "t_us": 36390000, "text": "-growing"}
+{"tok": 895, "t_us": 36390000, "text": " wool"}
+{"tok": 896, "t_us": 36452999, "text": " requires"}
+{"tok": 897, "t_us": 36452999, "text": " diligent"}
+{"tok": 898, "t_us": 36515000, "text": " maintenance"}
+{"tok": 899, "t_us": 36577999, "text": ":"}
+{"tok": 900, "t_us": 36640000, "text": " regular"}
+{"tok": 901, "t_us": 36702999, "text": " brushing"}
+{"tok": 902, "t_us": 36702999, "text": " to"}
+{"tok": 903, "t_us": 36765000, "text": " prevent"}
+{"tok": 904, "t_us": 36765000, "text": " mat"}
+{"tok": 905, "t_us": 36811999, "text": "ting"}
+{"tok": 906, "t_us": 36811999, "text": ","}
+{"tok": 907, "t_us": 36875000, "text": " scheduled"}
+{"tok": 908, "t_us": 36920999, "text": " she"}
+{"tok": 909, "t_us": 36983999, "text": "aring"}
+{"tok": 910, "t_us": 36983999, "text": "/pl"}
+{"tok": 911, "t_us": 37045999, "text": "ucking"}
+{"tok": 912, "t_us": 37045999, "text": ","}
+{"tok": 913, "t_us": 37108999, "text": " and"}
+{"tok": 914, "t_us": 37108999, "text": " a"}
+{"tok": 915, "t_us": 37170999, "text": " high"}
+{"tok": 916, "t_us": 37233999, "text": "-f"}
+{"tok": 917, "t_us": 37233999, "text": "iber"}
+{"tok": 918, "t_us": 37295999, "text": " diet"}
+{"tok": 919, "t_us": 37295999, "text": "."}
+{"tok": 920, "t_us": 37358999, "text": " Because"}
+{"tok": 921, "t_us": 37420999, "text": " they"}
+{"tok": 922, "t_us": 37420999, "text": " groom"}
+{"tok": 923, "t_us": 37483999, "text": " themselves"}
+{"tok": 924, "t_us": 37483999, "text": " like"}
+{"tok": 925, "t_us": 37545999, "text": " other"}
+{"tok": 926, "t_us": 37608999, "text": " rabbits"}
+{"tok": 927, "t_us": 37670999, "text": ","}
+{"tok": 928, "t_us": 37670999, "text": " they"}
+{"tok": 929, "t_us": 37750000, "text": " can"}
+{"tok": 930, "t_us": 37750000, "text": " accidentally"}
+{"tok": 931, "t_us": 37811999, "text": " ingest"}
+{"tok": 932, "t_us": 37811999, "text": " loose"}
+{"tok": 933, "t_us": 37875000, "text": " fur"}
+{"tok": 934, "t_us": 37936999, "text": ","}
+{"tok": 935, "t_us": 37936999, "text": " which"}
+{"tok": 936, "t_us": 38000000, "text": " may"}
+{"tok": 937, "t_us": 38000000, "text": " cause"}
+{"tok": 938, "t_us": 38061999, "text": " \""}
+{"tok": 939, "t_us": 38140000, "text": "wo"}
+{"tok": 940, "t_us": 38140000, "text": "ol"}
+{"tok": 941, "t_us": 38202999, "text": " block"}
+{"tok": 942, "t_us": 38202999, "text": "\""}
+{"tok": 943, "t_us": 38265000, "text": " ("}
+{"tok": 944, "t_us": 38265000, "text": "a"}
+{"tok": 945, "t_us": 38327999, "text": " potentially"}
+{"tok": 946, "t_us": 38390000, "text": " fatal"}
+{"tok": 947, "t_us": 38452999, "text": " gastrointestinal"}
+{"tok": 948, "t_us": 38515000, "text": " issue"}
+{"tok": 949, "t_us": 38577999, "text": ")."}
+{"tok": 950, "t_us": 38577999, "text": " Proper"}
+{"tok": 951, "t_us": 38625000, "text": " care"}
+{"tok": 952, "t_us": 38686999, "text": " is"}
+{"tok": 953, "t_us": 38750000, "text": " essential"}
+{"tok": 954, "t_us": 38750000, "text": " for"}
+{"tok": 955, "t_us": 38811999, "text": " their"}
+{"tok": 956, "t_us": 38811999, "text": " health"}
+{"tok": 957, "t_us": 38890000, "text": "."}
+{"tok": 958, "t_us": 38890000, "text": "\n\n"}
+{"tok": 959, "t_us": 38952999, "text": "  "}
+{"tok": 960, "t_us": 38952999, "text": " **"}
+{"tok": 961, "t_us": 39031000, "text": "Tem"}
+{"tok": 962, "t_us": 39031000, "text": "per"}
+{"tok": 963, "t_us": 39108999, "text": "ament"}
+{"tok": 964, "t_us": 39108999, "text": " &"}
+{"tok": 965, "t_us": 39170999, "text": " Lif"}
+{"tok": 966, "t_us": 39170999, "text": "es"}
+{"tok": 967, "t_us": 39250000, "text": "pan"}
+{"tok": 968, "t_us": 39250000, "text": ":**"}
+{"tok": 969, "t_us": 39311999, "text": "\n"}
+{"tok": 970, "t_us": 39311999, "text": "  "}
+{"tok": 971, "t_us": 39390000, "text": " Ang"}
+{"tok": 972, "t_us": 39390000, "text": "oras"}
+{"tok": 973, "t_us": 39452999, "text": " are"}
+{"tok": 974, "t_us": 39452999, "text": " generally"}
+{"tok": 975, "t_us": 39500000, "text": " calm"}
+{"tok": 976, "t_us": 39500000, "text": " and"}
+{"tok": 977, "t_us": 39561999, "text": " doc"}
+{"tok": 978, "t_us": 39561999, "text": "ile"}
+{"tok": 979, "t_us": 39625000, "text": " but"}
+{"tok": 980, "t_us": 39702999, "text": " can"}
+{"tok": 981, "t_us": 39702999, "text": " be"}
+{"tok": 982, "t_us": 39765000, "text": " sensitive"}
+{"tok": 983, "t_us": 39765000, "text": " to"}
+{"tok": 984, "t_us": 39827999, "text": " stress"}
+{"tok": 985, "t_us": 39890000, "text": " or"}
+{"tok": 986, "t_us": 39890000, "text": " rough"}
+{"tok": 987, "t_us": 39952999, "text": " handling"}
+{"tok": 988, "t_us": 39952999, "text": "."}
+{"tok": 989, "t_us": 40015000, "text": " With"}
+{"tok": 990, "t_us": 40077999, "text": " proper"}
+{"tok": 991, "t_us": 40077999, "text": " social"}
+{"tok": 992, "t_us": 40140000, "text": "ization"}
+{"tok": 993, "t_us": 40140000, "text": ","}
+{"tok": 994, "t_us": 40217999, "text": " they"}
+{"tok": 995, "t_us": 40217999, "text": " make"}
+{"tok": 996, "t_us": 40295999, "text": " gentle"}
+{"tok": 997, "t_us": 40358999, "text": " pets"}
+{"tok": 998, "t_us": 40358999, "text": "."}
+{"tok": 999, "t_us": 40420999, "text": " Their"}
+{"tok": 1000, "t_us": 40483999, "text": " average"}
+{"tok": 1001, "t_us": 40561999, "text": " lifespan"}
+{"tok": 1002, "t_us": 40561999, "text": " is"}
+{"tok": 1003, "t_us": 40640000, "text": " "}
+{"tok": 1004, "t_us": 40640000, "text": "7"}
+{"tok": 1005, "t_us": 40717999, "text": "\u2013"}
+{"tok": 1006, "t_us": 40717999, "text": "1"}
+{"tok": 1007, "t_us": 40827999, "text": "2"}
+{"tok": 1008, "t_us": 40827999, "text": " years"}
+{"tok": 1009, "t_us": 40920999, "text": " when"}
+{"tok": 1010, "t_us": 40983999, "text": " well"}
+{"tok": 1011, "t_us": 41045999, "text": " cared"}
+{"tok": 1012, "t_us": 41045999, "text": " for"}
+{"tok": 1013, "t_us": 41125000, "text": "."}
+{"tok": 1014, "t_us": 41125000, "text": "\n\n"}
+{"tok": 1015, "t_us": 41186999, "text": "  "}
+{"tok": 1016, "t_us": 41186999, "text": " **"}
+{"tok": 1017, "t_us": 41250000, "text": "Uses"}
+{"tok": 1018, "t_us": 41250000, "text": ":**"}
+{"tok": 1019, "t_us": 41327999, "text": "\n"}
+{"tok": 1020, "t_us": 41327999, "text": "  "}
+{"tok": 1021, "t_us": 41390000, "text": " Histor"}
+{"tok": 1022, "t_us": 41390000, "text": "ically"}
+{"tok": 1023, "t_us": 41452999, "text": " bred"}
+{"tok": 1024, "t_us": 41515000, "text": " primarily"}
+{"tok": 1025, "t_us": 41577999, "text": " for"}
+{"tok": 1026, "t_us": 41577999, "text": " their"}
+{"tok": 1027, "t_us": 41640000, "text": " valuable"}
+{"tok": 1028, "t_us": 41702999, "text": " fiber"}
+{"tok": 1029, "t_us": 41702999, "text": ","}
+{"tok": 1030, "t_us": 41765000, "text": " many"}
+{"tok": 1031, "t_us": 41827999, "text": " modern"}
+{"tok": 1032, "t_us": 41890000, "text": " Ang"}
+{"tok": 1033, "t_us": 41890000, "text": "ora"}
+{"tok": 1034, "t_us": 41952999, "text": " rabbits"}
+{"tok": 1035, "t_us": 41952999, "text": " are"}
+{"tok": 1036, "t_us": 42031000, "text": " kept"}
+{"tok": 1037, "t_us": 42031000, "text": " as"}
+{"tok": 1038, "t_us": 42092999, "text": " show"}
+{"tok": 1039, "t_us": 42092999, "text": " animals"}
+{"tok": 1040, "t_us": 42156000, "text": ","}
+{"tok": 1041, "t_us": 42156000, "text": " companions"}
+{"tok": 1042, "t_us": 42217999, "text": ","}
+{"tok": 1043, "t_us": 42217999, "text": " or"}
+{"tok": 1044, "t_us": 42295999, "text": " ethical"}
+{"tok": 1045, "t_us": 42295999, "text": " breed"}
+{"tok": 1046, "t_us": 42375000, "text": "ers"}
+{"tok": 1047, "t_us": 42375000, "text": " focused"}
+{"tok": 1048, "t_us": 42436999, "text": " on"}
+{"tok": 1049, "t_us": 42436999, "text": " humane"}
+{"tok": 1050, "t_us": 42500000, "text": " harvesting"}
+{"tok": 1051, "t_us": 42561999, "text": " practices"}
+{"tok": 1052, "t_us": 42561999, "text": " ("}
+{"tok": 1053, "t_us": 42625000, "text": "e"}
+{"tok": 1054, "t_us": 42702999, "text": ".g"}
+{"tok": 1055, "t_us": 42702999, "text": ".,"}
+{"tok": 1056, "t_us": 42765000, "text": " pl"}
+{"tok": 1057, "t_us": 42811999, "text": "ucking"}
+{"tok": 1058, "t_us": 42811999, "text": " instead"}
+{"tok": 1059, "t_us": 42890000, "text": " of"}
+{"tok": 1060, "t_us": 42890000, "text": " she"}
+{"tok": 1061, "t_us": 42952999, "text": "aring"}
+{"tok": 1062, "t_us": 42952999, "text": " to"}
+{"tok": 1063, "t_us": 43015000, "text": " avoid"}
+{"tok": 1064, "t_us": 43077999, "text": " skin"}
+{"tok": 1065, "t_us": 43125000, "text": " cuts"}
+{"tok": 1066, "t_us": 43186999, "text": " and"}
+{"tok": 1067, "t_us": 43250000, "text": " reduce"}
+{"tok": 1068, "t_us": 43250000, "text": " stress"}
+{"tok": 1069, "t_us": 43327999, "text": ")."}
+{"tok": 1070, "t_us": 43327999, "text": "\n\n"}
+{"tok": 1071, "t_us": 43390000, "text": "  "}
+{"tok": 1072, "t_us": 43390000, "text": " If"}
+{"tok": 1073, "t_us": 43452999, "text": " you"}
+{"tok": 1074, "t_us": 43452999, "text": "'re"}
+{"tok": 1075, "t_us": 43531000, "text": " considering"}
+{"tok": 1076, "t_us": 43531000, "text": " one"}
+{"tok": 1077, "t_us": 43592999, "text": " as"}
+{"tok": 1078, "t_us": 43592999, "text": " a"}
+{"tok": 1079, "t_us": 43656000, "text": " pet"}
+{"tok": 1080, "t_us": 43656000, "text": " or"}
+{"tok": 1081, "t_us": 43717999, "text": " interested"}
+{"tok": 1082, "t_us": 43795999, "text": " in"}
+{"tok": 1083, "t_us": 43795999, "text": " wool"}
+{"tok": 1084, "t_us": 43858999, "text": " production"}
+{"tok": 1085, "t_us": 43858999, "text": ","}
+{"tok": 1086, "t_us": 43920999, "text": " be"}
+{"tok": 1087, "t_us": 44000000, "text": " prepared"}
+{"tok": 1088, "t_us": 44000000, "text": " for"}
+{"tok": 1089, "t_us": 44061999, "text": " significant"}
+{"tok": 1090, "t_us": 44125000, "text": " grooming"}
+{"tok": 1091, "t_us": 44125000, "text": " commitment"}
+{"tok": 1092, "t_us": 44186999, "text": " and"}
+{"tok": 1093, "t_us": 44186999, "text": " research"}
+{"tok": 1094, "t_us": 44250000, "text": " responsible"}
+{"tok": 1095, "t_us": 44342999, "text": " breed"}
+{"tok": 1096, "t_us": 44342999, "text": "ers"}
+{"tok": 1097, "t_us": 44406000, "text": " who"}
+{"tok": 1098, "t_us": 44406000, "text": " prioritize"}
+{"tok": 1099, "t_us": 44467999, "text": " animal"}
+{"tok": 1100, "t_us": 44531000, "text": " welfare"}
+{"tok": 1101, "t_us": 44531000, "text": "."}
+{"tok": 1102, "t_us": 44608999, "text": "\n\n"}
+{"tok": 1103, "t_us": 44608999, "text": "7"}
+{"tok": 1104, "t_us": 44686999, "text": "."}
+{"tok": 1105, "t_us": 44686999, "text": " "}
+{"tok": 1106, "t_us": 44765000, "text": " **"}
+{"tok": 1107, "t_us": 44765000, "text": "Self"}
+{"tok": 1108, "t_us": 44842999, "text": "-C"}
+{"tok": 1109, "t_us": 44842999, "text": "or"}
+{"tok": 1110, "t_us": 44920999, "text": "rection"}
+{"tok": 1111, "t_us": 44920999, "text": "/"}
+{"tok": 1112, "t_us": 44983999, "text": "Ref"}
+{"tok": 1113, "t_us": 44983999, "text": "inement"}
+{"tok": 1114, "t_us": 45061999, "text": " during"}
+{"tok": 1115, "t_us": 45061999, "text": " drafting"}
+{"tok": 1116, "t_us": 45140000, "text": "**:"}
+{"tok": 1117, "t_us": 45140000, "text": "\n"}
+{"tok": 1118, "t_us": 45217999, "text": "  "}
+{"tok": 1119, "t_us": 45217999, "text": " -"}
+{"tok": 1120, "t_us": 45295999, "text": " Check"}
+{"tok": 1121, "t_us": 45295999, "text": " accuracy"}
+{"tok": 1122, "t_us": 45375000, "text": ":"}
+{"tok": 1123, "t_us": 45375000, "text": " \""}
+{"tok": 1124, "t_us": 45436999, "text": "Moh"}
+{"tok": 1125, "t_us": 45500000, "text": "air"}
+{"tok": 1126, "t_us": 45500000, "text": " comes"}
+{"tok": 1127, "t_us": 45577999, "text": " from"}
+{"tok": 1128, "t_us": 45577999, "text": " Ang"}
+{"tok": 1129, "t_us": 45640000, "text": "ora"}
+{"tok": 1130, "t_us": 45640000, "text": " goats"}
+{"tok": 1131, "t_us": 45702999, "text": "\""}
+{"tok": 1132, "t_us": 45702999, "text": " \u2192"}
+{"tok": 1133, "t_us": 45781000, "text": " Actually"}
+{"tok": 1134, "t_us": 45842999, "text": ","}
+{"tok": 1135, "t_us": 45842999, "text": " moh"}
+{"tok": 1136, "t_us": 45920999, "text": "air"}
+{"tok": 1137, "t_us": 45920999, "text": " comes"}
+{"tok": 1138, "t_us": 45983999, "text": " from"}
+{"tok": 1139, "t_us": 45983999, "text": " *"}
+{"tok": 1140, "t_us": 46061999, "text": "Ang"}
+{"tok": 1141, "t_us": 46061999, "text": "ora"}
+{"tok": 1142, "t_us": 46140000, "text": "*"}
+{"tok": 1143, "t_us": 46140000, "text": " goats"}
+{"tok": 1144, "t_us": 46202999, "text": " ("}
+{"tok": 1145, "t_us": 46281000, "text": "named"}
+{"tok": 1146, "t_us": 46342999, "text": " after"}
+{"tok": 1147, "t_us": 46342999, "text": " the"}
+{"tok": 1148, "t_us": 46406000, "text": " same"}
+{"tok": 1149, "t_us": 46483999, "text": " region"}
+{"tok": 1150, "t_us": 46483999, "text": "),"}
+{"tok": 1151, "t_us": 46545999, "text": " not"}
+{"tok": 1152, "t_us": 46625000, "text": " to"}
+{"tok": 1153, "t_us": 46686999, "text": " be"}
+{"tok": 1154, "t_us": 46686999, "text": " confused"}
+{"tok": 1155, "t_us": 46765000, "text": " with"}
+{"tok": 1156, "t_us": 46765000, "text": " Ang"}
+{"tok": 1157, "t_us": 46827999, "text": "ora"}
+{"tok": 1158, "t_us": 46827999, "text": " rabbits"}
+{"tok": 1159, "t_us": 46890000, "text": "."}
+{"tok": 1160, "t_us": 46890000, "text": " Clar"}
+{"tok": 1161, "t_us": 46967999, "text": "ify"}
+{"tok": 1162, "t_us": 46967999, "text": " this"}
+{"tok": 1163, "t_us": 47031000, "text": " distinction"}
+{"tok": 1164, "t_us": 47031000, "text": " carefully"}
+{"tok": 1165, "t_us": 47108999, "text": "."}
+{"tok": 1166, "t_us": 47108999, "text": "\n"}
+{"tok": 1167, "t_us": 47186999, "text": "  "}
+{"tok": 1168, "t_us": 47186999, "text": " -"}
+{"tok": 1169, "t_us": 47265000, "text": " G"}
+{"tok": 1170, "t_us": 47342999, "text": "room"}
+{"tok": 1171, "t_us": 47342999, "text": "ing"}
+{"tok": 1172, "t_us": 47406000, "text": " frequency"}
+{"tok": 1173, "t_us": 47406000, "text": ":"}
+{"tok": 1174, "t_us": 47483999, "text": " She"}
+{"tok": 1175, "t_us": 47545999, "text": "aring"}
+{"tok": 1176, "t_us": 47545999, "text": "/pl"}
+{"tok": 1177, "t_us": 47625000, "text": "ucking"}
+{"tok": 1178, "t_us": 47625000, "text": " every"}
+{"tok": 1179, "t_us": 47686999, "text": " "}
+{"tok": 1180, "t_us": 47686999, "text": "3"}
+{"tok": 1181, "t_us": 47765000, "text": "-"}
+{"tok": 1182, "t_us": 47765000, "text": "4"}
+{"tok": 1183, "t_us": 47842999, "text": " months"}
+{"tok": 1184, "t_us": 47842999, "text": " is"}
+{"tok": 1185, "t_us": 47906000, "text": " standard"}
+{"tok": 1186, "t_us": 47906000, "text": "."}
+{"tok": 1187, "t_us": 47983999, "text": " Correct"}
+{"tok": 1188, "t_us": 47983999, "text": "."}
+{"tok": 1189, "t_us": 48061999, "text": "\n"}
+{"tok": 1190, "t_us": 48061999, "text": "  "}
+{"tok": 1191, "t_us": 48125000, "text": " -"}
+{"tok": 1192, "t_us": 48125000, "text": " Wool"}
+{"tok": 1193, "t_us": 48186999, "text": " block"}
+{"tok": 1194, "t_us": 48186999, "text": " risk"}
+{"tok": 1195, "t_us": 48265000, "text": ":"}
+{"tok": 1196, "t_us": 48265000, "text": " Well"}
+{"tok": 1197, "t_us": 48327999, "text": "-d"}
+{"tok": 1198, "t_us": 48327999, "text": "ocumented"}
+{"tok": 1199, "t_us": 48406000, "text": " in"}
+{"index": 0, "tokens": [], "id_slot": 0, "stop": true, "model": "I:/Kyle_Shepherd/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-Q4_K_S.gguf", "tokens_predicted": 1200, "tokens_evaluated": 18, "generation_settings": {"seed": 1234, "temperature": 0.6000000238418579, "dynatemp_range": 0.0, "dynatemp_exponent": 1.0, "top_k": 20, "top_p": 0.949999988079071, "min_p": 0.0, "top_n_sigma": -1.0, "xtc_probability": 0.0, "xtc_threshold": 0.10000000149011612, "typical_p": 1.0, "repeat_last_n": 64, "repeat_penalty": 1.100000023841858, "presence_penalty": 1.5, "frequency_penalty": 0.0, "dry_multiplier": 0.0, "dry_base": 1.75, "dry_allowed_length": 2, "dry_penalty_last_n": 64, "dry_sequence_breakers": ["\n", ":", "\"", "*"], "mirostat": 0, "mirostat_tau": 5.0, "mirostat_eta": 0.10000000149011612, "adaptive_target": -1.0, "adaptive_decay": 0.8999999761581421, "stop": [], "max_tokens": 1200, "n_predict": 1200, "n_keep": 0, "n_discard": 0, "n_ctx_limit": 0, "ignore_eos": false, "stream": true, "logit_bias": [], "n_probs": 0, "min_keep": 0, "grammar": "", "grammar_lazy": false, "grammar_triggers": [], "preserved_tokens": [], "chat_format": "Content-only", "reasoning_format": "deepseek", "reasoning_in_content": false, "generation_prompt": "", "samplers": ["penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"], "speculative.types": "none,draft-mtp", "timings_per_token": false, "post_sampling_probs": false, "backend_sampling": false, "lora": []}, "prompt": "<|im_start|>user\nWhat is an angora rabbit?<|im_end|>\n<|im_start|>assistant\n<think>\n", "has_new_line": true, "truncated": false, "stop_type": "limit", "stopping_word": "", "tokens_cached": 1217, "timings": {"cache_n": 0, "prompt_n": 18, "prompt_ms": 1848.778, "prompt_per_token_ms": 102.70988888888888, "prompt_per_second": 9.736160858686116, "predicted_n": 1200, "predicted_ms": 48412.498, "predicted_per_token_ms": 40.34374833333333, "predicted_per_second": 24.78698785590448, "draft_n": 692, "draft_n_accepted": 506}, "content": "Here's a thinking process:\n\n1.  **Understand User Query**: The user asks \"What is an angora rabbit?\" This is a straightforward factual question about a specific breed of rabbit known for its wool/fur.\n\n2.  **Identify Key Information Needed**:\n   - Definition/Basic description\n   - Origin/Breed history\n   - Physical characteristics (especially the famous long, soft fur)\n   - Types/Varieties (English Angora, French Angora, Giant Angora, Satin Angora)\n   - Care requirements (grooming needs are significant due to long wool)\n   - Uses/Purpose (wool production, pets/show rabbits)\n   - Temperament/Behavior\n   - Any notable facts or controversies (e.g., ethical concerns about mohair/mohair-like fiber harvesting)\n\n3.  **Draft - Mental Refinement**:\n   An Angora rabbit is a domesticated breed of lagomorph known for its long, soft wool that can be harvested and spun into yarn called \"angora\" or sometimes confused with mohair (though true angora comes from these rabbits). They originated in Ankara, Turkey (formerly Angora), hence the name. There are several recognized varieties: English, French, Giant, and Satin. The English has wool covering its face and ears; the others have less facial wool but still require regular grooming due to their dense coat. Their fur grows continuously and must be sheared or plucked every 3-4 months. They're popular as pets, show animals, and fiber producers. Temperament varies by breed but they're generally docile. Important note: ethical sourcing is a consideration since improper care can lead to health issues like wool block (gastrointestinal stasis from ingesting fur).\n\n4.  **Structure the Response**:\n   - Introduction/Definition\n   - Origin & History\n   - Physical Characteristics & Breeds/Varieties\n   - Grooming & Care Needs\n   - Uses & Purpose\n   - Temperament & Lifespan\n   - Ethical Considerations (brief, factual)\n   - Conclusion\n\n5.  **Fact-Check/Verify Key Points**:\n   - Origin: Ankara region of Turkey (historically called Angora). Correct.\n   - Wool types: English, French, Giant, Satin are the main recognized breeds by ARBA and international bodies. Correct.\n   - Grooming: Requires frequent brushing/shaving every 3-4 months due to fast-growing wool. Risk of \"wool block\" if they ingest fur while grooming. Correct.\n   - Fiber name: Called angora fiber, not mohair (which comes from Angora goats). Important distinction.\n   - Lifespan: Typically 7-12 years with proper care. Reasonable.\n   - Temperament: Generally calm but can be skittish; varies by breed and socialization. Correct.\n\n6.  **Draft Response** (Mental to Text):\n   An Angora rabbit is a domesticated breed of lagomorph famous for its exceptionally long, soft, and luxurious wool. The name \"Angora\" comes from Ankara, Turkey (historically known as Angora), where the breed originated centuries ago before being brought to Europe in the 18th century.\n\n   **Key Characteristics:**\n   - **Fur**: Their most defining feature is a dense coat of continuous-growing hair that can reach several inches long. This fiber is hand-combed or sheared every 3\u20134 months and spun into yarn known as *angora wool*, prized for its warmth, lightness, and softness (note: it\u2019s not mohair, which comes from Angora goats).\n   - **Breeds/Varieties**: The four main recognized breeds are the English Angora (full face/ear coverage), French Angora (less facial wool but very dense body coat), Giant Angora (largest breed, bred for fiber production), and Satin Angora (has a unique glossy, thinner hair structure that gives it a shiny appearance).\n   - **Size**: Varies by type\u2014from about 4\u20135 lbs (English) to up to 10+ lbs (Giant).\n\n   **Care & Grooming:**\n   Their fast-growing wool requires diligent maintenance: regular brushing to prevent matting, scheduled shearing/plucking, and a high-fiber diet. Because they groom themselves like other rabbits, they can accidentally ingest loose fur, which may cause \"wool block\" (a potentially fatal gastrointestinal issue). Proper care is essential for their health.\n\n   **Temperament & Lifespan:**\n   Angoras are generally calm and docile but can be sensitive to stress or rough handling. With proper socialization, they make gentle pets. Their average lifespan is 7\u201312 years when well cared for.\n\n   **Uses:**\n   Historically bred primarily for their valuable fiber, many modern Angora rabbits are kept as show animals, companions, or ethical breeders focused on humane harvesting practices (e.g., plucking instead of shearing to avoid skin cuts and reduce stress).\n\n   If you're considering one as a pet or interested in wool production, be prepared for significant grooming commitment and research responsible breeders who prioritize animal welfare.\n\n7.  **Self-Correction/Refinement during drafting**:\n   - Check accuracy: \"Mohair comes from Angora goats\" \u2192 Actually, mohair comes from *Angora* goats (named after the same region), not to be confused with Angora rabbits. Clarify this distinction carefully.\n   - Grooming frequency: Shearing/plucking every 3-4 months is standard. Correct.\n   - Wool block risk: Well-documented in"}

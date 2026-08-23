@@ -40,6 +40,12 @@ struct common_speculative_draft_params {
     // can be used to constraint the max draft based on the remaining context size
     int32_t n_max = -1;
 
+    // overrides the configured p_min for this call (< 0 disabled). The break-even confidence for
+    // a draft token is not a constant: it depends on what the extra token costs to verify, which
+    // on a MoE with an expert hot store depends on how much of the routing is resident right now.
+    // See server_spec_width.
+    float p_min = -1.0f;
+
     llama_pos   n_past;
     llama_token id_last;
 

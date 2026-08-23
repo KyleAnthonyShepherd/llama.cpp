@@ -129,6 +129,12 @@ static bool common_speculative_are_compatible(
 
 using common_speculative_draft_params_vec = std::vector<common_speculative_draft_params>;
 
+// the caller may set a break-even confidence for this call that is better informed than the
+// configured constant - see common_speculative_draft_params::p_min
+static float common_speculative_p_min(float p_min_cfg, const common_speculative_draft_params & dp) {
+    return dp.p_min >= 0.0f ? dp.p_min : p_min_cfg;
+}
+
 // state of an implementation of speculative decoding
 //
 // each implementation has a unique type and a state that is implementation-specific
@@ -333,7 +339,7 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
                 const llama_token id = cur_p->data[0].id;
 
                 // only collect very high-confidence draft tokens
-                if (cur_p->data[0].p < params.p_min) {
+                if (cur_p->data[0].p < common_speculative_p_min(params.p_min, dparams.at(seq_id))) {
                     drafting[seq_id] = false;
                     n_drafting--;
 
@@ -799,7 +805,7 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
 
                 // only collect very high-confidence draft tokens
                 // (configurable via --spec-draft-p-min, set to 0.0 to disable early-stop)
-                if (cur_p->data[0].p < params.p_min) {
+                if (cur_p->data[0].p < common_speculative_p_min(params.p_min, dparams.at(seq_id))) {
                     drafting[seq_id] = false;
                     n_drafting--;
 
@@ -1222,7 +1228,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
                     const llama_token id = cur_p->data[0].id;
 
-                    if (cur_p->data[0].p < params.p_min) {
+                    if (cur_p->data[0].p < common_speculative_p_min(params.p_min, dparams.at(seq_id))) {
                         break;
                     }
 
@@ -1652,7 +1658,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 const llama_token id = cur_p->data[0].id;
 
                 // only collect very high-confidence draft tokens
-                if (cur_p->data[0].p < params.p_min) {
+                if (cur_p->data[0].p < common_speculative_p_min(params.p_min, dparams.at(seq_id))) {
                     drafting[seq_id] = false;
                     n_drafting--;
 

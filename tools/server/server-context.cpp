@@ -195,200 +195,106 @@ struct server_batch {
     }
 };
 
-// Adaptive draft width (--spec-adaptive-width).
+// Adaptive draft confidence (--spec-adaptive-width).
 //
-// A speculative step gains 1 + n_accepted tokens and costs one draft plus one verify batch. Under
-// the expert hot store that batch is priced by the distinct cold experts it touches, not by its
-// token count: ggml_mul_mat_id_cold groups its rows by expert, so an expert two tokens share is
-// read once. llama_expert_cold_last() reports that count for the batch that just ran.
+// A draft token is worth verifying when its chance of being accepted beats what it costs to carry
+// through the verify batch. Both sides are knowable before the batch runs, so nothing here probes:
 //
-// So: fit t_step = t0 + slope*cold over the recent steps, predict the cold count of a wider batch
-// from the rate the last one ran at, and keep the width whose predicted tokens per second is
-// highest. When the generation moves into a region the hot store does not cover the rate rises,
-// the prediction steepens, and the width falls to 0 on its own.
+//   benefit  the draft head already scores every token it produces, and the impls already drop
+//            tokens below p_min. Drafting is one MTP layer, ~1/40 of a verify token, so the score
+//            is cheap to obtain and arrives before the target sees anything.
+//   cost     an extra token widens the verify batch, and on this MoE the batch is priced by the
+//            distinct cold experts it touches - the ones no hot slot holds, which have to cross
+//            the bus. llama_expert_cold_last() reports that count for the batch that just ran.
+//
+// Break even for one extra token, where c is the marginal time it adds and T0 the fixed cost of a
+// step it would save:
+//
+//   p * (T0 + c) > c    ->    p > c / (T0 + c)
+//
+// which is the p_min this hands back. When the store covers the routing, c is small against T0 and
+// the threshold falls to nothing - draft freely. When the generation moves somewhere the store
+// does not cover, c rises, the threshold rises with it, and the draft stops early on its own.
+//
+// T0 and the per-cold-expert slope come from a decayed least squares of step time against cold
+// count. That does NOT need batches of different widths to identify: the cold count varies by a
+// factor of two on its own as the hit rate moves through a run (measured, 489 cold experts in one
+// window against 276 in another), which is all the spread a two-parameter fit needs. An earlier
+// version explored widths on purpose to create that spread; it was solving a problem the data did
+// not have, and the exploring cost more than the fit was worth.
 struct server_spec_width {
-    // Two decays, because the two things being tracked move at different speeds.
-    //
-    // The fit maps a cold expert count to a step time. That is a property of the box and the
-    // model, so it moves slowly and wants a long window: ~35 samples of half-life, long enough to
-    // average out whatever else is touching the host bus.
-    //
-    // Acceptance is a property of the text being generated and it moves fast. A thinking model
-    // opens by restating the prompt, accepts nearly every draft token, then starts reasoning and
-    // acceptance collapses inside a few decodes. Measured at one shared decay of 0.98, the
-    // controller carried that opening optimism through the collapse and sat at the ceiling for the
-    // whole run - mean draft width 2.9 of 3 - and lost the transition window it used to win.
-    static constexpr double DECAY_FIT = 0.98;
-    static constexpr double DECAY_ACC = 0.90;
+    // the fit maps a cold expert count to a step time - a property of the box and the model, so
+    // it wants a long window: ~35 samples of half-life
+    static constexpr double DECAY = 0.98;
 
-    // samples before the fit is trusted, and how often to take a width the fit did not ask for
+    // samples before the fit is trusted
     static constexpr int N_WARMUP = 16;
-    static constexpr int N_EXPLORE = 32;
 
     bool enabled = false;
 
-    int n_max_cfg = 0; // the ceiling, from --spec-draft-n-max, clamped to what the tier serves
-    int n_max_cur = 0; // the width in force
-
     int64_t t_step_beg = 0;
 
-    int n_step   = 0; // decisions taken, advances even at a width that produces no sample
     int n_sample = 0;
-    unsigned widths_seen = 0; // bit per width, so the fit is not trusted at a single one
-
-    // decayed acceptance rate per draft position
-    std::vector<double> acc;
 
     // decayed least squares of t_step_us against the batch's cold expert count
     double s_w = 0.0, s_x = 0.0, s_y = 0.0, s_xx = 0.0, s_xy = 0.0;
 
-    // decayed cold expert count of a batch at each width, and whether that width has run.
-    // measured per width rather than scaled from one rate per token: the count saturates as
-    // the batch grows, because a wider batch shares more of its draws
-    std::vector<double> cold_at;
-    std::vector<char>   cold_ok;
+    double cold_per_token = 0.0; // cold experts one token pulled in the batch that just ran
+    float  p_min_cur = 0.0f;     // what was handed to the drafter last
 
-    double cold_rate = 0.0; // cold experts per token of the last batch, for the log line
-
-    void reset(int n_max, bool on) {
-        enabled    = on;
-        n_max_cfg  = n_max;
-        n_max_cur  = n_max;
+    void reset(bool on) {
+        enabled = on;
         t_step_beg = 0;
-        n_step     = 0;
-        n_sample   = 0;
-        widths_seen = 0;
-        acc.assign(std::max(1, n_max), 0.0);
-        cold_at.assign(std::max(1, n_max) + 1, 0.0);
-        cold_ok.assign(cold_at.size(), 0);
+        n_sample = 0;
         s_w = s_x = s_y = s_xx = s_xy = 0.0;
-        cold_rate = 0.0;
+        cold_per_token = 0.0;
+        p_min_cur = 0.0f;
     }
 
-    bool ready() const {
-        // one width gives the fit no slope, so a single-width history is not a fit
-        return n_sample >= N_WARMUP && (widths_seen & (widths_seen - 1)) != 0;
-    }
-
-    // width 0 is a sample like any other. Without one the fit has to extrapolate below every
-    // batch it has seen, and a t0 that trades freely against the slope reads the narrowest
-    // batch as nearly free - measured, the controller then walks to 0 and stays there
-    void add_sample(int width, int n_accepted, int64_t t_step_us, int cold_distinct, int n_tokens) {
-        if (!enabled || width < 0 || width >= (int) cold_at.size() || t_step_us <= 0 || n_tokens <= 0) {
+    void add_sample(int64_t t_step_us, int cold_distinct, int n_tokens) {
+        if (!enabled || t_step_us <= 0 || n_tokens <= 0) {
             return;
-        }
-
-        // only positions the draft actually reached say anything about acceptance
-        for (int i = 0; i < width && i < (int) acc.size(); ++i) {
-            const double hit = i < n_accepted ? 1.0 : 0.0;
-            acc[i] = DECAY_ACC*acc[i] + (1.0 - DECAY_ACC)*hit;
         }
 
         const double x = cold_distinct;
         const double y = t_step_us;
 
-        s_w  = DECAY_FIT*s_w  + 1.0;
-        s_x  = DECAY_FIT*s_x  + x;
-        s_y  = DECAY_FIT*s_y  + y;
-        s_xx = DECAY_FIT*s_xx + x*x;
-        s_xy = DECAY_FIT*s_xy + x*y;
+        s_w  = DECAY*s_w  + 1.0;
+        s_x  = DECAY*s_x  + x;
+        s_y  = DECAY*s_y  + y;
+        s_xx = DECAY*s_xx + x*x;
+        s_xy = DECAY*s_xy + x*y;
 
-        cold_at[width] = cold_ok[width] ? DECAY_FIT*cold_at[width] + (1.0 - DECAY_FIT)*x : x;
-        cold_ok[width] = 1;
-        cold_rate = x / n_tokens;
-
-        widths_seen |= 1u << std::min(width, 31);
+        cold_per_token = x / n_tokens;
         n_sample++;
     }
 
-    // cold experts a batch of this width would touch. A width that has never run is guessed from
-    // the NEAREST one that has, at that one's rate per token. Nearest, not widest: the count
-    // saturates with the batch, so scaling a rate across a gap reads high for a wider width and
-    // low for a narrower one, and reading a narrow width low is what made the fit collapse to 0
-    // before width 0 was sampled at all. The shortest extrapolation is the least wrong one.
-    double cold_pred(int w) const {
-        const int n = (int) cold_at.size();
-
-        for (int d = 0; d < n; ++d) {
-            for (int k : {w - d, w + d}) {
-                if (k >= 0 && k < n && cold_ok[k]) {
-                    return cold_at[k]*(1 + w)/(1 + k);
-                }
-            }
-        }
-
-        return 0.0;
-    }
-
-    // predicted tokens per microsecond at draft width w
-    double rate_at(int w, double t0, double slope) const {
-        double gain = 1.0;
-        for (int i = 0; i < w && i < (int) acc.size(); ++i) {
-            gain += acc[i];
-        }
-
-        const double t = t0 + slope*cold_pred(w);
-
-        return t > 0.0 ? gain/t : 0.0;
-    }
-
-    int pick() {
-        if (!enabled || n_max_cfg <= 0) {
-            return n_max_cfg;
-        }
-
-        n_step++;
-
-        if (!ready()) {
-            // Warm up from the top, not the bottom. The opening of a request is the most
-            // predictable part of it - a thinking model restates the prompt almost word for word -
-            // so the widest draft is usually right exactly while the fit still knows nothing.
-            // Measured over the first 100 tokens: a fixed width 3 was worth 1.49x over drafting
-            // nothing, and sweeping up from 1 collected only 1.29x of it.
-            // Odd steps take the ceiling, even steps rotate through the rest, so the fit still
-            // gets its spread and acc fills fastest - a sample at the ceiling scores every
-            // draft position at once.
-            n_max_cur = (n_step % 2) ? n_max_cfg : 1 + ((n_step/2) % n_max_cfg);
-            return n_max_cur;
+    // break-even confidence for one more draft token, or a negative value to leave the configured
+    // p_min alone (not enough samples yet, or a fit that has not separated the two terms)
+    float p_min() {
+        if (!enabled || n_sample < N_WARMUP || cold_per_token <= 0.0) {
+            return -1.0f;
         }
 
         const double den = s_w*s_xx - s_x*s_x;
         if (den <= 0.0) {
-            return n_max_cur;
+            return -1.0f;
         }
 
         const double slope = (s_w*s_xy - s_x*s_y) / den;
         const double t0    = (s_y - slope*s_x) / s_w;
+
+        // a fit that says a wider batch is free, or that a step costs nothing before it reads an
+        // expert, has not seen enough spread in the cold count yet
         if (!(slope > 0.0) || !(t0 > 0.0)) {
-            // a fit that says a wider batch is free is a fit that has not seen enough
-            return n_max_cur;
+            return -1.0f;
         }
 
-        int best = 0;
-        double best_rate = 0.0;
-        for (int w = 0; w <= n_max_cfg; ++w) {
-            const double r = rate_at(w, t0, slope);
-            if (r > best_rate) {
-                best_rate = r;
-                best      = w;
-            }
-        }
+        const double c = slope*cold_per_token;
 
-        // one step at a time: the width sets the ubatch shape, and crossing that back and forth
-        // costs more than the difference the fit is chasing
-        if (best > n_max_cur) {
-            n_max_cur++;
-        } else if (best < n_max_cur) {
-            n_max_cur--;
-        }
+        p_min_cur = (float) (c / (t0 + c));
 
-        // the fit only ever sees widths that ran. without this it locks onto the first one that
-        // looked good, and a width of 0 stops feeding it entirely
-        if (n_step % N_EXPLORE == 0) {
-            n_max_cur = 1 + (n_step/N_EXPLORE) % n_max_cfg;
-        }
-
-        return n_max_cur;
+        return p_min_cur;
     }
 };
 
@@ -1575,25 +1481,17 @@ private:
             model_dft = nullptr;
         }
 
-        int  spec_n_max    = params_base.speculative.draft.n_max;
         bool spec_adaptive = params_base.speculative.adaptive_width;
 
         if (spec_adaptive) {
             if (params_base.expert_hot_s == 0) {
-                SRV_WRN("%s", "--spec-adaptive-width prices a verify batch with the expert hot store, which is off. disabling it\n");
+                SRV_WRN("%s", "--spec-adaptive-width prices a draft token by the cold experts it pulls, "
+                        "and the expert hot store is off so there is nothing to price against. disabling it\n");
                 spec_adaptive = false;
-            } else if (common_speculative_n_max(&params_base.speculative) != spec_n_max) {
-                SRV_WRN("%s", "--spec-adaptive-width governs the draft-model width only, and another speculator drafts wider. disabling it\n");
+            } else if (common_speculative_n_max(&params_base.speculative) != params_base.speculative.draft.n_max) {
+                SRV_WRN("%s", "--spec-adaptive-width sets p_min, which only the draft-model speculators read, "
+                        "and another speculator here drafts wider. disabling it\n");
                 spec_adaptive = false;
-            } else {
-                // a verify batch is 1 + the width, and past the tier limit a token's expert ids
-                // are no longer safe to compact - see LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT
-                const int n_max_tier = llama_expert_tier_max_tokens() - 1;
-
-                if (spec_n_max > n_max_tier) {
-                    SRV_WRN("--spec-adaptive-width: capping the draft width at %d, wider leaves the expert tier\n", n_max_tier);
-                    spec_n_max = n_max_tier;
-                }
             }
         }
 
@@ -1617,7 +1515,7 @@ private:
             };
 
             // kept across tasks: the fit describes the box and the model, not one request
-            slot.spec_w.reset(spec_n_max, spec_adaptive);
+            slot.spec_w.reset(spec_adaptive);
 
             slot.reset();
         }
@@ -3517,17 +3415,15 @@ private:
                 const bool use_ckpt_tgt = ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
                 const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
 
-                int n_draft_max = slot.get_n_draft_max();
+                const int n_draft_max = slot.get_n_draft_max();
 
-                if (slot.spec_w.enabled) {
-                    const int w_prev = slot.spec_w.n_max_cur;
+                // the width stays where the user put it. What adapts is how sure the drafter has
+                // to be before it adds another token, which is what actually costs cold experts
+                const float p_min_cur = slot.spec_w.p_min();
 
-                    n_draft_max = std::min(n_draft_max, slot.spec_w.pick());
-
-                    if (trace > 0 && slot.spec_w.n_max_cur != w_prev) {
-                        SLT_INF(slot, "adaptive draft width %d -> %d (cold rate %.2f per token)\n",
-                                w_prev, slot.spec_w.n_max_cur, slot.spec_w.cold_rate);
-                    }
+                if (trace > 0 && p_min_cur >= 0.0f) {
+                    SLT_INF(slot, "adaptive draft p_min = %.3f (%.1f cold experts per token)\n",
+                            p_min_cur, slot.spec_w.cold_per_token);
                 }
 
                 slot.spec_w.t_step_beg = ggml_time_us();
@@ -3557,6 +3453,7 @@ private:
                         common_speculative_get_draft_params(spec.get(), slot.id) = {
                             /* .drafting = */ true,
                             /* .n_max    = */ n_draft_max,
+                            /* .p_min    = */ p_min_cur,
                             /* .n_past   = */ slot.prompt.n_tokens(),
                             /* .id_last  = */ slot.sampled,
                             /* .prompt   = */ &slot.spec_prompt,
@@ -4458,13 +4355,14 @@ private:
 
             slot.t_token_generation = std::max<int64_t>(1, t_now - slot.t_start_generation) / 1e3;
 
-            // a step that drafted nothing is the fit's only anchor at the narrowest batch
+            // a step that drafted nothing still prices a step, and it is the cheapest anchor the
+            // fit gets for the fixed term
             if (slot.spec_w.enabled && n_generating_last == 1) {
                 int32_t cold = 0;
                 int32_t n_tokens = 0;
 
                 if (llama_expert_cold_last(slot.ctx_tgt, &cold, &n_tokens) && n_tokens == 1) {
-                    slot.spec_w.add_sample(0, 0, t_now - slot.spec_w.t_step_beg, cold, n_tokens);
+                    slot.spec_w.add_sample(t_now - slot.spec_w.t_step_beg, cold, n_tokens);
                 }
             }
 
@@ -4580,8 +4478,7 @@ private:
                 // the count is the last decode's, whatever that was. a batch of exactly the
                 // verify width is the one this step paid for, anything else is a foreign batch
                 if (llama_expert_cold_last(slot.ctx_tgt, &cold, &n_tokens) && n_tokens == (int32_t) n_draft + 1) {
-                    slot.spec_w.add_sample((int) n_draft, (int) n_accepted,
-                            t_now - slot.spec_w.t_step_beg, cold, n_tokens);
+                    slot.spec_w.add_sample(t_now - slot.spec_w.t_step_beg, cold, n_tokens);
                 }
             }
 

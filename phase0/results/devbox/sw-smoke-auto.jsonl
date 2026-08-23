@@ -1,121 +1,121 @@
 {"tok": 0, "t_us": 0, "text": "<think>"}
-{"tok": 1, "t_us": 156000, "text": "\n"}
-{"tok": 2, "t_us": 342999, "text": "Here"}
-{"tok": 3, "t_us": 342999, "text": "'s"}
-{"tok": 4, "t_us": 342999, "text": " a"}
-{"tok": 5, "t_us": 342999, "text": " thinking"}
-{"tok": 6, "t_us": 453000, "text": " process"}
-{"tok": 7, "t_us": 453000, "text": ":"}
-{"tok": 8, "t_us": 578000, "text": "\n\n"}
-{"tok": 9, "t_us": 578000, "text": "1"}
-{"tok": 10, "t_us": 578000, "text": "."}
-{"tok": 11, "t_us": 750000, "text": " "}
-{"tok": 12, "t_us": 750000, "text": " **"}
-{"tok": 13, "t_us": 750000, "text": "An"}
-{"tok": 14, "t_us": 750000, "text": "alyze"}
-{"tok": 15, "t_us": 875000, "text": " User"}
-{"tok": 16, "t_us": 875000, "text": " Input"}
-{"tok": 17, "t_us": 983999, "text": ":**"}
-{"tok": 18, "t_us": 983999, "text": "\n"}
-{"tok": 19, "t_us": 983999, "text": "  "}
-{"tok": 20, "t_us": 1156000, "text": " -"}
-{"tok": 21, "t_us": 1156000, "text": " **"}
-{"tok": 22, "t_us": 1156000, "text": "Topic"}
-{"tok": 23, "t_us": 1156000, "text": ":**"}
-{"tok": 24, "t_us": 1265000, "text": " Work"}
-{"tok": 25, "t_us": 1265000, "text": "-ste"}
-{"tok": 26, "t_us": 1390000, "text": "aling"}
-{"tok": 27, "t_us": 1390000, "text": " scheduler"}
-{"tok": 28, "t_us": 1390000, "text": "\n"}
-{"tok": 29, "t_us": 1562000, "text": "  "}
-{"tok": 30, "t_us": 1562000, "text": " -"}
-{"tok": 31, "t_us": 1562000, "text": " **"}
-{"tok": 32, "t_us": 1562000, "text": "Key"}
-{"tok": 33, "t_us": 1672000, "text": " Questions"}
-{"tok": 34, "t_us": 1781000, "text": " to"}
-{"tok": 35, "t_us": 1937000, "text": " Address"}
-{"tok": 36, "t_us": 1937000, "text": ":**"}
-{"tok": 37, "t_us": 1937000, "text": "\n"}
-{"tok": 38, "t_us": 1937000, "text": "    "}
-{"tok": 39, "t_us": 2047000, "text": " -"}
-{"tok": 40, "t_us": 2047000, "text": " How"}
-{"tok": 41, "t_us": 2172000, "text": " does"}
-{"tok": 42, "t_us": 2265000, "text": " it"}
-{"tok": 43, "t_us": 2265000, "text": " decide"}
-{"tok": 44, "t_us": 2328000, "text": " which"}
-{"tok": 45, "t_us": 2750000, "text": " queue"}
-{"tok": 46, "t_us": 2797000, "text": " to"}
-{"tok": 47, "t_us": 2890000, "text": " take"}
-{"tok": 48, "t_us": 2890000, "text": " work"}
-{"tok": 49, "t_us": 3000000, "text": " from"}
-{"tok": 50, "t_us": 3000000, "text": "?"}
-{"tok": 51, "t_us": 3000000, "text": "\n"}
-{"tok": 52, "t_us": 3125000, "text": "    "}
-{"tok": 53, "t_us": 3125000, "text": " -"}
-{"tok": 54, "t_us": 3125000, "text": " Why"}
-{"tok": 55, "t_us": 3217999, "text": " is"}
-{"tok": 56, "t_us": 3217999, "text": " the"}
-{"tok": 57, "t_us": 3217999, "text": " victim"}
-{"tok": 58, "t_us": 3297000, "text": " chosen"}
-{"tok": 59, "t_us": 3297000, "text": " at"}
-{"tok": 60, "t_us": 3297000, "text": " random"}
-{"tok": 61, "t_us": 3390000, "text": "?"}
-{"tok": 62, "t_us": 3390000, "text": "\n"}
-{"tok": 63, "t_us": 3390000, "text": "    "}
-{"tok": 64, "t_us": 3483999, "text": " -"}
-{"tok": 65, "t_us": 3483999, "text": " What"}
-{"tok": 66, "t_us": 3483999, "text": " goes"}
-{"tok": 67, "t_us": 3578000, "text": " wrong"}
-{"tok": 68, "t_us": 3578000, "text": " when"}
-{"tok": 69, "t_us": 3578000, "text": " every"}
-{"tok": 70, "t_us": 3656000, "text": " worker"}
-{"tok": 71, "t_us": 3656000, "text": " steals"}
-{"tok": 72, "t_us": 3656000, "text": " from"}
-{"tok": 73, "t_us": 3750000, "text": " the"}
-{"tok": 74, "t_us": 3750000, "text": " same"}
-{"tok": 75, "t_us": 3750000, "text": " place"}
-{"tok": 76, "t_us": 3842999, "text": "?"}
-{"tok": 77, "t_us": 3842999, "text": "\n"}
-{"tok": 78, "t_us": 3842999, "text": "  "}
-{"tok": 79, "t_us": 3922000, "text": " -"}
-{"tok": 80, "t_us": 3922000, "text": " **"}
-{"tok": 81, "t_us": 3922000, "text": "Format"}
-{"tok": 82, "t_us": 4000000, "text": " Requirements"}
-{"tok": 83, "t_us": 4078000, "text": ":**"}
-{"tok": 84, "t_us": 4078000, "text": "\n"}
-{"tok": 85, "t_us": 4140000, "text": "    "}
-{"tok": 86, "t_us": 4140000, "text": " -"}
-{"tok": 87, "t_us": 4140000, "text": " Flow"}
-{"tok": 88, "t_us": 4233999, "text": "ing"}
-{"tok": 89, "t_us": 4233999, "text": " prose"}
-{"tok": 90, "t_us": 4233999, "text": "\n"}
-{"tok": 91, "t_us": 4312000, "text": "    "}
-{"tok": 92, "t_us": 4312000, "text": " -"}
-{"tok": 93, "t_us": 4312000, "text": " No"}
-{"tok": 94, "t_us": 4406000, "text": " code"}
-{"tok": 95, "t_us": 4406000, "text": "\n"}
-{"tok": 96, "t_us": 4406000, "text": "    "}
-{"tok": 97, "t_us": 4578000, "text": " -"}
-{"tok": 98, "t_us": 4578000, "text": " No"}
-{"tok": 99, "t_us": 4578000, "text": " bullet"}
-{"tok": 100, "t_us": 4656000, "text": " lists"}
-{"tok": 101, "t_us": 4656000, "text": "\n"}
-{"tok": 102, "t_us": 4656000, "text": "    "}
-{"tok": 103, "t_us": 4750000, "text": " -"}
-{"tok": 104, "t_us": 4750000, "text": " At"}
-{"tok": 105, "t_us": 4750000, "text": " least"}
-{"tok": 106, "t_us": 4842999, "text": " "}
-{"tok": 107, "t_us": 4842999, "text": "7"}
-{"tok": 108, "t_us": 4842999, "text": "0"}
-{"tok": 109, "t_us": 4937000, "text": "0"}
-{"tok": 110, "t_us": 4937000, "text": " words"}
-{"tok": 111, "t_us": 4937000, "text": "\n\n"}
-{"tok": 112, "t_us": 5015000, "text": "2"}
-{"tok": 113, "t_us": 5015000, "text": "."}
-{"tok": 114, "t_us": 5015000, "text": " "}
-{"tok": 115, "t_us": 5092999, "text": " **"}
-{"tok": 116, "t_us": 5092999, "text": "De"}
-{"tok": 117, "t_us": 5092999, "text": "construct"}
-{"tok": 118, "t_us": 5187000, "text": " the"}
-{"tok": 119, "t_us": 5187000, "text": " Topic"}
-{"index": 0, "tokens": [], "id_slot": 0, "stop": true, "model": "I:/Kyle_Shepherd/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-Q4_K_S.gguf", "tokens_predicted": 120, "tokens_evaluated": 66, "generation_settings": {"seed": 1234, "temperature": 0.0, "dynatemp_range": 0.0, "dynatemp_exponent": 1.0, "top_k": 20, "top_p": 0.949999988079071, "min_p": 0.05000000074505806, "top_n_sigma": -1.0, "xtc_probability": 0.0, "xtc_threshold": 0.10000000149011612, "typical_p": 1.0, "repeat_last_n": 64, "repeat_penalty": 1.0, "presence_penalty": 0.0, "frequency_penalty": 0.0, "dry_multiplier": 0.0, "dry_base": 1.75, "dry_allowed_length": 2, "dry_penalty_last_n": 64, "dry_sequence_breakers": ["\n", ":", "\"", "*"], "mirostat": 0, "mirostat_tau": 5.0, "mirostat_eta": 0.10000000149011612, "adaptive_target": -1.0, "adaptive_decay": 0.8999999761581421, "stop": [], "max_tokens": 120, "n_predict": 120, "n_keep": 0, "n_discard": 0, "n_ctx_limit": 0, "ignore_eos": false, "stream": true, "logit_bias": [], "n_probs": 0, "min_keep": 0, "grammar": "", "grammar_lazy": false, "grammar_triggers": [], "preserved_tokens": [], "chat_format": "Content-only", "reasoning_format": "deepseek", "reasoning_in_content": false, "generation_prompt": "", "samplers": ["penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"], "speculative.types": "none,draft-mtp", "timings_per_token": false, "post_sampling_probs": false, "backend_sampling": false, "lora": []}, "prompt": "<|im_start|>user\nExplain, in flowing prose with no code and no bullet lists, how a work-stealing scheduler decides which queue to take work from, why the victim is chosen at random, and what goes wrong when every worker steals from the same place. Write at least 700 words.<|im_end|>\n<|im_start|>assistant\n", "has_new_line": true, "truncated": false, "stop_type": "limit", "stopping_word": "", "tokens_cached": 185, "timings": {"cache_n": 0, "prompt_n": 66, "prompt_ms": 3141.123, "prompt_per_token_ms": 47.59277272727273, "prompt_per_second": 21.011593624318436, "predicted_n": 120, "predicted_ms": 5183.439, "predicted_per_token_ms": 43.195325000000004, "predicted_per_second": 23.150653456132115, "draft_n": 83, "draft_n_accepted": 73}, "content": "<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Topic:** Work-stealing scheduler\n   - **Key Questions to Address:**\n     - How does it decide which queue to take work from?\n     - Why is the victim chosen at random?\n     - What goes wrong when every worker steals from the same place?\n   - **Format Requirements:**\n     - Flowing prose\n     - No code\n     - No bullet lists\n     - At least 700 words\n\n2.  **Deconstruct the Topic"}
+{"tok": 1, "t_us": 295999, "text": "\n"}
+{"tok": 2, "t_us": 436999, "text": "Here"}
+{"tok": 3, "t_us": 436999, "text": "'s"}
+{"tok": 4, "t_us": 436999, "text": " a"}
+{"tok": 5, "t_us": 436999, "text": " thinking"}
+{"tok": 6, "t_us": 561999, "text": " thinking"}
+{"tok": 7, "t_us": 702999, "text": " sequence"}
+{"tok": 8, "t_us": 702999, "text": "\n\n"}
+{"tok": 9, "t_us": 702999, "text": "1"}
+{"tok": 10, "t_us": 702999, "text": "."}
+{"tok": 11, "t_us": 842999, "text": " "}
+{"tok": 12, "t_us": 842999, "text": " **"}
+{"tok": 13, "t_us": 842999, "text": "De"}
+{"tok": 14, "t_us": 842999, "text": "construct"}
+{"tok": 15, "t_us": 1000000, "text": " the"}
+{"tok": 16, "t_us": 1000000, "text": " user"}
+{"tok": 17, "t_us": 1000000, "text": "'s"}
+{"tok": 18, "t_us": 1000000, "text": " request"}
+{"tok": 19, "t_us": 1125000, "text": ":**"}
+{"tok": 20, "t_us": 1125000, "text": "\n"}
+{"tok": 21, "t_us": 1125000, "text": "   "}
+{"tok": 22, "t_us": 1125000, "text": " *"}
+{"tok": 23, "t_us": 1265000, "text": "  "}
+{"tok": 24, "t_us": 1265000, "text": " Topic"}
+{"tok": 25, "t_us": 1265000, "text": ":"}
+{"tok": 26, "t_us": 1265000, "text": " Work"}
+{"tok": 27, "t_us": 1390000, "text": "-ste"}
+{"tok": 28, "t_us": 1390000, "text": "aling"}
+{"tok": 29, "t_us": 1390000, "text": " scheduler"}
+{"tok": 30, "t_us": 1390000, "text": "."}
+{"tok": 31, "t_us": 1545999, "text": "\n"}
+{"tok": 32, "t_us": 1545999, "text": "   "}
+{"tok": 33, "t_us": 1545999, "text": " *"}
+{"tok": 34, "t_us": 1545999, "text": "  "}
+{"tok": 35, "t_us": 1670999, "text": " Key"}
+{"tok": 36, "t_us": 1795999, "text": " aspects"}
+{"tok": 37, "t_us": 1795999, "text": " to"}
+{"tok": 38, "t_us": 1920999, "text": " explain"}
+{"tok": 39, "t_us": 1920999, "text": ":"}
+{"tok": 40, "t_us": 1920999, "text": "\n"}
+{"tok": 41, "t_us": 1920999, "text": "       "}
+{"tok": 42, "t_us": 2045999, "text": " *"}
+{"tok": 43, "t_us": 2045999, "text": "  "}
+{"tok": 44, "t_us": 2045999, "text": " How"}
+{"tok": 45, "t_us": 2045999, "text": " it"}
+{"tok": 46, "t_us": 2483999, "text": " decides"}
+{"tok": 47, "t_us": 2483999, "text": " which"}
+{"tok": 48, "t_us": 2483999, "text": " queue"}
+{"tok": 49, "t_us": 2483999, "text": " to"}
+{"tok": 50, "t_us": 2592999, "text": " take"}
+{"tok": 51, "t_us": 2592999, "text": " work"}
+{"tok": 52, "t_us": 2592999, "text": " from"}
+{"tok": 53, "t_us": 2592999, "text": "."}
+{"tok": 54, "t_us": 2717999, "text": "\n"}
+{"tok": 55, "t_us": 2717999, "text": "       "}
+{"tok": 56, "t_us": 2717999, "text": " *"}
+{"tok": 57, "t_us": 2717999, "text": "  "}
+{"tok": 58, "t_us": 2827999, "text": " Why"}
+{"tok": 59, "t_us": 2827999, "text": " the"}
+{"tok": 60, "t_us": 2827999, "text": " victim"}
+{"tok": 61, "t_us": 2827999, "text": " is"}
+{"tok": 62, "t_us": 2936999, "text": " chosen"}
+{"tok": 63, "t_us": 2936999, "text": " at"}
+{"tok": 64, "t_us": 2936999, "text": " random"}
+{"tok": 65, "t_us": 2936999, "text": "."}
+{"tok": 66, "t_us": 3045999, "text": "\n"}
+{"tok": 67, "t_us": 3045999, "text": "       "}
+{"tok": 68, "t_us": 3045999, "text": " *"}
+{"tok": 69, "t_us": 3045999, "text": "  "}
+{"tok": 70, "t_us": 3156000, "text": " What"}
+{"tok": 71, "t_us": 3156000, "text": " goes"}
+{"tok": 72, "t_us": 3156000, "text": " wrong"}
+{"tok": 73, "t_us": 3156000, "text": " when"}
+{"tok": 74, "t_us": 3265000, "text": " every"}
+{"tok": 75, "t_us": 3265000, "text": " worker"}
+{"tok": 76, "t_us": 3265000, "text": " steals"}
+{"tok": 77, "t_us": 3265000, "text": " from"}
+{"tok": 78, "t_us": 3358999, "text": " the"}
+{"tok": 79, "t_us": 3358999, "text": " same"}
+{"tok": 80, "t_us": 3358999, "text": " place"}
+{"tok": 81, "t_us": 3358999, "text": "."}
+{"tok": 82, "t_us": 3467999, "text": "\n"}
+{"tok": 83, "t_us": 3467999, "text": "   "}
+{"tok": 84, "t_us": 3467999, "text": " *"}
+{"tok": 85, "t_us": 3467999, "text": "  "}
+{"tok": 86, "t_us": 3545999, "text": " Format"}
+{"tok": 87, "t_us": 3640000, "text": ":"}
+{"tok": 88, "t_us": 3733999, "text": " Flow"}
+{"tok": 89, "t_us": 3733999, "text": "ing"}
+{"tok": 90, "t_us": 3733999, "text": " prose"}
+{"tok": 91, "t_us": 3733999, "text": ","}
+{"tok": 92, "t_us": 3842999, "text": " no"}
+{"tok": 93, "t_us": 3842999, "text": " code"}
+{"tok": 94, "t_us": 3842999, "text": ","}
+{"tok": 95, "t_us": 3842999, "text": " no"}
+{"tok": 96, "t_us": 4031000, "text": " bullet"}
+{"tok": 97, "t_us": 4031000, "text": " lists"}
+{"tok": 98, "t_us": 4031000, "text": "."}
+{"tok": 99, "t_us": 4031000, "text": "\n"}
+{"tok": 100, "t_us": 4140000, "text": "   "}
+{"tok": 101, "t_us": 4140000, "text": " *"}
+{"tok": 102, "t_us": 4140000, "text": "  "}
+{"tok": 103, "t_us": 4140000, "text": " Length"}
+{"tok": 104, "t_us": 4250000, "text": ":"}
+{"tok": 105, "t_us": 4250000, "text": " At"}
+{"tok": 106, "t_us": 4250000, "text": " least"}
+{"tok": 107, "t_us": 4250000, "text": " "}
+{"tok": 108, "t_us": 4358999, "text": "7"}
+{"tok": 109, "t_us": 4358999, "text": "0"}
+{"tok": 110, "t_us": 4358999, "text": "0"}
+{"tok": 111, "t_us": 4358999, "text": " words"}
+{"tok": 112, "t_us": 4452999, "text": "."}
+{"tok": 113, "t_us": 4452999, "text": "\n\n"}
+{"tok": 114, "t_us": 4452999, "text": "2"}
+{"tok": 115, "t_us": 4452999, "text": "."}
+{"tok": 116, "t_us": 4545999, "text": " "}
+{"tok": 117, "t_us": 4545999, "text": " **"}
+{"tok": 118, "t_us": 4545999, "text": "Draft"}
+{"tok": 119, "t_us": 4545999, "text": "ing"}
+{"index": 0, "tokens": [], "id_slot": 0, "stop": true, "model": "I:/Kyle_Shepherd/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-Q4_K_S.gguf", "tokens_predicted": 120, "tokens_evaluated": 66, "generation_settings": {"seed": 1234, "temperature": 0.6000000238418579, "dynatemp_range": 0.0, "dynatemp_exponent": 1.0, "top_k": 20, "top_p": 0.949999988079071, "min_p": 0.05000000074505806, "top_n_sigma": -1.0, "xtc_probability": 0.0, "xtc_threshold": 0.10000000149011612, "typical_p": 1.0, "repeat_last_n": 64, "repeat_penalty": 1.0, "presence_penalty": 0.0, "frequency_penalty": 0.0, "dry_multiplier": 0.0, "dry_base": 1.75, "dry_allowed_length": 2, "dry_penalty_last_n": 64, "dry_sequence_breakers": ["\n", ":", "\"", "*"], "mirostat": 0, "mirostat_tau": 5.0, "mirostat_eta": 0.10000000149011612, "adaptive_target": -1.0, "adaptive_decay": 0.8999999761581421, "stop": [], "max_tokens": 120, "n_predict": 120, "n_keep": 0, "n_discard": 0, "n_ctx_limit": 0, "ignore_eos": false, "stream": true, "logit_bias": [], "n_probs": 0, "min_keep": 0, "grammar": "", "grammar_lazy": false, "grammar_triggers": [], "preserved_tokens": [], "chat_format": "Content-only", "reasoning_format": "deepseek", "reasoning_in_content": false, "generation_prompt": "", "samplers": ["penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"], "speculative.types": "none,draft-mtp", "timings_per_token": false, "post_sampling_probs": false, "backend_sampling": false, "lora": []}, "prompt": "<|im_start|>user\nExplain, in flowing prose with no code and no bullet lists, how a work-stealing scheduler decides which queue to take work from, why the victim is chosen at random, and what goes wrong when every worker steals from the same place. Write at least 700 words.<|im_end|>\n<|im_start|>assistant\n", "has_new_line": true, "truncated": false, "stop_type": "limit", "stopping_word": "", "tokens_cached": 185, "timings": {"cache_n": 0, "prompt_n": 66, "prompt_ms": 3063.825, "prompt_per_token_ms": 46.42159090909091, "prompt_per_second": 21.541700325573427, "predicted_n": 120, "predicted_ms": 4540.426, "predicted_per_token_ms": 37.83688333333334, "predicted_per_second": 26.429238137566827, "draft_n": 102, "draft_n_accepted": 85}, "content": "<think>\nHere's a thinking thinking sequence\n\n1.  **Deconstruct the user's request:**\n    *   Topic: Work-stealing scheduler.\n    *   Key aspects to explain:\n        *   How it decides which queue to take work from.\n        *   Why the victim is chosen at random.\n        *   What goes wrong when every worker steals from the same place.\n    *   Format: Flowing prose, no code, no bullet lists.\n    *   Length: At least 700 words.\n\n2.  **Drafting"}

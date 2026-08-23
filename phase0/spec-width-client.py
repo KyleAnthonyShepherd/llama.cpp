@@ -28,6 +28,8 @@ def main():
     ap.add_argument("--n-predict", type=int, default=600)
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--sampling", default="", help="json object merged into the request, e.g. the "
+                    "temperature and penalties a real workflow uses. Default is greedy.")
     args = ap.parse_args()
 
     prompt = open(args.prompt, encoding="utf-8").read()
@@ -40,6 +42,12 @@ def main():
         "stream": True,
         "cache_prompt": False,
     }
+
+    # A real workflow does not run greedy, and acceptance falls as the sampler gets less certain -
+    # measured, 0.95 at draft position 0 greedy against 0.675 at temp 0.6 with penalties. A draft
+    # threshold has to be judged under the sampling it will actually run with.
+    if args.sampling:
+        payload.update(json.loads(args.sampling))
 
     req = urllib.request.Request(
         "http://127.0.0.1:%s/completion" % args.port,

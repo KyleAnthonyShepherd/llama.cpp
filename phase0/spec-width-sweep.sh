@@ -54,6 +54,14 @@ WIDTHS="${WIDTHS:-0 1 2 3}"
 # anything smaller than that needs more than 2 before it is a result
 REPS="${REPS:-2}"
 
+# extra request fields, merged over the greedy default. Empty means greedy.
+SAMPLING="${SAMPLING:-}"
+
+# the sampling a real workflow runs on this box. Acceptance falls hard as the sampler gets less
+# certain - measured, 0.95 at draft position 0 greedy against 0.675 here - so a draft threshold
+# has to be judged under the sampling it will actually meet
+SAMPLING_REAL='{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":1.5,"repeat_penalty":1.1}'
+
 # every arm holds these fixed. -fitt leaves room for the KV cache the way the other phase0 runs do
 COMMON="-ehs -1 -fitt 256 --flash-attn on"
 
@@ -80,6 +88,11 @@ open(out + "/.p-prose.txt", "w", encoding="utf-8").write(chat(
 open(out + "/.p-copy.txt", "w", encoding="utf-8").write(chat(
     "Copy the document below verbatim, over and over, numbering each copy. No commentary.\n\n"
     "=== DOCUMENT ===\n" + doc + "\n\n=== COPY 1 ===\n" + doc + "\n\n=== COPY 2 ===\n"))
+
+# the real one: a short question to a thinking model. The answer is short but the think block is
+# not, so this is ~1300 tokens of ordinary reasoning - the shape most requests actually have
+open(out + "/.p-angora.txt", "w", encoding="utf-8").write(
+    "<|im_start|>user\nWhat is an angora rabbit?<|im_end|>\n<|im_start|>assistant\n<think>\n")
 
 # two-phase: both of the above in one generation, prose first. the phase boundary is
 # wherever the model starts the document, and the window table shows it as a step
@@ -133,7 +146,7 @@ run_case() {
     done
 
     python "$PHASE0_DIR/spec-width-client.py" --port "$PORT" --prompt "$prompt" \
-        --n-predict "$N_PREDICT" --seed "$SEED" --out "$jsonl"
+        --n-predict "$N_PREDICT" --seed "$SEED" --out "$jsonl" --sampling "$SAMPLING"
 
     stop_server
     python "$PHASE0_DIR/spec-width-report.py" one "$jsonl" "$log"
@@ -273,6 +286,55 @@ PY
                rep=$((rep+1))
            done
            python "$PHASE0_DIR/spec-width-report.py" compare --baseline fixed0 "$OUT/$TAG"-ad-*.jsonl
+           ;;
+
+    # The question the flag has to answer: does computing p_min beat setting it, and beat picking
+    # a width by hand? Real prompt, real sampling. The fixed-p_min arms are the honest baseline -
+    # beating width 1 is not enough when a tuned constant is also on the table.
+    pmin) rep=1
+          while [ "$rep" -le "$REPS" ]; do
+              arms="w1 w2 w3 p20 p40 auto"
+              if [ $((rep % 2)) -eq 0 ]; then
+                  arms="$(echo "$arms" | tr ' ' '\n' | tac | tr '\n' ' ')"
+              fi
+              for a in $arms; do
+                  case "$a" in
+                      w1)   SAMPLING="$SAMPLING_REAL" run_case "pm-w1-r$rep"   "$OUT/.p-angora.txt" $(mtp 1) ;;
+                      w2)   SAMPLING="$SAMPLING_REAL" run_case "pm-w2-r$rep"   "$OUT/.p-angora.txt" $(mtp 2) ;;
+                      w3)   SAMPLING="$SAMPLING_REAL" run_case "pm-w3-r$rep"   "$OUT/.p-angora.txt" $(mtp 3) ;;
+                      p20)  SAMPLING="$SAMPLING_REAL" run_case "pm-fix20-r$rep" "$OUT/.p-angora.txt" $(mtp 3) --spec-draft-p-min 0.2 ;;
+                      p40)  SAMPLING="$SAMPLING_REAL" run_case "pm-fix40-r$rep" "$OUT/.p-angora.txt" $(mtp 3) --spec-draft-p-min 0.4 ;;
+                      auto) SAMPLING="$SAMPLING_REAL" run_case "pm-auto-r$rep" "$OUT/.p-angora.txt" $(mtp 3) --spec-adaptive-width ;;
+                  esac
+              done
+              rep=$((rep+1))
+          done
+          python "$PHASE0_DIR/spec-width-report.py" compare --baseline w1 "$OUT/$TAG"-pm-*.jsonl
+          ;;
+
+    # The decisive one. Every other comparison of adaptive against a fixed width also compares two
+    # different ceilings, and the ceiling is not free: n_rs_seq is the draft width, the recurrent
+    # cache holds 1 + n_rs_seq snapshots (llama-memory-recurrent.cpp:99), and on this hybrid each
+    # snapshot is ~63 MiB of VRAM taken from the expert hot store. Ceiling 3 therefore runs ~1.7
+    # fewer experts resident than ceiling 1 whatever the controller then decides.
+    #
+    # At ceiling 1 both arms allocate the same snapshots, so this asks the mechanism alone: does
+    # skipping the low-confidence single-token drafts beat always taking them?
+    pmin1) rep=1
+           while [ "$rep" -le "$REPS" ]; do
+               arms="w1 auto1"
+               if [ $((rep % 2)) -eq 0 ]; then
+                   arms="auto1 w1"
+               fi
+               for a in $arms; do
+                   case "$a" in
+                       w1)    SAMPLING="$SAMPLING_REAL" run_case "p1-w1-r$rep"    "$OUT/.p-angora.txt" $(mtp 1) ;;
+                       auto1) SAMPLING="$SAMPLING_REAL" run_case "p1-auto-r$rep"  "$OUT/.p-angora.txt" $(mtp 1) --spec-adaptive-width ;;
+                   esac
+               done
+               rep=$((rep+1))
+           done
+           python "$PHASE0_DIR/spec-width-report.py" compare --baseline w1 "$OUT/$TAG"-p1-*.jsonl
            ;;
 
     # wiring check. Same prompt on all three so the numbers can be read side by side, though
