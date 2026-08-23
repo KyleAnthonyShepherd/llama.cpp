@@ -463,6 +463,30 @@ void llama_expert_hotstore::update_luts() {
     luts_version++;
 }
 
+int llama_expert_hotstore::count_cold(const llama_expert_sel & sel) const {
+    if (!is_filled || sel.layers.empty()) {
+        return -1;
+    }
+
+    int cold = 0;
+    std::vector<uint8_t> seen(n_experts);
+
+    for (const auto & [il, ids] : sel.layers) {
+        std::fill(seen.begin(), seen.end(), 0);
+        for (const int32_t id : ids) {
+            if (id < 0 || id >= n_experts || seen[id]) {
+                continue;
+            }
+            seen[id] = 1;
+            if (slot_of(il, id) < 0) {
+                cold++;
+            }
+        }
+    }
+
+    return cold;
+}
+
 void llama_expert_hotstore::log_hit_rate(const std::vector<std::pair<int, ggml_tensor *>> & moe_sel) {
     if (moe_sel.empty() || !is_filled) {
         return;

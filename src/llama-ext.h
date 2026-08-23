@@ -95,6 +95,11 @@ LLAMA_API int32_t llama_expert_tier_max_tokens(void);
 // Decode batches this context sent past that limit.
 LLAMA_API int64_t llama_expert_tier_n_bypassed(const struct llama_context * ctx);
 
+// Distinct cold experts the last decode touched, summed over layers, and the batch it ran on.
+// The cold matmul groups its rows by expert, so this - not tokens x n_expert_used - is what the
+// batch cost on the host bus. False when there is no filled hot store to measure against.
+LLAMA_API bool llama_expert_cold_last(const struct llama_context * ctx, int32_t * cold_distinct, int32_t * n_tokens);
+
 // Re-slot the expert hot store to the VRAM that is free right now, up to the slot count it
 // was asked for at load. llama_set_n_ctx() already does this for its own context after it
 // shrinks, but it cannot see a sibling context on the same device that is about to be

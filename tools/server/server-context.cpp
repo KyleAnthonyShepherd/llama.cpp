@@ -195,6 +195,154 @@ struct server_batch {
     }
 };
 
+// Adaptive draft width (--spec-adaptive-width).
+//
+// A speculative step gains 1 + n_accepted tokens and costs one draft plus one verify batch. Under
+// the expert hot store that batch is priced by the distinct cold experts it touches, not by its
+// token count: ggml_mul_mat_id_cold groups its rows by expert, so an expert two tokens share is
+// read once. llama_expert_cold_last() reports that count for the batch that just ran.
+//
+// So: fit t_step = t0 + slope*cold over the recent steps, predict the cold count of a wider batch
+// from the rate the last one ran at, and keep the width whose predicted tokens per second is
+// highest. When the generation moves into a region the hot store does not cover the rate rises,
+// the prediction steepens, and the width falls to 0 on its own.
+struct server_spec_width {
+    // per-sample decay. ~35 steps of half-life, long enough to average out the host bus and short
+    // enough to follow a change of phase inside one generation
+    static constexpr double DECAY = 0.98;
+
+    // samples before the fit is trusted, and how often to take a width the fit did not ask for
+    static constexpr int N_WARMUP = 16;
+    static constexpr int N_EXPLORE = 32;
+
+    bool enabled = false;
+
+    int n_max_cfg = 0; // the ceiling, from --spec-draft-n-max, clamped to what the tier serves
+    int n_max_cur = 0; // the width in force
+
+    int64_t t_step_beg = 0;
+
+    int n_step   = 0; // decisions taken, advances even at a width that produces no sample
+    int n_sample = 0;
+    unsigned widths_seen = 0; // bit per width, so the fit is not trusted at a single one
+
+    // decayed acceptance rate per draft position
+    std::vector<double> acc;
+
+    // decayed least squares of t_step_us against the batch's cold expert count
+    double s_w = 0.0, s_x = 0.0, s_y = 0.0, s_xx = 0.0, s_xy = 0.0;
+
+    double cold_rate = 0.0; // cold experts per token of the last batch
+
+    void reset(int n_max, bool on) {
+        enabled    = on;
+        n_max_cfg  = n_max;
+        n_max_cur  = n_max;
+        t_step_beg = 0;
+        n_step     = 0;
+        n_sample   = 0;
+        widths_seen = 0;
+        acc.assign(std::max(1, n_max), 0.0);
+        s_w = s_x = s_y = s_xx = s_xy = 0.0;
+        cold_rate = 0.0;
+    }
+
+    bool ready() const {
+        // one width gives the fit no slope, so a single-width history is not a fit
+        return n_sample >= N_WARMUP && (widths_seen & (widths_seen - 1)) != 0;
+    }
+
+    void add_sample(int width, int n_accepted, int64_t t_step_us, int cold_distinct, int n_tokens) {
+        if (!enabled || width <= 0 || t_step_us <= 0 || n_tokens <= 0) {
+            return;
+        }
+
+        // only positions the draft actually reached say anything about acceptance
+        for (int i = 0; i < width && i < (int) acc.size(); ++i) {
+            const double hit = i < n_accepted ? 1.0 : 0.0;
+            acc[i] = DECAY*acc[i] + (1.0 - DECAY)*hit;
+        }
+
+        const double x = cold_distinct;
+        const double y = t_step_us;
+
+        s_w  = DECAY*s_w  + 1.0;
+        s_x  = DECAY*s_x  + x;
+        s_y  = DECAY*s_y  + y;
+        s_xx = DECAY*s_xx + x*x;
+        s_xy = DECAY*s_xy + x*y;
+
+        cold_rate = x / n_tokens;
+
+        widths_seen |= 1u << std::min(width, 31);
+        n_sample++;
+    }
+
+    // predicted tokens per microsecond at draft width w
+    double rate_at(int w, double t0, double slope) const {
+        double gain = 1.0;
+        for (int i = 0; i < w && i < (int) acc.size(); ++i) {
+            gain += acc[i];
+        }
+
+        const double t = t0 + slope*cold_rate*(1 + w);
+
+        return t > 0.0 ? gain/t : 0.0;
+    }
+
+    int pick() {
+        if (!enabled || n_max_cfg <= 0) {
+            return n_max_cfg;
+        }
+
+        n_step++;
+
+        if (!ready()) {
+            // spread the warm-up over the whole range so the fit sees more than one width
+            n_max_cur = 1 + (n_step % n_max_cfg);
+            return n_max_cur;
+        }
+
+        const double den = s_w*s_xx - s_x*s_x;
+        if (den <= 0.0 || cold_rate <= 0.0) {
+            return n_max_cur;
+        }
+
+        const double slope = (s_w*s_xy - s_x*s_y) / den;
+        const double t0    = (s_y - slope*s_x) / s_w;
+        if (!(slope > 0.0) || !(t0 > 0.0)) {
+            // a fit that says a wider batch is free is a fit that has not seen enough
+            return n_max_cur;
+        }
+
+        int best = 0;
+        double best_rate = 0.0;
+        for (int w = 0; w <= n_max_cfg; ++w) {
+            const double r = rate_at(w, t0, slope);
+            if (r > best_rate) {
+                best_rate = r;
+                best      = w;
+            }
+        }
+
+        // one step at a time: the width sets the ubatch shape, and crossing that back and forth
+        // costs more than the difference the fit is chasing
+        if (best > n_max_cur) {
+            n_max_cur++;
+        } else if (best < n_max_cur) {
+            n_max_cur--;
+        }
+
+        // the fit only ever sees widths that ran. without this it locks onto the first one that
+        // looked good, and a width of 0 stops feeding it entirely
+        if (n_step % N_EXPLORE == 0) {
+            n_max_cur = 1 + (n_step/N_EXPLORE) % n_max_cfg;
+        }
+
+        return n_max_cur;
+    }
+};
+
 struct server_slot {
     int id;
 
@@ -331,6 +479,8 @@ struct server_slot {
     int32_t n_draft_accepted = 0;   // Draft tokens actually accepted
     int32_t n_draft_verif_steps = 0; // Total draft token verification steps by the target model
     std::vector<int32_t> n_accepted_per_pos; // Accepted tokens per draft position
+
+    server_spec_width spec_w;
 
     void reset() {
         SLT_DBG(*this, "%s", "\n");
@@ -984,6 +1134,9 @@ private:
     int slots_debug = 0;
     int n_empty_consecutive = 0;
 
+    // slots that generated in the batch now in flight, see server_spec_width
+    int n_generating_last = 0;
+
     std::unique_ptr<server_prompt_cache> prompt_cache;
 
     // named slot states kept in RAM, see /slots?action=save with `store: "ram"`
@@ -1373,6 +1526,28 @@ private:
             model_dft = nullptr;
         }
 
+        int  spec_n_max    = params_base.speculative.draft.n_max;
+        bool spec_adaptive = params_base.speculative.adaptive_width;
+
+        if (spec_adaptive) {
+            if (params_base.expert_hot_s == 0) {
+                SRV_WRN("%s", "--spec-adaptive-width prices a verify batch with the expert hot store, which is off. disabling it\n");
+                spec_adaptive = false;
+            } else if (common_speculative_n_max(&params_base.speculative) != spec_n_max) {
+                SRV_WRN("%s", "--spec-adaptive-width governs the draft-model width only, and another speculator drafts wider. disabling it\n");
+                spec_adaptive = false;
+            } else {
+                // a verify batch is 1 + the width, and past the tier limit a token's expert ids
+                // are no longer safe to compact - see LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT
+                const int n_max_tier = llama_expert_tier_max_tokens() - 1;
+
+                if (spec_n_max > n_max_tier) {
+                    SRV_WRN("--spec-adaptive-width: capping the draft width at %d, wider leaves the expert tier\n", n_max_tier);
+                    spec_n_max = n_max_tier;
+                }
+            }
+        }
+
         for (int i = 0; i < params_base.n_parallel; i++) {
             server_slot & slot = slots[i];
 
@@ -1391,6 +1566,9 @@ private:
             slot.callback_on_release = [this](int id_slot) {
                 queue_tasks.pop_deferred_task(id_slot);
             };
+
+            // kept across tasks: the fit describes the box and the model, not one request
+            slot.spec_w.reset(spec_n_max, spec_adaptive);
 
             slot.reset();
         }
@@ -3290,7 +3468,20 @@ private:
                 const bool use_ckpt_tgt = ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
                 const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
 
-                const int n_draft_max = slot.get_n_draft_max();
+                int n_draft_max = slot.get_n_draft_max();
+
+                if (slot.spec_w.enabled) {
+                    const int w_prev = slot.spec_w.n_max_cur;
+
+                    n_draft_max = std::min(n_draft_max, slot.spec_w.pick());
+
+                    if (slot.spec_w.n_max_cur != w_prev) {
+                        SLT_DBG(slot, "adaptive draft width %d -> %d (cold rate %.2f per token)\n",
+                                w_prev, slot.spec_w.n_max_cur, slot.spec_w.cold_rate);
+                    }
+                }
+
+                slot.spec_w.t_step_beg = ggml_time_us();
 
                 if (n_draft_max > 0) {
                     GGML_ASSERT(slot.can_speculate());
@@ -3328,6 +3519,9 @@ private:
                 }
             }
         });
+
+        // a step time is only a step time when one slot owns the batch
+        n_generating_last = (int) generating.size();
 
         // generate the actual drafts (if any)
         {
@@ -4319,6 +4513,18 @@ private:
             // update how many tokens out of those tested were accepted
             slot.n_draft_accepted += n_accepted;
             slot.n_draft_verif_steps += 1;
+
+            if (slot.spec_w.enabled && n_generating_last == 1) {
+                int32_t cold = 0;
+                int32_t n_tokens = 0;
+
+                // the count is the last decode's, whatever that was. a batch of exactly the
+                // verify width is the one this step paid for, anything else is a foreign batch
+                if (llama_expert_cold_last(slot.ctx_tgt, &cold, &n_tokens) && n_tokens == (int32_t) n_draft + 1) {
+                    slot.spec_w.add_sample((int) n_draft, (int) n_accepted,
+                            t_now - slot.spec_w.t_step_beg, cold, n_tokens);
+                }
+            }
 
             if (slot.n_accepted_per_pos.empty()) {
                 slot.n_accepted_per_pos.resize(common_speculative_n_max(&params_base.speculative), 0);

@@ -9,6 +9,7 @@
 
 struct llama_model;
 struct llama_expert_heatmap;
+struct llama_expert_sel;
 
 // stores per-layer sizing for the Mixture of Experts GPU hot store.
 // one "slot" holds a single expert's weights for one layer.
@@ -137,6 +138,11 @@ llama_expert_hotstore(const llama_model * model, int n_layers,
     // diagnostic: count how many router-selected expert ids hit a hot slot.
     // reads the selected_experts tensors (call after synchronize).
     void log_hit_rate(const std::vector<std::pair<int, ggml_tensor *>> & moe_sel);
+
+    // Distinct cold experts `sel` touches, summed over layers. This is what a batch costs on the
+    // host bus: ggml_mul_mat_id_cold groups its rows by expert, so an expert selected by several
+    // tokens of the batch is read once. Returns -1 before the store is filled.
+    int count_cold(const llama_expert_sel & sel) const;
 
     // rebuild hot_lut/cold_mask from slot_to_expert for every layer
     // and H2D-copy them into the GPU tensors. bumps luts_version.

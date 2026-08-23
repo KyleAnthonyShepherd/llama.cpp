@@ -78,6 +78,8 @@ struct llama_context {
 
     int64_t get_expert_tier_n_bypassed() const;
 
+    bool get_expert_cold_last(int32_t * cold_distinct, int32_t * n_tokens) const;
+
     // give the expert hot store's VRAM back so a KV cache of n_ctx_seq_new cells fits;
     // false when nothing was dropped
     bool shrink_expert_hotstore_for_kv(uint32_t n_ctx_seq_new);
@@ -408,6 +410,11 @@ private:
     bool             expert_heat_held_ok  = false;
 
     void expert_heat_update(const llm_graph_result * res, const llama_ubatch & ubatch);
+
+    // what the last decode cost the host bus, see llama_expert_hotstore::count_cold().
+    // -1 until the store is filled
+    int32_t expert_cold_distinct = -1;
+    int32_t expert_cold_n_tokens = 0;
 
     // KV cell types, kept so set_n_ctx() can size the grown cache without the memory module
     ggml_type kv_type_k = GGML_TYPE_F16;

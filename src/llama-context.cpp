@@ -849,6 +849,21 @@ int64_t llama_context::get_expert_tier_n_bypassed() const {
     return expert_tier_n_bypassed;
 }
 
+bool llama_context::get_expert_cold_last(int32_t * cold_distinct, int32_t * n_tokens) const {
+    if (expert_cold_distinct < 0 || expert_cold_n_tokens <= 0) {
+        return false;
+    }
+
+    if (cold_distinct) {
+        *cold_distinct = expert_cold_distinct;
+    }
+    if (n_tokens) {
+        *n_tokens = expert_cold_n_tokens;
+    }
+
+    return true;
+}
+
 // Hold this batch's router selections, and count the one held before it.
 //
 // A speculative verify batch carries 1 + n_draft tokens and only the accepted prefix survives, so
@@ -1716,7 +1731,15 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         if (expert_heat_defer) {
             expert_heat_update(res, ubatch);
         } else {
-            expert_heatmap->update_from_graph(res->moe_sel_experts);
+            llama_expert_read_sel(res->moe_sel_experts, expert_heat_held);
+            expert_heatmap->update_batch(expert_heat_held, expert_heat_held.n_tokens);
+        }
+
+        // expert_heat_held now holds this batch either way, and the slots have not been swapped
+        // yet, so this counts against the store the batch actually ran on
+        if (expert_hotstore) {
+            expert_cold_distinct = expert_hotstore->count_cold(expert_heat_held);
+            expert_cold_n_tokens = (int32_t) expert_heat_held.n_tokens;
         }
     }
     if (expert_heatmap && expert_hotstore) {
@@ -4575,6 +4598,10 @@ llama_context * llama_get_ctx_other(struct llama_context * ctx) {
 
 int64_t llama_expert_tier_n_bypassed(const struct llama_context * ctx) {
     return ctx->get_expert_tier_n_bypassed();
+}
+
+bool llama_expert_cold_last(const struct llama_context * ctx, int32_t * cold_distinct, int32_t * n_tokens) {
+    return ctx->get_expert_cold_last(cold_distinct, n_tokens);
 }
 
 int32_t llama_expert_hotstore_refit(struct llama_context * ctx) {

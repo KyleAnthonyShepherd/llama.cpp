@@ -369,6 +369,10 @@ struct common_params_speculative_ngram_cache {
 struct common_params_speculative {
     std::vector<enum common_speculative_type> types = { COMMON_SPECULATIVE_TYPE_NONE };
 
+    // pick the draft width per step in [0, draft.n_max] instead of always drafting n_max.
+    // needs the expert hot store to price a batch, see server_spec_width
+    bool adaptive_width = false;
+
     // used by Simple, MTP, Eagle3, etc. - all methods that require some kind of draft model
     common_params_speculative_draft draft;
 
