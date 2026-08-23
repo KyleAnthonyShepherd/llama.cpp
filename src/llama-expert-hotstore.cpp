@@ -91,7 +91,6 @@ bool llama_expert_hotstore::allocate(ggml_backend_buffer_type_t gpu_buft) {
         luts[il].hot_lut   = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n_experts);
         luts[il].cold_mask = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n_experts);
     }
-    draw_pos = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, n_expert_used);
 
     // check whether the buffer would fit before committing any VRAM
     const size_t need = ggml_backend_alloc_ctx_tensors_from_buft_size(ctx.get(), gpu_buft);
@@ -125,19 +124,11 @@ bool llama_expert_hotstore::allocate(ggml_backend_buffer_type_t gpu_buft) {
     // for the lifetime of the store.
     ggml_backend_buffer_clear(buf.get(), 0);
 
-    {
-        std::vector<float> pos(n_expert_used);
-        for (int j = 0; j < n_expert_used; j++) {
-            pos[j] = (float) j;
-        }
-        ggml_backend_tensor_set(draw_pos, pos.data(), 0, pos.size() * sizeof(float));
-    }
-
     // register each expert weight tensor with the tier hook so build_lora_mm_id
     // can find its GPU hot tensor and per-layer LUTs.
     for (const auto & e : entries) {
         const auto & L = luts[e.layer_idx];
-        llama_expert_tier_register(e.src, e.dst, L.hot_lut, L.cold_mask, draw_pos);
+        llama_expert_tier_register(e.src, e.dst, L.hot_lut, L.cold_mask);
     }
 
     return true;

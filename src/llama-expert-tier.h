@@ -4,33 +4,19 @@
 
 // Default max tokens per batch for which the tiered path is used.
 //
-// The old reason for 4 was that the cold remap gave every cold draw of a token the same sentinel
-// slot, so a token's id list held duplicates, and MMQ/MMF id compaction miscounts those. MMVQ has
-// no compaction and 4 is the lowest per-type bound of get_mmvq_mmid_max_batch() over every arch
-// table, so staying inside MMVQ needed no device query.
-//
-// The landing pad removed the duplicates, so that reason is gone. The limit stays because a wide
-// batch is a different regime, not because the ids are unsafe: above ~32 tokens the tier takes
-// the MoE away from op-offload and pins it to the CPU, which is a real trade either way. Set it
-// with --expert-tier-max-tokens.
+// 4 is a correctness bound, not a tuning knob. The cold remap sends every cold draw of a token to
+// slot 0, so a token's id list holds duplicates, and MMQ/MMF id compaction miscounts those. MMVQ
+// has no compaction, and 4 is the lowest per-type bound of get_mmvq_mmid_max_batch() over every
+// arch table, so staying inside MMVQ needs no device query. --expert-tier-max-tokens overrides the
+// limit, but only a batch that stays within MMVQ is safe.
 constexpr int64_t LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT = 4;
 
-// TODO: teach the MMQ/MMF id compaction to count duplicate ids inside one token's list.
-// That is the only thing the landing pad buys, and it is expensive: the pad reserves
-// n_expert_used slices that hold nothing, so a 2688 MiB store on a 6 GB card carries 29
-// experts where the old single sentinel carried 36 - about 19% of the store's hit rate.
-// Fix the kernel and both go away: cold draws can share one slot, the pad's slices go back
-// to holding experts, and a wide verify batch stays safe.
-// Worth doing for a speculator that drafts wide (ngram-mod). MTP at width 1 never exceeds
-// 4 tokens, so it pays the pad and gets nothing for it - measured in
-// PLAN-ngram-mod-expert-cache.md section 17.
-//
-// Separately, and much cheaper: the zero slot is only needed because the hot path output is
-// unmasked (llama_expert_tier_build adds it straight to the cold result). remap_mask() in
-// llama-expert-tier.cpp already builds the per-draw mask for it and is currently unused.
-// Masking the hot output lets a cold draw land on any real slot, which frees the reserved
-// slices without touching the kernel - but it does not make the ids distinct, so the
-// 4-token limit stays.
+// TODO: teach the MMQ/MMF id compaction to count duplicate ids inside one token's list. That is
+// what a wide verify batch needs. The landing pad bought the same thing by making the ids distinct
+// and it cost n_expert_used reserved slices per layer - 29 experts instead of 36 in a 2688 MiB
+// store on a 6 GB card. Dropped in 448744c89; the kernel fix is the way back.
+// Above ~32 tokens there is a second trade on top: the tier takes the MoE away from op-offload and
+// pins it to the CPU. See PLAN-ngram-mod-expert-cache.md sections 1.3 and 16.
 
 // current limit, and the setter the context calls at init
 void llama_expert_tier_set_max_tokens(int32_t n);
@@ -66,11 +52,14 @@ void llama_expert_tier_set_max_tokens(int32_t n);
 void llama_expert_tier_register(ggml_tensor * src,
                                 ggml_tensor * dst_hot,
                                 ggml_tensor * hot_lut,
-                                ggml_tensor * cold_mask,
-                                ggml_tensor * draw_pos);
+                                ggml_tensor * cold_mask);
 
 // drop the entire table (called by hotstore destructor)
 void llama_expert_tier_clear();
+
+// forget the per-graph cache. Must be called whenever the graph's ggml_context is thrown
+// away, because the cached tensors live in it - llm_graph_result::reset() does that.
+void llama_expert_tier_reset_graph();
 
 // cheap check: is `w` registered? (used so callers can short-circuit lora)
 bool llama_expert_tier_has(ggml_tensor * w);

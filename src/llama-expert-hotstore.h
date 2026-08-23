@@ -62,8 +62,6 @@ struct llama_expert_hotstore {
         ggml_tensor * cold_mask = nullptr; // f32[n_experts]
     };
 
-    // [0, 1, ... n_expert_used-1] as f32, uploaded once. The draw position a cold id lands on.
-    ggml_tensor * draw_pos = nullptr;
     std::vector<layer_lut> luts; // size n_layers
 
     // bumped on every resync that swapped >0 slots; build_moe_ffn_tiered

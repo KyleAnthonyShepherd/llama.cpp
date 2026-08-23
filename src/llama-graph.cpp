@@ -1314,6 +1314,9 @@ void llm_graph_result::reset() {
     fused_nodes.clear();
     moe_sel_experts.clear();
 
+    // the expert tier caches per-layer tensors that live in ctx_compute, replaced below
+    llama_expert_tier_reset_graph();
+
     buf_compute_meta.resize(ggml_tensor_overhead()*max_nodes + ggml_graph_overhead_custom(max_nodes, false));
 
     ggml_init_params params = {
