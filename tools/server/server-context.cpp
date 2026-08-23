@@ -478,6 +478,11 @@ struct server_slot {
             n_draft_max = std::min(n_draft_max, n_remaining - 1);
         }
 
+        // a draft that runs past the context budget would be thrown away anyway
+        if (task->params.n_ctx_limit > 0) {
+            n_draft_max = std::max(0, std::min(n_draft_max, task->params.n_ctx_limit - prompt.n_tokens()));
+        }
+
         SLT_DBG(*this, "max possible draft: %d\n", n_draft_max);
 
         return n_draft_max;
@@ -981,6 +986,9 @@ private:
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
 
+    // named slot states kept in RAM, see /slots?action=save with `store: "ram"`
+    server_slot_ram_store ram_store;
+
     server_metrics metrics;
 
     json json_ui_settings = json::object();
@@ -1426,6 +1434,14 @@ private:
             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
         }
         SRV_TRC("%s", "for more info see https://github.com/ggml-org/llama.cpp/pull/16391\n");
+
+        if (params_base.slot_ram_limit_mib != 0) {
+            ram_store.enabled = true;
+            ram_store.limit   = params_base.slot_ram_limit_mib < 0 ? 0 : 1024ull*1024ull*params_base.slot_ram_limit_mib;
+
+            SRV_INF("RAM slot store is enabled, size limit: %s\n",
+                    ram_store.limit == 0 ? "no limit" : (std::to_string(params_base.slot_ram_limit_mib) + " MiB").c_str());
+        }
 
         if (params_base.n_ctx_checkpoints > 0) {
             SRV_TRC("context checkpoints enabled, max = %d, min spacing = %d\n",
@@ -1931,12 +1947,24 @@ private:
             slot.has_next_token = true;
         }
 
+        // stop at the request's context budget. This is not the out-of-room check below:
+        // the budget normally sits well under n_ctx, and exists so that the caller still
+        // has context left to do something with (e.g. write a handoff file). It runs first
+        // so that a request stopping here never pays for a bigger cache on the way out
+        if (slot.task->params.n_ctx_limit > 0 && slot.prompt.n_tokens() + 1 >= slot.task->params.n_ctx_limit) {
+            slot.stop           = STOP_TYPE_CTX_LIMIT;
+            slot.has_next_token = false;
+
+            SLT_INF(slot, "stopped at the context limit, prompt.n_tokens() = %d, n_decoded = %d, n_ctx_limit = %d\n",
+                    slot.prompt.n_tokens(), slot.n_decoded, slot.task->params.n_ctx_limit);
+        }
+
         // try growing before giving up / shifting - this must run regardless of whether
         // ctx_shift is enabled: growing here also makes the ctx_shift check in
         // pre_decode() naturally skip shifting for as long as growth still has room,
         // giving "grow first, shift only once ctx_max is reached" for free rather than
         // needing separate precedence logic in the shift path itself
-        if (slot.prompt.n_tokens() + 1 >= slot.n_ctx) {
+        if (slot.has_next_token && slot.prompt.n_tokens() + 1 >= slot.n_ctx) {
             maybe_grow_mid_generation(slot);
         }
 
@@ -2425,6 +2453,142 @@ private:
                 cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
     }
 
+    // grow the KV cache so that a restored state fits. Under --ctx-max the cache shrinks back
+    // between requests (see maybe_shrink_for_request), so it is easily smaller than a state
+    // saved earlier. The next request shrinks it again to what that request needs.
+    // n_tokens = 0 means the size of the state is not known yet, so grow all the way
+    bool maybe_grow_for_restore(server_slot & slot, int32_t n_tokens) {
+        if (params_base.n_ctx_max == 0) {
+            return false;
+        }
+
+        const int32_t n_ctx_cur = llama_n_ctx_seq(ctx_tgt);
+
+        // +1 for the cell the first sampled token lands in
+        const int32_t n_target = n_tokens > 0 ? std::min(n_tokens + 1, params_base.n_ctx_max) : params_base.n_ctx_max;
+
+        if (n_target <= n_ctx_cur) {
+            return false;
+        }
+
+        // the restore replaces the whole sequence anyway, and resize() refuses while any cell
+        // is still live
+        slot.mem.seq_rm(slot.id, -1, -1);
+        slot.prompt.clear();
+
+        const int64_t t_start = ggml_time_us();
+
+        const int32_t ret = llama_set_n_ctx(ctx_tgt, (uint32_t) n_target);
+        if (ret != 0) {
+            SLT_WRN(slot, "failed to grow the KV cache for a restore (ret = %d, target = %d) - keeping n_ctx = %d\n", ret, n_target, n_ctx_cur);
+
+            return false;
+        }
+
+        refresh_n_ctx();
+
+        SLT_INF(slot, "grew KV cache for a restore: n_ctx %d -> %d in %.1f ms\n", n_ctx_cur, llama_n_ctx_seq(ctx_tgt), (ggml_time_us() - t_start) / 1e3);
+
+        return true;
+    }
+
+    // save the slot state (target and draft) into the RAM store under `name`, overwriting any
+    // entry with the same name. Returns the number of bytes stored, or 0 with `err` set
+    size_t ram_store_save(const server_slot & slot, const std::string & name, std::string & err) {
+        const bool has_dft = ctx_dft && ctx_dft != ctx_tgt;
+
+        const size_t size_tgt =           llama_state_seq_get_size_ext(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        const size_t size_dft = has_dft ? llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
+
+        size_t size_ckpt = 0;
+        for (const auto & ckpt : slot.prompt.checkpoints) {
+            size_ckpt += ckpt.size();
+        }
+
+        const size_t size_new = size_tgt + size_dft + size_ckpt;
+
+        if (ram_store.limit > 0) {
+            // an entry under the same name is replaced, so its bytes are not counted twice
+            size_t size_cur = ram_store.size();
+
+            const auto it = ram_store.states.find(name);
+            if (it != ram_store.states.end()) {
+                size_cur -= it->second.size();
+            }
+
+            if (size_cur + size_new > ram_store.limit) {
+                err = string_format(
+                        "RAM slot store is full: this state needs %.3f MiB and %.3f MiB of the %.3f MiB limit are in use. "
+                        "Drop a state with action=drop, or save this one with \"store\": \"disk\"",
+                        size_new / (1024.0 * 1024.0), size_cur / (1024.0 * 1024.0), ram_store.limit / (1024.0 * 1024.0));
+
+                return 0;
+            }
+        }
+
+        server_prompt_cache_state state;
+
+        try {
+            state.data.main.resize(size_tgt);
+            state.data.drft.resize(size_dft);
+        } catch (const std::bad_alloc & e) {
+            err = string_format("failed to allocate %.3f MiB for the RAM slot store: %s", size_new / (1024.0 * 1024.0), e.what());
+
+            return 0;
+        }
+
+        llama_state_seq_get_data_ext(ctx_tgt, state.data.main.data(), size_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        if (has_dft) {
+            llama_state_seq_get_data_ext(ctx_dft, state.data.drft.data(), size_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        }
+
+        state.prompt = slot.prompt.clone();
+
+        ram_store.states.insert_or_assign(name, std::move(state));
+
+        return size_new;
+    }
+
+    // restore a named RAM state into the slot. Returns the number of bytes read, or 0 with `err` set
+    size_t ram_store_restore(server_slot & slot, const std::string & name, std::string & err) {
+        const auto it = ram_store.states.find(name);
+        if (it == ram_store.states.end()) {
+            err = string_format("no RAM slot state named '%s'", name.c_str());
+
+            return 0;
+        }
+
+        maybe_grow_for_restore(slot, (int32_t) it->second.prompt.tokens.size());
+
+        const auto & data = it->second.data;
+
+        {
+            const size_t n = llama_state_seq_set_data_ext(ctx_tgt, data.main.data(), data.main.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+            if (n != data.main.size()) {
+                slot.prompt.clear(); // the KV cache may already be invalidated
+                err = "unable to restore slot, no available space in KV cache";
+
+                return 0;
+            }
+        }
+
+        if (!data.drft.empty()) {
+            GGML_ASSERT(ctx_dft);
+
+            const size_t n = llama_state_seq_set_data_ext(ctx_dft, data.drft.data(), data.drft.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+            if (n != data.drft.size()) {
+                slot.prompt.clear();
+                err = "unable to restore the draft state of the slot";
+
+                return 0;
+            }
+        }
+
+        slot.prompt = it->second.prompt.clone();
+
+        return it->second.size();
+    }
+
     void process_single_task(server_task && task) {
         switch (task.type) {
             case SERVER_TASK_TYPE_COMPLETION:
@@ -2618,24 +2782,52 @@ private:
 
                     const int64_t t_start = ggml_time_us();
 
-                    std::string filename = task.slot_action.filename;
-                    std::string filepath = task.slot_action.filepath;
+                    const std::string filename = task.slot_action.filename;
+                    const std::string filepath = task.slot_action.filepath;
 
                     const llama_tokens tokens = slot->prompt.tokens.get_text_tokens();
                     const size_t token_count = tokens.size();
-                    const size_t nwrite = llama_state_seq_save_file(ctx_tgt, filepath.c_str(), slot->id, tokens.data(), token_count);
+
+                    size_t nwrite = 0;
+
+                    if (task.slot_action.use_ram) {
+                        std::string err;
+
+                        nwrite = ram_store_save(*slot, filename, err);
+                        if (nwrite == 0) {
+                            send_error(task, err, ERROR_TYPE_UNAVAILABLE);
+                            break;
+                        }
+                    } else {
+                        nwrite = llama_state_seq_save_file(ctx_tgt, filepath.c_str(), slot->id, tokens.data(), token_count);
+
+                        // the draft runs in its own context, so it needs its own file. A restore
+                        // works without it (the draft is re-primed), this just saves that work
+                        if (nwrite > 0 && ctx_dft && ctx_dft != ctx_tgt) {
+                            const std::string filepath_dft = filepath + ".dft";
+
+                            const size_t nwrite_dft = llama_state_seq_save_file(ctx_dft, filepath_dft.c_str(), slot->id, tokens.data(), token_count);
+                            if (nwrite_dft == 0) {
+                                SLT_WRN(*slot, "failed to save the draft state to '%s'\n", filepath_dft.c_str());
+                            }
+
+                            nwrite += nwrite_dft;
+                        }
+                    }
 
                     const int64_t t_end = ggml_time_us();
                     const double t_save_ms = (t_end - t_start) / 1000.0;
 
                     auto res = std::make_unique<server_task_result_slot_save_load>();
-                    res->id       = task.id;
-                    res->id_slot  = id_slot;
-                    res->filename = filename;
-                    res->is_save  = true;
-                    res->n_tokens = token_count;
-                    res->n_bytes  = nwrite;
-                    res->t_ms     = t_save_ms;
+                    res->id        = task.id;
+                    res->id_slot   = id_slot;
+                    res->filename  = filename;
+                    res->is_save   = true;
+                    res->n_tokens  = token_count;
+                    res->n_bytes   = nwrite;
+                    res->t_ms      = t_save_ms;
+                    res->store     = task.slot_action.use_ram ? "ram" : "disk";
+                    res->ram_store = ram_store.to_json();
                     queue_results.send(std::move(res));
                 } break;
             case SERVER_TASK_TYPE_SLOT_RESTORE:
@@ -2655,33 +2847,84 @@ private:
 
                     const int64_t t_start = ggml_time_us();
 
-                    std::string filename = task.slot_action.filename;
-                    std::string filepath = task.slot_action.filepath;
+                    const std::string filename = task.slot_action.filename;
+                    const std::string filepath = task.slot_action.filepath;
 
-                    llama_tokens tokens;
-                    tokens.resize(slot->n_ctx);
                     size_t token_count = 0;
-                    size_t nread = llama_state_seq_load_file(ctx_tgt, filepath.c_str(), slot->id, tokens.data(), tokens.size(), &token_count);
-                    if (nread == 0) {
-                        slot->prompt.clear(); // KV may already been invalidated?
-                        send_error(task, "Unable to restore slot, no available space in KV cache or invalid slot save file", ERROR_TYPE_INVALID_REQUEST);
-                        break;
+                    size_t nread       = 0;
+
+                    if (task.slot_action.use_ram) {
+                        std::string err;
+
+                        nread = ram_store_restore(*slot, filename, err);
+                        if (nread == 0) {
+                            // not ERROR_TYPE_NOT_FOUND: the http layer replaces the body of every
+                            // 404 with a generic one, which would hide the message
+                            send_error(task, err, ERROR_TYPE_INVALID_REQUEST);
+                            break;
+                        }
+
+                        token_count = slot->prompt.tokens.size();
+                    } else {
+                        llama_tokens tokens;
+                        tokens.resize(slot->n_ctx);
+
+                        nread = llama_state_seq_load_file(ctx_tgt, filepath.c_str(), slot->id, tokens.data(), tokens.size(), &token_count);
+
+                        // the file does not say how big it is until it is read, so unlike the RAM
+                        // path this can only grow after the attempt failed. The file is still
+                        // there, so trying again is safe
+                        if (nread == 0 && maybe_grow_for_restore(*slot, 0)) {
+                            tokens.resize(slot->n_ctx);
+
+                            nread = llama_state_seq_load_file(ctx_tgt, filepath.c_str(), slot->id, tokens.data(), tokens.size(), &token_count);
+                        }
+
+                        if (nread == 0) {
+                            slot->prompt.clear(); // KV may already been invalidated?
+                            send_error(task, "Unable to restore slot, no available space in KV cache or invalid slot save file", ERROR_TYPE_INVALID_REQUEST);
+                            break;
+                        }
+                        tokens.resize(token_count);
+                        slot->prompt.clear();
+                        slot->prompt.tokens.insert(tokens);
+
+                        // the companion draft file, written by action=save. It is optional: files
+                        // saved before it existed, or by another tool, restore without it
+                        if (ctx_dft && ctx_dft != ctx_tgt) {
+                            const std::string filepath_dft = filepath + ".dft";
+
+                            std::ifstream file_dft(filepath_dft, std::ios::binary);
+                            if (file_dft.good()) {
+                                file_dft.close();
+
+                                llama_tokens tokens_dft;
+                                tokens_dft.resize(slot->n_ctx);
+
+                                size_t token_count_dft = 0;
+                                const size_t nread_dft = llama_state_seq_load_file(ctx_dft, filepath_dft.c_str(), slot->id, tokens_dft.data(), tokens_dft.size(), &token_count_dft);
+                                if (nread_dft == 0) {
+                                    SLT_WRN(*slot, "failed to restore the draft state from '%s' - it is re-primed on the next request\n", filepath_dft.c_str());
+                                }
+
+                                nread += nread_dft;
+                            }
+                        }
                     }
-                    tokens.resize(token_count);
-                    slot->prompt.clear();
-                    slot->prompt.tokens.insert(tokens);
 
                     const int64_t t_end = ggml_time_us();
                     const double t_restore_ms = (t_end - t_start) / 1000.0;
 
                     auto res = std::make_unique<server_task_result_slot_save_load>();
-                    res->id       = task.id;
-                    res->id_slot  = id_slot;
-                    res->filename = filename;
-                    res->is_save  = false;
-                    res->n_tokens = token_count;
-                    res->n_bytes  = nread;
-                    res->t_ms     = t_restore_ms;
+                    res->id        = task.id;
+                    res->id_slot   = id_slot;
+                    res->filename  = filename;
+                    res->is_save   = false;
+                    res->n_tokens  = token_count;
+                    res->n_bytes   = nread;
+                    res->t_ms      = t_restore_ms;
+                    res->store     = task.slot_action.use_ram ? "ram" : "disk";
+                    res->ram_store = ram_store.to_json();
                     queue_results.send(std::move(res));
                 } break;
             case SERVER_TASK_TYPE_SLOT_ERASE:
@@ -2712,6 +2955,29 @@ private:
                     res->id       = task.id;
                     res->id_slot  = id_slot;
                     res->n_erased = n_erased;
+                    queue_results.send(std::move(res));
+                } break;
+            case SERVER_TASK_TYPE_SLOT_DROP:
+                {
+                    const std::string filename = task.slot_action.filename;
+
+                    size_t n_bytes = 0;
+
+                    const auto it = ram_store.states.find(filename);
+                    if (it != ram_store.states.end()) {
+                        n_bytes = it->second.size();
+
+                        ram_store.states.erase(it);
+
+                        SRV_INF("dropped RAM slot state '%s', freed %.3f MiB\n", filename.c_str(), n_bytes / (1024.0 * 1024.0));
+                    }
+
+                    auto res = std::make_unique<server_task_result_slot_drop>();
+                    res->id        = task.id;
+                    res->id_slot   = task.slot_action.id_slot;
+                    res->filename  = filename;
+                    res->n_bytes   = n_bytes;
+                    res->ram_store = ram_store.to_json();
                     queue_results.send(std::move(res));
                 } break;
             case SERVER_TASK_TYPE_GET_LORA:
@@ -3156,6 +3422,10 @@ private:
                 if (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_STARTED) {
                     const auto & input_tokens = slot.task->tokens;
 
+                    // absolute context budget for this request, 0 = none. prefill stops here
+                    // just like generation does, see process_token()
+                    const int32_t n_ctx_limit = slot.task->params.n_ctx_limit;
+
                     // used to determine the number of tokens added to the batch for the current slot
                     const auto n_tokens_prev = batch.size();
 
@@ -3230,7 +3500,13 @@ private:
                                 return;
                             }
                         } else {
-                            if (slot.task->n_tokens() >= slot.n_ctx) {
+                            // with a context budget only the head of the prompt is evaluated,
+                            // so a prompt past it is not an error - the tail is just dropped
+                            const int32_t n_prompt_eval = n_ctx_limit > 0
+                                ? std::min(slot.task->n_tokens(), n_ctx_limit)
+                                : slot.task->n_tokens();
+
+                            if (n_prompt_eval >= slot.n_ctx) {
                                 send_error(slot,
                                            string_format("request (%d tokens) exceeds the available context size (%d "
                                                          "tokens), try increasing it",
@@ -3312,6 +3588,35 @@ private:
                             } else {
                                 // if we don't cache the prompt, we have to remove all previous tokens
                                 n_past = 0;
+                            }
+
+                            // The reusable prefix already fills this request's budget, so there is
+                            // nothing left to prefill and nothing will be sampled. Answer now and
+                            // leave the memory untouched: cutting n_past back instead would ask
+                            // for a rollback that a recurrent/hybrid memory cannot always do (and
+                            // seq_rm aborts the process when it can't), and reprocessing from
+                            // scratch would redo the whole prompt only to discard the result.
+                            if (n_ctx_limit > 0 && n_past >= n_ctx_limit) {
+                                // these are normally cleared on the way into generation, which
+                                // this request never reaches - without it the response reports
+                                // the previous task's token counts and timings
+                                slot.n_decoded                 = 0;
+                                slot.n_prompt_tokens_processed = 0;
+                                slot.t_prompt_processing       = (ggml_time_us() - slot.t_start_process_prompt) / 1e3;
+                                slot.t_token_generation        = 0;
+
+                                slot.n_prompt_tokens_cache = n_past;
+                                slot.stop           = STOP_TYPE_CTX_LIMIT;
+                                slot.has_next_token = false;
+                                slot.truncated      = true;
+
+                                SLT_INF(slot, "cached prefix already reaches the context limit, nothing to process (n_past = %d, task.n_tokens = %d, n_ctx_limit = %d)\n",
+                                        n_past, slot.task->n_tokens(), n_ctx_limit);
+
+                                send_final_response(slot);
+                                slot.release();
+
+                                return;
                             }
 
                             llama_pos pos_next = slot.prompt.tokens.pos_next(n_past);
@@ -3437,6 +3742,10 @@ private:
 
                         slot.prompt.tokens.keep_first(n_past);
 
+                        // now that n_past is settled, hand back any cache this request does
+                        // not need (see maybe_grow_for_request() for the other direction)
+                        maybe_shrink_for_request(slot);
+
                         // this is to signal the client that the request has started processing
                         if (slot.task->params.stream) {
                             if (slot.task->params.return_progress) {
@@ -3534,6 +3843,11 @@ private:
 
                     // add prompt tokens for processing in the current batch
                     while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
+                        // the rest of the prompt is past the context budget - leave it unprocessed
+                        if (n_ctx_limit > 0 && slot.prompt.n_tokens() >= n_ctx_limit) {
+                            break;
+                        }
+
                         // get next token to process
                         llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
                         if (cur_tok == LLAMA_TOKEN_NULL) {
@@ -3601,8 +3915,9 @@ private:
                     const bool is_user_start = spans.is_user_start(n_tokens_start);
                     const bool is_last_user_message = n_tokens_start == last_user_pos;
 
-                    // entire prompt has been processed
-                    if (slot.prompt.n_tokens() == slot.task->n_tokens()) {
+                    // entire prompt has been processed, or the context budget cut it short
+                    if (slot.prompt.n_tokens() == slot.task->n_tokens() ||
+                            (n_ctx_limit > 0 && slot.prompt.n_tokens() >= n_ctx_limit)) {
                         slot.state = SLOT_STATE_DONE_PROMPT;
 
                         GGML_ASSERT(batch.size() > 0);
@@ -3833,6 +4148,34 @@ private:
                 // prompt evaluated for next-token prediction
                 slot.state = SLOT_STATE_GENERATING;
 
+                // stop before sampling anything, leaving the cache holding exactly the prompt:
+                // - the prompt alone spent the context budget, so the caller gets the same clean
+                //   stop it would get mid-generation
+                // - n_predict = 0 asks to evaluate the prompt into the cache and nothing more
+                const bool at_ctx_limit = slot.task->params.n_ctx_limit > 0 && slot.prompt.n_tokens() >= slot.task->params.n_ctx_limit;
+
+                if (at_ctx_limit || !slot.has_budget(params_base)) {
+                    slot.stop           = at_ctx_limit ? STOP_TYPE_CTX_LIMIT : STOP_TYPE_LIMIT;
+                    slot.has_next_token = false;
+                    slot.truncated      = slot.prompt.n_tokens() < slot.task->n_tokens();
+
+                    // nothing is sampled here, so the usual "first token decoded" hook that
+                    // reports the prompt phase never runs
+                    slot.t_prompt_processing = (ggml_time_us() - slot.t_start_process_prompt) / 1e3;
+
+                    SLT_INF(slot, "stopped after prompt processing, prompt.n_tokens() = %d, task.n_tokens = %d, n_ctx_limit = %d, n_predict = %d\n",
+                            slot.prompt.n_tokens(), slot.task->n_tokens(), slot.task->params.n_ctx_limit, slot.task->params.n_predict);
+
+                    metrics.on_prompt_eval(slot);
+
+                    send_final_response(slot);
+                    metrics.on_prediction(slot);
+                    slot.release();
+                    slot.i_batch = -1;
+
+                    return;
+                }
+
                 if (slot.can_speculate()) {
                     common_speculative_begin(spec.get(), slot.id, slot.prompt.tokens.get_text_tokens());
                 }
@@ -4040,38 +4383,66 @@ private:
         // position range as ctx_tgt (begin() compares its own KV position against the
         // prompt length - see NOTES.md's Part 1 discovery item 10). ctx_dft is a
         // completely separate llama_context/memory object for the qwen35(moe) family
-        // (the target model this is written for), so growing ctx_tgt never grows it on
+        // (the target model this is written for), so resizing ctx_tgt never resizes it on
         // its own. For architectures where the draft shares ctx_tgt's memory instead
         // (e.g. gemma4's is_mem_shared mode), resize() already refuses to touch a cache
         // that shares cells with another (Phase 2's [TAG_KV_CACHE_SHARE_CELLS] guard),
-        // so this is a harmless no-op there (growing ctx_tgt's memory already covers it).
+        // so this is a harmless no-op there (resizing ctx_tgt's memory already covers it).
         if (ctx_dft && ctx_dft != ctx_tgt) {
             const int32_t n_ctx_seq_dft = llama_n_ctx_seq(ctx_dft);
 
-            if (n_ctx_seq_dft < n_ctx_seq_now) {
+            if (n_ctx_seq_dft != n_ctx_seq_now) {
                 const int32_t ret = llama_set_n_ctx(ctx_dft, (uint32_t) n_ctx_seq_now);
 
                 if (ret == 0) {
-                    SRV_INF("grew MTP draft context in lockstep: n_ctx %d -> %d\n",
+                    SRV_INF("resized MTP draft context in lockstep: n_ctx %d -> %d\n",
                             n_ctx_seq_dft, llama_n_ctx_seq(ctx_dft));
                 } else {
                     // note: this also fires (harmlessly) for architectures where the draft
                     // shares ctx_tgt's memory instead of owning its own (e.g. gemma4's
                     // is_mem_shared mode) - resize() refuses to touch a shared cache, but
-                    // growing ctx_tgt's memory already covers it in that case, so there's
+                    // resizing ctx_tgt's memory already covers it in that case, so there's
                     // nothing actually wrong; the return code doesn't distinguish that from
                     // a real allocation failure, so this stays a warning either way
-                    SRV_WRN("failed to grow MTP draft context in lockstep (ret = %d) - "
+                    SRV_WRN("failed to resize MTP draft context in lockstep (ret = %d) - "
                             "drafting may degrade near the new context boundary\n", ret);
                 }
             }
         }
+
+        // both contexts have settled at the new size now. The draft released its own KV on
+        // the way down, which ctx_tgt's own refit could not see yet, so ask again for what
+        // is free - otherwise the hot store stays a slot or two short of what fits
+        const int32_t n_hot = llama_expert_hotstore_refit(ctx_tgt);
+        if (n_hot >= 0) {
+            SRV_DBG("expert hot store holds %d slots after the resize\n", n_hot);
+        }
     }
 
-    // grow the KV cache once, right before prefill, sized directly to what this request
-    // needs (prompt + n_predict) rather than stepped by ctx_grow_factor - that stepping is
-    // reserved for the reactive hook inside llama_decode() itself, which only sees one
-    // ubatch at a time and doesn't know the whole request's shape in advance
+    // the size the cache should settle at for this request: the prompt plus a fixed slice of
+    // generation headroom. n_predict is a ceiling a client picks rather than an estimate of
+    // what it will use, so it caps the headroom but never sets it - sizing to it reserves
+    // cells the request almost never touches, and under -ehs those cells come straight out
+    // of the expert hot store. Generation that outruns the headroom grows reactively in
+    // maybe_grow_mid_generation(), which costs one resize per headroom worth of tokens
+    int32_t n_ctx_want_for_request(const server_slot & slot) const {
+        const int32_t n_predict = slot.task->params.n_predict;
+
+        // -1 is "generate until something else stops it", so only the ceiling bounds it
+        const int32_t n_gen_max = n_predict >= 0 ? n_predict : params_base.n_ctx_max;
+
+        int32_t n_needed = slot.task->n_tokens() + std::min(n_gen_max, params_base.n_ctx_grow_headroom);
+
+        // nothing past the context budget is ever processed, so do not size the cache for it
+        // (+1 for the cell the last sampled token lands in)
+        if (slot.task->params.n_ctx_limit > 0) {
+            n_needed = std::min(n_needed, slot.task->params.n_ctx_limit + 1);
+        }
+
+        return std::min(n_needed, params_base.n_ctx_max);
+    }
+
+    // grow the KV cache once, right before prefill, to what this request is expected to use
     void maybe_grow_for_request(const server_slot & slot) {
         if (params_base.n_ctx_max == 0) {
             return;
@@ -4082,23 +4453,68 @@ private:
             return; // already at the ceiling
         }
 
-        const int32_t n_predict = slot.task->params.n_predict > 0 ? slot.task->params.n_predict : 0;
-        const int32_t n_needed  = slot.task->n_tokens() + n_predict;
+        const int32_t n_target = n_ctx_want_for_request(slot);
 
-        if (n_needed <= n_ctx_cur) {
+        if (n_target <= n_ctx_cur) {
             return;
         }
 
-        const int32_t n_target = std::min(params_base.n_ctx_max, n_needed);
+        const int64_t t_start = ggml_time_us();
 
         const int32_t ret = llama_set_n_ctx(ctx_tgt, (uint32_t) n_target);
         if (ret == 0) {
-            SLT_INF(slot, "grew KV cache ahead of prefill: n_ctx %d -> %d (prompt = %d tokens, n_predict = %d)\n",
-                    n_ctx_cur, llama_n_ctx_seq(ctx_tgt), slot.task->n_tokens(), slot.task->params.n_predict);
             refresh_n_ctx();
+
+            SLT_INF(slot, "grew KV cache ahead of prefill: n_ctx %d -> %d in %.1f ms (prompt = %d tokens, n_predict = %d)\n",
+                    n_ctx_cur, llama_n_ctx_seq(ctx_tgt), (ggml_time_us() - t_start) / 1e3, slot.task->n_tokens(), slot.task->params.n_predict);
         } else {
             SLT_WRN(slot, "failed to grow KV cache ahead of prefill (ret = %d, target = %d) - request may hit the context limit\n",
                     ret, n_target);
+        }
+    }
+
+    // hand KV cells back when a request needs far less room than the cache is holding -
+    // the mirror of maybe_grow_for_request(). Without it the cache stays at the session
+    // high-water mark for the life of the server, which is wrong for an agent loop that
+    // fills the context, writes a handoff file, then starts a fresh instance from a short
+    // prompt. Must run after the cache-reuse logic settled n_past: only the cells the
+    // request actually keeps may survive the resize.
+    void maybe_shrink_for_request(server_slot & slot) {
+        if (params_base.n_ctx_max == 0) {
+            return;
+        }
+
+        const int32_t n_ctx_cur = llama_n_ctx_seq(ctx_tgt);
+
+        // the same target the grow path uses, so the two can never disagree and oscillate.
+        // Never below the size the server launched with, and never so tight that there is
+        // no room left to sample into
+        int32_t n_target = n_ctx_want_for_request(slot);
+
+        n_target = std::max({ n_target, params_base.n_ctx, slot.task->n_tokens() + 1 });
+        n_target = std::min(n_target, params_base.n_ctx_max);
+
+        // hysteresis: a resize copies the whole KV cache, so only pay for it when it hands
+        // back a real share of what is allocated
+        if (n_target > n_ctx_cur / 2) {
+            return;
+        }
+
+        // drop the cells above the reused prefix now - the resize refuses while any of them
+        // is still live, and prefill discards them anyway (the same seq_rm call, below)
+        slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
+
+        const int64_t t_start = ggml_time_us();
+
+        const int32_t ret = llama_set_n_ctx(ctx_tgt, (uint32_t) n_target);
+        if (ret == 0) {
+            refresh_n_ctx();
+
+            SLT_INF(slot, "shrank KV cache ahead of prefill: n_ctx %d -> %d in %.1f ms (prompt = %d tokens, reused = %d)\n",
+                    n_ctx_cur, llama_n_ctx_seq(ctx_tgt), (ggml_time_us() - t_start) / 1e3, slot.task->n_tokens(), slot.prompt.n_tokens());
+        } else {
+            SLT_WRN(slot, "failed to shrink KV cache ahead of prefill (ret = %d, target = %d) - keeping n_ctx = %d\n",
+                    ret, n_target, n_ctx_cur);
         }
     }
 
@@ -4130,13 +4546,23 @@ private:
             return;
         }
 
-        const int32_t n_target = std::min(params_base.n_ctx_max,
-                std::max(n_needed, (int32_t) (n_ctx_cur * params_base.ctx_grow_factor)));
+        // step by a fixed headroom rather than a multiple of the current size: at a large
+        // n_ctx the multiple asks for hundreds of MiB at once, while the cost of a resize is
+        // roughly flat once -ehs has to give slots back. 0 keeps the old factor stepping
+        const int32_t n_step = params_base.n_ctx_grow_headroom > 0
+            ? n_needed + params_base.n_ctx_grow_headroom
+            : (int32_t) (n_ctx_cur * params_base.ctx_grow_factor);
+
+        const int32_t n_target = std::min(params_base.n_ctx_max, std::max(n_needed, n_step));
+
+        const int64_t t_start = ggml_time_us();
 
         const int32_t ret = llama_set_n_ctx(ctx_tgt, (uint32_t) n_target);
         if (ret == 0) {
-            SLT_INF(slot, "grew KV cache mid-generation: n_ctx %d -> %d\n", n_ctx_cur, llama_n_ctx_seq(ctx_tgt));
             refresh_n_ctx();
+
+            SLT_INF(slot, "grew KV cache mid-generation: n_ctx %d -> %d in %.1f ms (n_tokens = %d)\n",
+                    n_ctx_cur, llama_n_ctx_seq(ctx_tgt), (ggml_time_us() - t_start) / 1e3, slot.prompt.n_tokens());
         } else {
             SLT_WRN(slot, "failed to grow KV cache mid-generation (ret = %d, target = %d) - generation may stop/shift at the current limit\n",
                     ret, n_target);
@@ -4727,8 +5153,8 @@ void server_routes::init_routes() {
 
     this->post_slots = [this](const server_http_req & req) {
         auto res = create_response();
-        if (params.slot_save_path.empty()) {
-            res->error(format_error_response("This server does not support slots action. Start it with `--slot-save-path`", ERROR_TYPE_NOT_SUPPORTED));
+        if (params.slot_save_path.empty() && params.slot_ram_limit_mib == 0) {
+            res->error(format_error_response("This server does not support slots action. Start it with `--slot-save-path` and/or `--slot-ram-limit`", ERROR_TYPE_NOT_SUPPORTED));
             return res;
         }
 
@@ -4752,6 +5178,9 @@ void server_routes::init_routes() {
         }
         if (action == "erase") {
             return handle_slots_erase(req, id_slot);
+        }
+        if (action == "drop") {
+            return handle_slots_drop(req, id_slot);
         }
 
         res->error(format_error_response("Invalid action", ERROR_TYPE_INVALID_REQUEST));
@@ -5334,6 +5763,40 @@ json server_routes::get_model_info() const {
     };
 }
 
+// resolve the "store" field of a /slots action into task.slot_action, "disk" if it is absent.
+// returns an error response when the requested store is not available, nullptr otherwise
+std::unique_ptr<server_res_generator> server_routes::parse_slot_store(const json & request_data, const std::string & filename, struct server_task::slot_action & out) {
+    const std::string store = json_value(request_data, "store", std::string("disk"));
+
+    if (store != "disk" && store != "ram") {
+        auto res = create_response();
+        res->error(format_error_response("Invalid store, expected \"disk\" or \"ram\"", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+
+    out.use_ram = store == "ram";
+
+    if (out.use_ram) {
+        if (params.slot_ram_limit_mib == 0) {
+            auto res = create_response();
+            res->error(format_error_response("The RAM slot store is disabled. Start the server with `--slot-ram-limit N`", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+    } else {
+        if (params.slot_save_path.empty()) {
+            auto res = create_response();
+            res->error(format_error_response("This server does not support saving slots to disk. Start it with `--slot-save-path`", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        out.filepath = params.slot_save_path + filename;
+    }
+
+    out.filename = filename;
+
+    return nullptr;
+}
+
 std::unique_ptr<server_res_generator> server_routes::handle_slots_save(const server_http_req & req, int id_slot) {
     auto res = create_response();
     const json request_data = json::parse(req.body);
@@ -5342,15 +5805,17 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_save(const ser
         res->error(format_error_response("Invalid filename", ERROR_TYPE_INVALID_REQUEST));
         return res;
     }
-    std::string filepath = params.slot_save_path + filename;
+
+    server_task task(SERVER_TASK_TYPE_SLOT_SAVE);
+    task.slot_action.id_slot = id_slot;
+
+    if (auto err = parse_slot_store(request_data, filename, task.slot_action)) {
+        return err;
+    }
 
     auto & rd = res->rd;
     {
-        server_task task(SERVER_TASK_TYPE_SLOT_SAVE);
         task.id = rd.get_new_id();
-        task.slot_action.id_slot  = id_slot;
-        task.slot_action.filename = filename;
-        task.slot_action.filepath = filepath;
         rd.post_task(std::move(task));
     }
 
@@ -5378,15 +5843,17 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_restore(const 
         res->error(format_error_response("Invalid filename", ERROR_TYPE_INVALID_REQUEST));
         return res;
     }
-    std::string filepath = params.slot_save_path + filename;
+
+    server_task task(SERVER_TASK_TYPE_SLOT_RESTORE);
+    task.slot_action.id_slot = id_slot;
+
+    if (auto err = parse_slot_store(request_data, filename, task.slot_action)) {
+        return err;
+    }
 
     auto & rd = res->rd;
     {
-        server_task task(SERVER_TASK_TYPE_SLOT_RESTORE);
         task.id = rd.get_new_id();
-        task.slot_action.id_slot  = id_slot;
-        task.slot_action.filename = filename;
-        task.slot_action.filepath = filepath;
         rd.post_task(std::move(task));
     }
 
@@ -5430,6 +5897,46 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_erase(const se
     }
 
     GGML_ASSERT(dynamic_cast<server_task_result_slot_erase*>(result.get()) != nullptr);
+    res->ok(result->to_json());
+    return res;
+}
+
+std::unique_ptr<server_res_generator> server_routes::handle_slots_drop(const server_http_req & req, int id_slot) {
+    auto res = create_response();
+    if (params.slot_ram_limit_mib == 0) {
+        res->error(format_error_response("The RAM slot store is disabled. Start the server with `--slot-ram-limit N`", ERROR_TYPE_NOT_SUPPORTED));
+        return res;
+    }
+
+    const json request_data = json::parse(req.body);
+    std::string filename = request_data.at("filename");
+    if (!fs_validate_filename(filename)) {
+        res->error(format_error_response("Invalid filename", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+
+    auto & rd = res->rd;
+    {
+        server_task task(SERVER_TASK_TYPE_SLOT_DROP);
+        task.id = rd.get_new_id();
+        task.slot_action.id_slot  = id_slot;
+        task.slot_action.filename = filename;
+        task.slot_action.use_ram  = true;
+        rd.post_task(std::move(task));
+    }
+
+    auto result = rd.next(req.should_stop);
+    if (!result) {
+        // connection was closed
+        GGML_ASSERT(req.should_stop());
+        return res;
+    }
+
+    if (result->is_error()) {
+        res->error(result->to_json());
+        return res;
+    }
+
     res->ok(result->to_json());
     return res;
 }

@@ -59,6 +59,10 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
         ->set_hard_limits(0, INT32_MAX)
         ->set_desc("Number of tokens after n_keep that may be discarded when shifting context (0 = half context)"));
 
+    add((new field_num("n_ctx_limit", params.n_ctx_limit))
+        ->set_hard_limits(0, INT32_MAX)
+        ->set_desc("Stop generation cleanly once this slot holds this many tokens, wherever that lands - during prompt processing, reasoning, or output. Prompt tokens past the limit are not processed. 0 uses the server default (see --ctx-limit)"));
+
     add((new field_num("n_cmpl", params.n_cmpl))
         ->set_hard_limits(1, params_base.n_parallel)
         ->add_alias("n") // alias "n" as fallback (OpenAI completions API)
@@ -525,6 +529,7 @@ task_params eval_llama_cmpl_schema(
     params.n_keep        = params_base.n_keep;
     params.n_predict     = params_base.n_predict;
     params.n_cache_reuse = params_base.n_cache_reuse;
+    params.n_ctx_limit   = params_base.n_ctx_limit;
     params.cache_prompt  = params_base.cache_prompt;
     params.antiprompt    = params_base.antiprompt;
     params.sse_ping_interval = params_base.sse_ping_interval;

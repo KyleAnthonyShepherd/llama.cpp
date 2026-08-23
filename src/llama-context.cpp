@@ -941,13 +941,17 @@ bool llama_context::memory_update(bool optimize) {
 int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
     n_ctx_new = GGML_PAD(n_ctx_new, 256);
 
-    if (n_ctx_new <= cparams.n_ctx) {
-        LLAMA_LOG_WARN("%s: n_ctx_new (%u) must be greater than the current n_ctx (%u)\n", __func__, n_ctx_new, cparams.n_ctx);
+    if (n_ctx_new == cparams.n_ctx) {
+        return 0;
+    }
+
+    if (n_ctx_new == 0) {
+        LLAMA_LOG_WARN("%s: n_ctx_new must be non-zero\n", __func__);
         return -1;
     }
 
     if (!memory) {
-        LLAMA_LOG_WARN("%s: no memory module - nothing to grow\n", __func__);
+        LLAMA_LOG_WARN("%s: no memory module - nothing to resize\n", __func__);
         return -1;
     }
 
@@ -961,12 +965,19 @@ int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
             return -1;
         }
         n_ctx_new = n_ctx_seq_new * cparams.n_seq_max;
+
+        // the rounding above can land back on the current size
+        if (n_ctx_new == cparams.n_ctx) {
+            return 0;
+        }
     }
+
+    const bool is_grow = n_ctx_new > cparams.n_ctx;
 
     // Hand VRAM back from the expert hot store before the KV cache asks for it. The store is
     // sized once at load against the initial n_ctx, so a context that grows afterwards is
     // competing with slots that were budgeted while the KV cache was still small.
-    if (expert_hotstore && expert_hotstore->hot_s > 0 && expert_hotstore_buft && expert_heatmap) {
+    if (is_grow && expert_hotstore && expert_hotstore->hot_s > 0 && expert_hotstore_buft && expert_heatmap) {
         // Size the new KV from the attention layers directly, mirroring llama_kv_cache's own
         // tensor shapes. Scaling memory_breakdown() instead would be badly wrong on a hybrid
         // arch: it also holds the recurrent state, which is constant in context length and
@@ -1000,7 +1011,7 @@ int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
                 const int    drop    = (int) ((deficit + per_slot - 1) / per_slot);
                 LLAMA_LOG_INFO("%s: KV needs %zu MiB with %zu MiB free, dropping %d hot expert slots\n",
                         __func__, kv_new / (1024 * 1024), free_mem / (1024 * 1024), drop);
-                expert_hotstore->shrink(expert_hotstore->hot_s - drop, *expert_heatmap, expert_hotstore_buft);
+                expert_hotstore->resize(expert_hotstore->hot_s - drop, *expert_heatmap, expert_hotstore_buft);
             }
         }
     }
@@ -1016,38 +1027,102 @@ int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
     cparams.n_ctx     = n_ctx_new;
     cparams.n_ctx_seq = n_ctx_seq_new;
 
-    LLAMA_LOG_INFO("%s: growing n_ctx: %u -> %u (n_ctx_seq: %u -> %u)\n",
+    LLAMA_LOG_INFO("%s: n_ctx: %u -> %u (n_ctx_seq: %u -> %u)\n",
             __func__, n_ctx_old, n_ctx_new, n_ctx_seq_old, n_ctx_seq_new);
 
-    // re-reserve the worst-case graph and invalidate the scheduler/graph-reuse caches
-    // right away - mirrors the tail of memory_update() above (same category of change:
-    // the memory object's structure changed under the scheduler's feet). This must
-    // happen synchronously here (not via the lazy sched_need_reserve flag some other
-    // mutators use) because set_n_ctx() can be called mid-decode() (the auto-grow hook),
-    // after sched_reserve() already ran once at the top of this decode() call - setting
-    // the flag alone would only take effect on the *next* llama_decode() call.
-    {
-        const auto mctx = memory->init_full();
-        if (!mctx) {
-            LLAMA_LOG_ERROR("%s: failed to initialize memory context after growth\n", __func__);
-            return -2;
-        }
+    // The KV cache just gave VRAM back, so take the hot store back up towards the slot
+    // count it was asked for at load - the mirror of the give-back above. Before the
+    // reserve below, which has to run after any store resize: a reserved graph holds
+    // pointers into the store's tensors and resize() frees them.
+    // Deliberately conservative - a shrink still has the compute buffers of the old,
+    // larger size allocated, and a sibling context resized in lockstep afterwards has not
+    // released anything yet. The caller picks the rest up via llama_expert_hotstore_refit().
+    if (!is_grow) {
+        refit_expert_hotstore(false);
+    }
 
-        const uint32_t n_seqs         = cparams.n_seq_max;
-        const uint32_t n_tokens       = std::min(cparams.n_ctx, cparams.n_ubatch);
-        const uint32_t n_outputs_max  = std::min(n_tokens, cparams.n_outputs_max);
-
-        if (!graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get())) {
-            // per-plan policy: hard-fail without rolling back the (already grown) KV
-            // cache - the context is still usable, just reserve-degraded until the next
-            // successful reserve (e.g. from a subsequent growth or an explicit mutator)
-            LLAMA_LOG_ERROR("%s: failed to reserve graph after growing n_ctx - context remains usable at the new KV size "
-                    "but compute buffers are not pre-reserved for it\n", __func__);
-            return -2;
-        }
+    if (!reserve_worst_case_graph()) {
+        return -2;
     }
 
     return 0;
+}
+
+// re-reserve the worst-case graph and invalidate the scheduler/graph-reuse caches right
+// away - mirrors the tail of memory_update() (same category of change: the structure the
+// scheduler caches changed under its feet). This must happen synchronously (not via the
+// lazy sched_need_reserve flag some other mutators use) because set_n_ctx() can be called
+// mid-decode() (the auto-grow hook), after sched_reserve() already ran once at the top of
+// this decode() call - setting the flag alone would only take effect on the *next* call.
+bool llama_context::reserve_worst_case_graph() {
+    const auto mctx = memory->init_full();
+    if (!mctx) {
+        LLAMA_LOG_ERROR("%s: failed to initialize memory context after the resize\n", __func__);
+        return false;
+    }
+
+    const uint32_t n_seqs         = cparams.n_seq_max;
+    const uint32_t n_tokens       = std::min(cparams.n_ctx, cparams.n_ubatch);
+    const uint32_t n_outputs_max  = std::min(n_tokens, cparams.n_outputs_max);
+
+    if (!graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get())) {
+        // per-plan policy: hard-fail without rolling back the (already resized) KV
+        // cache - the context is still usable, just reserve-degraded until the next
+        // successful reserve (e.g. from a subsequent resize or an explicit mutator)
+        LLAMA_LOG_ERROR("%s: failed to reserve graph after resizing n_ctx - context remains usable at the new KV size "
+                "but compute buffers are not pre-reserved for it\n", __func__);
+        return false;
+    }
+
+    return true;
+}
+
+int32_t llama_context::refit_expert_hotstore(bool reserve) {
+    if (!expert_hotstore || !expert_hotstore_buft || !expert_heatmap) {
+        return -1;
+    }
+
+    if (expert_hotstore->hot_s >= expert_hotstore->hot_s_max) {
+        return expert_hotstore->hot_s;
+    }
+
+    ggml_backend_dev_t dev = ggml_backend_buft_get_device(expert_hotstore_buft);
+    if (!dev) {
+        return expert_hotstore->hot_s;
+    }
+
+    size_t free_mem = 0, total_mem = 0;
+    ggml_backend_dev_memory(dev, &free_mem, &total_mem);
+
+    // resize() frees the old store before it allocates the new one, so what it already
+    // holds counts as available on top of what the device reports free
+    size_t have = free_mem + expert_hotstore->bytes_resident();
+
+    // Hold a margin back rather than taking everything free. This runs at the shrunk
+    // context size, where the KV cache and the compute buffers are at their smallest, so
+    // "free right now" overstates what is free once the next request grows again. A store
+    // that fills to the brim here has to give slots straight back on that growth, and every
+    // round trip costs a ~600 ms re-plant from host. Measured on a 6 GB card with a 4801
+    // token prompt: filling to 29/29 evicted on every single request (~620 ms each), while
+    // stopping at 28 kept the growth inside what was already free (~15 ms). Two slots is
+    // what covers that gap here; it also absorbs fragmentation and a sibling context's
+    // buffers. Raising it trades expert residency for fewer re-plants.
+    const size_t vram_reserve = 2 * expert_hotstore->bytes_per_slot_total();
+    have = have > vram_reserve ? have - vram_reserve : 0;
+
+    const int fits = expert_hotstore->slots_that_fit(have);
+
+    if (fits > expert_hotstore->hot_s) {
+        expert_hotstore->resize(fits, *expert_heatmap, expert_hotstore_buft);
+
+        // the store's tensors were freed and rebuilt, so any reserved graph still pointing
+        // at the old ones has to go. set_n_ctx() passes false: it reserves right after
+        if (reserve) {
+            reserve_worst_case_graph();
+        }
+    }
+
+    return expert_hotstore->hot_s;
 }
 
 enum llama_pooling_type llama_context::pooling_type() const {
@@ -4476,4 +4551,8 @@ llama_context * llama_get_ctx_other(struct llama_context * ctx) {
 
 int64_t llama_expert_tier_n_bypassed(const struct llama_context * ctx) {
     return ctx->get_expert_tier_n_bypassed();
+}
+
+int32_t llama_expert_hotstore_refit(struct llama_context * ctx) {
+    return ctx->refit_expert_hotstore(true);
 }

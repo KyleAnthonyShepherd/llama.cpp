@@ -1254,9 +1254,22 @@ bool llama_kv_cache::resize(uint32_t n_new) {
         return false;
     }
 
-    if (n_new <= n_old) {
-        LLAMA_LOG_WARN("%s: n_new (%u) must be greater than the current size (%u)\n", __func__, n_new, n_old);
-        return false;
+    if (n_new == n_old) {
+        return true;
+    }
+
+    if (n_new < n_old) {
+        // the cells above n_new go away with the old buffer - the caller must seq_rm()
+        // whatever it is not willing to lose before asking for a smaller cache
+        for (uint32_t s = 0; s < n_stream; ++s) {
+            const uint32_t used_p1 = v_cells[s].used_max_p1();
+
+            if (used_p1 > n_new) {
+                LLAMA_LOG_WARN("%s: cannot shrink to %u cells, stream %u still holds data up to cell %u\n",
+                        __func__, n_new, s, used_p1);
+                return false;
+            }
+        }
     }
 
     if (n_new % n_pad != 0) {
@@ -1352,29 +1365,29 @@ bool llama_kv_cache::resize(uint32_t n_new) {
     for (size_t i = 0; i < layers.size(); ++i) {
         const auto & layer = layers[i];
 
-        // K (and V when not transposed) is row-major with the growing dimension (kv_size)
-        // as the slower/outer dimension - the old tensor's byte range is already a
-        // contiguous prefix of the new tensor
+        // K (and V when not transposed) is row-major with the resized dimension (kv_size)
+        // as the slower/outer dimension - the cells both sizes have in common are a
+        // contiguous prefix of both tensors
         {
-            const size_t nbytes_old = ggml_nbytes(layer.k);
+            const size_t nbytes = std::min(ggml_nbytes(layer.k), ggml_nbytes(k_new[i]));
 
-            std::vector<uint8_t> host(nbytes_old);
-            ggml_backend_tensor_get(layer.k, host.data(), 0, nbytes_old);
-            ggml_backend_tensor_set(k_new[i], host.data(), 0, nbytes_old);
+            std::vector<uint8_t> host(nbytes);
+            ggml_backend_tensor_get(layer.k, host.data(), 0, nbytes);
+            ggml_backend_tensor_set(k_new[i], host.data(), 0, nbytes);
         }
 
         if (layer.v) {
             if (!v_trans) {
-                const size_t nbytes_old = ggml_nbytes(layer.v);
+                const size_t nbytes = std::min(ggml_nbytes(layer.v), ggml_nbytes(v_new[i]));
 
-                std::vector<uint8_t> host(nbytes_old);
-                ggml_backend_tensor_get(layer.v, host.data(), 0, nbytes_old);
-                ggml_backend_tensor_set(v_new[i], host.data(), 0, nbytes_old);
+                std::vector<uint8_t> host(nbytes);
+                ggml_backend_tensor_get(layer.v, host.data(), 0, nbytes);
+                ggml_backend_tensor_set(v_new[i], host.data(), 0, nbytes);
             } else {
                 // V is transposed (FA off): physically, each of the n_embd_v_gqa "rows" is
-                // n_old contiguous elements - growing the cache widens the row stride to
-                // n_new, so the old data is no longer a contiguous prefix and has to be
-                // copied row by row (v_trans implies a non-quantized type, so plain
+                // n_old contiguous elements - resizing the cache changes the row stride to
+                // n_new, so the common cells are no longer a contiguous prefix and have to
+                // be copied row by row (v_trans implies a non-quantized type, so plain
                 // per-scalar byte strides are valid here - see llama-context.cpp's
                 // "quantized V cache requires flash_attn" check)
                 const size_t type_size    = ggml_type_size(layer.v->type);
@@ -1384,14 +1397,18 @@ bool llama_kv_cache::resize(uint32_t n_new) {
 
                 std::vector<uint8_t> host(n_embd_v_gqa * row_old);
                 ggml_backend_tensor_get(layer.v, host.data(), 0, host.size());
-                ggml_backend_tensor_set_2d(v_new[i], host.data(), 0, row_old, n_embd_v_gqa, row_new, row_old);
+                ggml_backend_tensor_set_2d(v_new[i], host.data(), 0, std::min(row_old, row_new), n_embd_v_gqa, row_new, row_old);
             }
         }
     }
 
-    // grow the cell metadata, preserving the existing prefix (n_stream == 1, asserted above)
+    // resize the cell metadata, keeping the surviving prefix (n_stream == 1, asserted above)
     for (uint32_t s = 0; s < n_stream; ++s) {
-        v_cells[s].grow(n_new);
+        if (n_new > n_old) {
+            v_cells[s].grow(n_new);
+        } else {
+            v_cells[s].shrink(n_new);
+        }
     }
 
     // swap in the new tensors/buffers and free the old ones

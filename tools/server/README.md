@@ -48,6 +48,10 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--prio-batch N` | set process/thread priority : 0-normal, 1-medium, 2-high, 3-realtime (default: 0) |
 | `--poll-batch <0\|1>` | use polling to wait for work (default: same as --poll) |
 | `-c, --ctx-size N` | size of the prompt context (default: 0, 0 = loaded from model)<br/>(env: LLAMA_ARG_CTX_SIZE) |
+| `--ctx-max N` | upper bound the KV cache may grow to automatically as needed during generation (default: 0, 0 = disabled). Requires `--parallel 1`. When set without an explicit `-c/--ctx-size`, the initial context defaults to a small size and grows from there. The cache also shrinks back when a request needs much less than it is holding, handing the freed VRAM to the expert hot store<br/>(env: LLAMA_ARG_CTX_MAX) |
+| `--ctx-grow-factor N` | growth multiplier used when `--ctx-max` resizes the KV cache (default: 1.5)<br/>(env: LLAMA_ARG_CTX_GROW_FACTOR) |
+| `--ctx-grow-headroom N` | spare cells the server keeps ahead of generation when `--ctx-max` sizes the KV cache (default: 2048, 0 = step by `--ctx-grow-factor` instead). `n_predict` is a ceiling a client picks, not an estimate, so it caps this headroom but never sets it - a request asking for 16k tokens no longer reserves 16k cells it will not use. Generation that outruns the headroom grows again as it goes<br/>(env: LLAMA_ARG_CTX_GROW_HEADROOM) |
+| `--ctx-limit N` | stop generation cleanly once the context holds N tokens, wherever that lands - during prompt processing, reasoning, or output (default: 0, 0 = disabled). Requests may override it with `n_ctx_limit`<br/>(env: LLAMA_ARG_CTX_LIMIT) |
 | `-n, --predict, --n-predict N` | number of tokens to predict (default: -1, -1 = infinity)<br/>(env: LLAMA_ARG_N_PREDICT) |
 | `-b, --batch-size N` | logical maximum batch size (default: 2048)<br/>(env: LLAMA_ARG_BATCH) |
 | `-ub, --ubatch-size N` | physical maximum batch size (default: 512)<br/>(env: LLAMA_ARG_UBATCH) |
@@ -219,6 +223,7 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--props` | enable changing global properties via POST /props (default: disabled)<br/>(env: LLAMA_ARG_ENDPOINT_PROPS) |
 | `--slots, --no-slots` | expose slots monitoring endpoint (default: enabled)<br/>(env: LLAMA_ARG_ENDPOINT_SLOTS) |
 | `--slot-save-path PATH` | path to save slot kv cache (default: disabled) |
+| `--slot-ram-limit N` | max RAM in MiB held by named slot states saved with `store: "ram"` (default: 0, 0 = disabled, -1 = no limit). A save that would breach the limit is refused, it does not evict anything. These states are lost on restart<br/>(env: LLAMA_ARG_SLOT_RAM_LIMIT) |
 | `--media-path PATH` | directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled) |
 | `--models-dir PATH` | directory containing models for the router server (default: disabled)<br/>(env: LLAMA_ARG_MODELS_DIR) |
 | `--models-preset PATH` | path to INI file containing model presets for the router server (default: disabled)<br/>(env: LLAMA_ARG_MODELS_PRESET) |
@@ -456,7 +461,7 @@ Note for `multimodal_data` in JSON object prompts. This should be an array of st
 
 `min_p`: The minimum probability for a token to be considered, relative to the probability of the most likely token. Default: `0.05`
 
-`n_predict`: Set the maximum number of tokens to predict when generating text. **Note:** May exceed the set limit slightly if the last token is a partial multibyte character. When 0, no tokens will be generated but the prompt is evaluated into the cache. Default: `-1`, where `-1` is infinity.
+`n_predict`: Set the maximum number of tokens to predict when generating text. **Note:** May exceed the set limit slightly if the last token is a partial multibyte character. When 0, no tokens will be generated but the prompt is evaluated into the cache, so the slot is left holding exactly the prompt - useful before saving it with `/slots/{id_slot}?action=save`. Default: `-1`, where `-1` is infinity.
 
 `n_indent`: Specify the minimum line indentation for the generated text in number of whitespace characters. Useful for code completion tasks. Default: `0`
 
@@ -466,6 +471,10 @@ By default, this value is set to `0`, meaning no tokens are kept. Use `-1` to re
 `n_cmpl`: Number of completions to generate from the current prompt. If input has multiple prompts, the output will have N prompts times `n_cmpl` entries.
 
 `n_cache_reuse`: Min chunk size to attempt reusing from the cache via KV shifting. For more info, see `--cache-reuse` arg. Default: `0`, which is disabled.
+
+`n_ctx_limit`: Stop generation cleanly once this slot holds this many tokens, wherever that lands - during prompt processing, reasoning, or output. Prompt tokens past the limit are not processed, so a prompt longer than the limit is not an error: its tail is dropped and the response comes back with no generated tokens. If the slot's reusable cached prefix already reaches the limit there is nothing left to process at all, and the request returns immediately without touching the cache. Useful for an agent loop that must keep room to write a handoff before it runs out of context. Default: the server's `--ctx-limit`, `0` = disabled.
+
+The response reports `"stop_type": "ctx_limit"`, and `tokens_cached` gives how much of the context was actually used. `stop_type` is also emitted next to `finish_reason` on the OpenAI-compatible routes (`/v1/completions`, `/v1/chat/completions`, including the final streaming chunk) as a non-standard field, because `finish_reason` is `length` for both this and an ordinary `max_tokens` stop and cannot tell them apart. Note that `usage.prompt_tokens` counts the whole submitted prompt even when only part of it was evaluated, so prefer `stop_type` over arithmetic on the token counts.
 
 `stream`: Allows receiving each predicted token in real-time instead of waiting for the completion to finish (uses a different response format). To enable this, set to `true`.
 
@@ -1081,11 +1090,26 @@ In *router mode* the query param `?model={model_id}` has to be set. This endpoin
 | `llamacpp:spec_decode_num_drafts_total` | Counter | Total speculative decoding verification steps (0 when spec-decode is off). |
 | `llamacpp:spec_decode_num_accepted_tokens_per_pos_total` | Counter | Accepted tokens per draft position (labeled `position="N"`; absent when spec-decode is off or before the first completed speculative request). |
 
-### POST `/slots/{id_slot}?action=save`: Save the prompt cache of the specified slot to a file.
+### Slot state stores
+
+A saved slot state goes either to disk (`--slot-save-path`) or to a named in-memory store (`--slot-ram-limit`). Both are addressed by the same `filename` field and both are selected per request with `store`:
+
+- `"disk"` (default): survives a restart, and is the right choice for a state that is written once and read many times.
+- `"ram"`: a plain memcpy, no file system traffic, and **lost when the server exits**. A client must treat a missing state as recoverable and re-process the prompt, not as fatal. Use it for a state that is parked for one side-call and then discarded.
+
+A save carries both the target context and, when speculative decoding runs a separate draft context, the draft context. On disk the draft goes to a companion `<filename>.dft` file. That file is optional on restore: without it the draft is simply re-primed on the next request.
+
+With `--ctx-max`, the KV cache shrinks back between requests, so it can be smaller than a state saved earlier. A restore grows it again to fit, and the next request shrinks it back to what that request needs. A RAM state carries its token count, so it grows exactly as far as it has to; a file does not report its size until it is read, so a disk restore that runs out of room grows all the way to `--ctx-max` and tries once more.
+
+The RAM store never evicts on its own - the client owns the lifetime of each entry and frees it with `action=drop`. A save that would push usage past `--slot-ram-limit` is refused with `503` and an error naming the limit and the current usage, so a client can fall back to disk rather than discover later that its state is gone. Saving under a name that is already taken replaces it, matching the disk path.
+
+### POST `/slots/{id_slot}?action=save`: Save the prompt cache of the specified slot.
 
 *Options:*
 
-`filename`: Name of the file to save the slot's prompt cache. The file will be saved in the directory specified by the `--slot-save-path` server parameter.
+`filename`: Name of the state. For `store: "disk"` this is a file in the directory specified by the `--slot-save-path` server parameter.
+
+`store`: `"disk"` (default) or `"ram"`. See [Slot state stores](#slot-state-stores).
 
 **Response format**
 
@@ -1093,19 +1117,32 @@ In *router mode* the query param `?model={model_id}` has to be set. This endpoin
 {
     "id_slot": 0,
     "filename": "slot_save_file.bin",
+    "store": "disk",
     "n_saved": 1745,
     "n_written": 14309796,
+    "ram_store": {
+        "enabled": true,
+        "count": 1,
+        "bytes": 135000000,
+        "limit": 4294967296
+    },
     "timings": {
         "save_ms": 49.865
     }
 }
 ```
 
-### POST `/slots/{id_slot}?action=restore`: Restore the prompt cache of the specified slot from a file.
+`ram_store` reports the state of the RAM store after the request, so a long-running client can log it and notice a leak before it becomes an OOM. `limit` is `0` when `--slot-ram-limit -1` is used.
+
+### POST `/slots/{id_slot}?action=restore`: Restore the prompt cache of the specified slot.
 
 *Options:*
 
-`filename`: Name of the file to restore the slot's prompt cache from. The file should be located in the directory specified by the `--slot-save-path` server parameter.
+`filename`: Name of the state to restore. For `store: "disk"` this is a file in the directory specified by the `--slot-save-path` server parameter.
+
+`store`: `"disk"` (default) or `"ram"`. See [Slot state stores](#slot-state-stores).
+
+A RAM restore leaves the entry in the store, so the same state can be restored again. Drop it with `action=drop` once it is no longer needed.
 
 **Response format**
 
@@ -1113,10 +1150,43 @@ In *router mode* the query param `?model={model_id}` has to be set. This endpoin
 {
     "id_slot": 0,
     "filename": "slot_save_file.bin",
+    "store": "disk",
     "n_restored": 1745,
     "n_read": 14309796,
+    "ram_store": {
+        "enabled": true,
+        "count": 1,
+        "bytes": 135000000,
+        "limit": 4294967296
+    },
     "timings": {
         "restore_ms": 42.937
+    }
+}
+```
+
+### POST `/slots/{id_slot}?action=drop`: Free a named state from the RAM store.
+
+Dropping a name that is not in the store is not an error, it reports `n_dropped: 0`. This action never touches disk.
+
+*Options:*
+
+`filename`: Name of the state to free.
+
+**Response format**
+
+```json
+{
+    "id_slot": 0,
+    "filename": "scratch_ab12.bin",
+    "store": "ram",
+    "n_dropped": 1,
+    "n_freed": 135000000,
+    "ram_store": {
+        "enabled": true,
+        "count": 0,
+        "bytes": 0,
+        "limit": 4294967296
     }
 }
 ```

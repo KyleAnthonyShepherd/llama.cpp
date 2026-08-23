@@ -95,6 +95,13 @@ LLAMA_API int32_t llama_expert_tier_max_tokens(void);
 // Decode batches this context sent past that limit.
 LLAMA_API int64_t llama_expert_tier_n_bypassed(const struct llama_context * ctx);
 
+// Re-slot the expert hot store to the VRAM that is free right now, up to the slot count it
+// was asked for at load. llama_set_n_ctx() already does this for its own context after it
+// shrinks, but it cannot see a sibling context on the same device that is about to be
+// resized in lockstep - call this once they have all settled to pick up what they released.
+// Returns the resident slot count, or -1 when the context has no hot store.
+LLAMA_API int32_t llama_expert_hotstore_refit(struct llama_context * ctx);
+
 LLAMA_API ggml_backend_dev_t llama_model_get_device(const struct llama_model * model, int i);
 
 LLAMA_API llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * ctx);

@@ -104,10 +104,11 @@ struct llama_memory_i {
     // ops
     //
 
-    // grow the memory's capacity to n_new (already padded by the caller).
-    // returns false if growth is unsupported by this memory type/topology, or if
+    // set the memory's capacity to n_new (already padded by the caller), in either
+    // direction. a shrink drops the cells above n_new, so the caller must free them first.
+    // returns false if the resize is unsupported by this memory type/topology, or if
     // allocation failed - on failure the object must remain fully usable at its old size.
-    // default: growth unsupported.
+    // default: resize unsupported.
     virtual bool resize(uint32_t n_new) {
         GGML_UNUSED(n_new);
 

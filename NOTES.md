@@ -1647,3 +1647,191 @@ specific trigger path is unverified at runtime**. This is the top thing to check
 user's hardware: a long, open-ended (no explicit `n_predict`, or a large one) generation
 that runs past the initial `-c` size should now keep growing (`grew KV cache
 mid-generation: ...` in the log) instead of truncating.
+
+
+## Real-hardware findings, round 4: what a resize actually costs, and the `-ehs` ratchet
+
+Measured on the user's machine (RTX 3060 Laptop, 6 GB VRAM), Qwen3.6-35B-A3B MTP Q4_K_M
+(20.3 GB), launched with the flags the harness normally uses: `--spec-type draft-mtp
+--spec-draft-n-max 1 --ctx-max 262144 --flash-attn on -ehs -1 -fitt 256 -c 512 -np 1`.
+
+Each of the four resize call sites in `server-context.cpp` now reports its own elapsed time
+(`... in %.1f ms`), so this is repeatable rather than a one-off reading of log timestamps.
+
+Cost basis on this model/quant: **20 KiB per KV cell** for `ctx_tgt` plus 2 KiB per cell for
+the MTP draft context, and **~94 MiB per expert hot-store slot** (29 slots at launch).
+
+### 1. Growth cost is bimodal, not proportional to the step
+
+Forced by a 3-token prompt with an increasing `n_predict`, so each row is one
+`maybe_grow_for_request()` call and nothing else:
+
+| n_ctx        | KV MiB | resize ms | expert slots dropped |
+|--------------|--------|-----------|----------------------|
+| 512 -> 1280   |     25 |      38.0 | 0 |
+| 1280 -> 2304  |     45 |      29.8 | 0 |
+| 2304 -> 4352  |     85 |      84.4 | 0 |
+| 4352 -> 8448  |    165 |     569.0 | 2 |
+| 8448 -> 12544 |    245 |     691.0 | 2 |
+| 12544 -> 16640|    325 |     547.7 | 3 |
+| 16640 -> 24832|    485 |     566.6 | 3 |
+| 24832 -> 33024|    645 |     626.9 | 5 |
+| 33024 -> 49408|    965 |     780.0 | 7 |
+| 49408 -> 65792|   1285 |     905.4 | 9 |
+
+The step size barely matters. What matters is whether the fit has to take slots back from
+the expert hot store: **~30-85 ms when it does not, ~550-900 ms when it does**. Splitting the
+8448 row by log timestamps: 481 ms rebuilding the hot store, 1 ms allocating the KV buffer,
+87 ms on the copy and the draft context. The rebuild share *falls* as the store empties (481
+ms at 27 slots, 174 ms at 7) while the buffer/copy share rises with n_ctx, which is why the
+total stays roughly flat.
+
+Under `-ehs -1` the store claims all free VRAM at launch (431 MiB free at `-c 512`), so on
+this machine essentially every growth past a few hundred MiB is in the expensive regime.
+
+### 2. Shrinking is cheap, and the expert store never comes back
+
+`65792 -> 512` took **43.5 ms** - but no `resize: expert hot store N slots` line follows it.
+The store went 29 -> 27 -> 25 -> 22 -> 19 -> 14 -> 7 -> 0 slots across the sweep above and
+stayed at 0. After the shrink, `nvidia-smi` reported **2980 MiB free** and idle.
+
+Confirmed by re-running the same growth: `512 -> 8448` cost **50.1 ms** the second time
+against **569.0 ms** the first, precisely because there were no experts left to evict.
+
+So growth and shrink were asymmetric in a way that ratcheted: growth took VRAM from `-ehs`,
+shrink handed it back to nobody. An 8-hour agent loop that grows and shrinks repeatedly bled
+the expert cache to zero and then ran with a cold one. Root cause and fix in section 4.
+
+### 3. Choosing the headroom constant
+
+`maybe_grow_for_request()` used to size the cache to `prompt + n_predict`. `n_predict` is a
+ceiling a client picks, not an estimate: a request with `n_predict = 16384` and a 3573-token
+prompt grew to 19968 cells (390 MiB, ~4 expert slots) and then generated 88 tokens. Note that
+`n_predict = -1` already resolved to 0 there, so open-ended requests were *already* relying on
+the reactive hook - the large explicit `n_predict` was the one case that opted out of it.
+
+Sizing to `prompt + headroom` instead costs one reactive resize per `headroom` tokens
+generated. At the ~30 tok/s this machine sustains, `headroom` tokens take `headroom/30`
+seconds, so the overhead is `resize_ms / (headroom/30 * 1000)`:
+
+| headroom | overhead @600 ms | @900 ms | KV held | ~expert slots |
+|----------|------------------|---------|---------|---------------|
+|      256 |            7.0 % |  10.5 % |   5 MiB | 0.05 |
+|      512 |            3.5 % |   5.3 % |  10 MiB | 0.11 |
+|     1024 |            1.8 % |   2.6 % |  20 MiB | 0.21 |
+| **2048** |         **0.9 %**| **1.3 %**|**40 MiB**| **0.43** |
+|     4096 |            0.4 % |   0.7 % |  80 MiB | 0.85 |
+|     8192 |            0.2 % |   0.3 % | 160 MiB | 1.70 |
+
+2048 is the knee: about 1 % of generation time, under half an expert slot. Default for
+`--ctx-grow-headroom`.
+
+Verified end-to-end. Same request that used to grow `512 -> 21248` (~415 MiB) with a
+4801-token prompt now grows `512 -> 6912` (135 MiB) in 54.9 ms, cheap because 135 MiB fits
+without touching the hot store. With `--ctx-grow-headroom 256` to make it fire quickly, the
+reactive hook steps by exactly the headroom - `512 -> 768 -> 1024 -> 1280`, one step per 256
+tokens, 21-31 ms each, ~7.2 s apart at ~35 tok/s (0.4 % overhead). Grow and shrink now read
+the same target through `n_ctx_want_for_request()`, so they cannot disagree: a 4801-token
+request grew once to 5120, the next short request shrank once to 512, and two more short
+requests after it did nothing.
+
+The reactive hook also stopped stepping by `ctx_grow_factor`. A 1.5x multiple of a large
+n_ctx asks for hundreds of MiB in one go, while the measurements above show the cost of a
+resize is roughly flat - so a fixed step is strictly better at size. `--ctx-grow-headroom 0`
+restores the old factor stepping for A/B.
+
+### 4. Why the give-back never landed, and the fix
+
+The give-back path (`llama-context.cpp`, the `!is_grow` branch of `set_n_ctx()`) was already
+there and did fire. It failed, at full verbosity:
+
+```
+W resize: allocate: not enough memory to allocate the GPU hot store of 29 slots (2688 MiB needed, 2642 MiB free on CUDA0)
+W resize: could not re-allocate the hot store at 29 slots, cache is now off
+```
+
+It asked for all 29 slots, missed by 46 MiB, and switched the store off. Two separate defects.
+
+**The fit estimate ignored the pad slices.** Every hot tensor is shaped
+`{ne0, ne1, n_expert_used + hot_s}` - the landing pad rides along with the residents - so a
+store of S residents costs `(n_expert_used + S)` slot-sized slices, not `S`. The estimate
+divided straight through by `bytes_per_slot_total()` and so overcounted by `n_expert_used`
+slots. It undercounted the same way on the other side: it treated only `hot_s * per_slot` of
+the resident buffer as reclaimable when `resize()` in fact frees the pad too.
+
+Fitting the observed table gives 72.7 MiB per slot with a fixed 580 MiB intercept
+(2543/27, 2397/25, 2179/22, 1961/19, 1598/14, 1089/7 MiB) - and 580/72.7 = 8.0, exactly this
+model's `n_expert_used`. So the estimate was consistently 8 slots optimistic, which is how a
+request for 29 got made when only 27 fit.
+
+**A miss cost every slot.** `resize()` frees the old buffer before allocating the new one -
+deliberate, since a shrink happens precisely when VRAM is tight and an allocate-then-free
+peak of old+new is what cannot be afforded. But that leaves nothing to fall back to, so one
+failed `allocate()` set `hot_s = 0`. Overshooting by 46 MiB out of 2688 cost all 29 slots.
+
+The fix puts the layout arithmetic where the layout lives. `llama_expert_hotstore` gained
+`bytes_resident()` and `slots_that_fit(bytes)`; `set_n_ctx()` asks instead of re-deriving.
+And `resize()` now steps down and retries - recomputing from what the device reports free,
+never above `want - 1` - rather than switching off on the first miss.
+
+Verified on the same drain-and-recover sweep. Store drained 29 -> 3 by growth to 65792, then
+one short request shrank the cache and took it back to **27 slots / 2543 MiB** (previously:
+failed, 0 slots, 2980 MiB left idle). Three full grow/shrink cycles ran 27 -> 12 -> 27 with
+no drift and no `cache is now off` events, free VRAM steady at 410 MiB.
+
+Under the default `--ctx-grow-headroom 2048` the two fixes compound. Three cycles of the
+reported workload (4801-token prompt, `n_predict` 16384, then a short request): grow 53.9 ms
+with no eviction, then one cycle that gave back a single slot and restored to 28, then grow
+in **15.0 ms with no eviction at all**. Steady state 28 of 29 slots.
+
+Residual: the store settles 1-2 slots below `hot_s_max`. Chased in section 5.
+
+Note the shrink got slower where it does real work: 43.5 ms -> 694 ms on the drain test,
+because it now rebuilds the store instead of silently declining to. That is the cost of the
+fix, paid once per shrink that actually reclaims slots, and it buys back GBs of expert cache.
+
+### 5. Chasing the last slots: reachable, but 29/29 is not a stable operating point
+
+The store was settling 1-2 slots under `hot_s_max`. Two causes, both addressed:
+
+**The refit could not see the draft's memory.** It ran inside `ctx_tgt`'s `set_n_ctx()`, before
+the server resized the MTP draft in lockstep, so it sized against a device reading taken while
+the draft still held its old (larger) KV. `llama_expert_hotstore_refit()` (new, in
+`llama-ext.h`) lets the caller ask again once every context has settled; `refresh_n_ctx()` in
+the server calls it after the lockstep resize.
+
+**Correctness bug found while doing it.** The first attempt moved the internal refit to *after*
+`graph_reserve()`, reasoning that the compute buffers would then be accounted for. That is
+wrong: a reserved graph holds pointers into the hot store's `dst`/LUT tensors, and `resize()`
+frees them - and these graphs really are reused (`graphs reused = 461` in a normal run). Any
+store resize must be followed by a reserve. The internal refit went back in front of
+`graph_reserve()`; the public one calls `reserve_worst_case_graph()` itself. That block is now
+factored out of `set_n_ctx()` so both share it.
+
+With those in place the store does reach 29/29 - and it should not.
+
+**Filling to the brim makes it thrash.** The refit runs at the *shrunk* context size, where the
+KV cache and the compute buffers are at their smallest, so "free right now" overstates what
+will be free once the next request grows again. Filled to 29, the very next growth reported
+`KV needs 135 MiB with 86 MiB free, dropping 1 hot expert slots` and paid a ~600 ms re-plant
+from host - every single request. Four cycles of the standard workload (4801-token prompt,
+`n_predict` 16384, then a short request):
+
+| VRAM held back | steady store | grow per cycle | evictions |
+|----------------|--------------|----------------|-----------|
+| 16 MiB         |      29 / 29 | 503-720 ms     | every cycle |
+| 1 slot (73 MiB)|      29 / 29 | 503-622 ms     | every cycle |
+| **2 slots (145 MiB)** | **28 / 29** | **31-40 ms** | **none after the first** |
+
+One extra slot of residency (3.4 % of the store) against a ~600 ms re-plant on every request -
+roughly 18 tokens of generation time at 30 tok/s. Not worth it. The reserve is two slots.
+
+That number is fitted to this workload: it is what covers the gap between the device reading at
+`-c 512` and what a ~6912-cell context actually needs. A workload whose contexts grow much
+larger between shrinks would want more. The constant is `vram_reserve` in
+`refit_expert_hotstore()`, and the table above is the shape of the trade.
+
+Deep-drain regression check with the two-slot reserve, three cycles: drained to 8 slots by
+growing to 65792, recovered to 28, 27, 27 - stable, no `cache is now off`, no failed reserves.
+The ratchet stays gone; what changed is that the store now stops one slot short of the ceiling
+on purpose.

@@ -69,6 +69,7 @@ json task_params::to_json(bool only_metrics) const {
             {"n_predict",                 n_predict}, // TODO: deduplicate?
             {"n_keep",                    n_keep},
             {"n_discard",                 n_discard},
+            {"n_ctx_limit",               n_ctx_limit},
             {"ignore_eos",                sampling.ignore_eos},
             {"stream",                    stream},
             {"n_probs",                   sampling.n_probs},
@@ -123,6 +124,7 @@ json task_params::to_json(bool only_metrics) const {
         {"n_predict",                 n_predict}, // TODO: deduplicate?
         {"n_keep",                    n_keep},
         {"n_discard",                 n_discard},
+        {"n_ctx_limit",               n_ctx_limit},
         {"ignore_eos",                sampling.ignore_eos},
         {"stream",                    stream},
         {"logit_bias",                format_logit_bias(sampling.logit_bias)},
@@ -281,6 +283,7 @@ static inline std::string stop_type_to_str(stop_type type) {
         case STOP_TYPE_EOS:   return "eos";
         case STOP_TYPE_WORD:  return "word";
         case STOP_TYPE_LIMIT: return "limit";
+        case STOP_TYPE_CTX_LIMIT: return "ctx_limit";
         default:              return "none";
     }
 }
@@ -418,6 +421,9 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
                 {"index",         index},
                 {"logprobs",      logprobs},
                 {"finish_reason", finish_reason},
+                // non-standard: finish_reason cannot tell the context budget apart from
+                // an ordinary token limit, both of which are "length"
+                {"stop_type",     stop_type_to_str(stop)},
             }
         })},
         {"created",            t},
@@ -456,6 +462,9 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
         {"finish_reason", finish_reason},
         {"index", index},
         {"message", msg.to_json_oaicompat()},
+        // non-standard: finish_reason cannot tell the context budget apart from an
+        // ordinary token limit, both of which are "length"
+        {"stop_type", stop_type_to_str(stop)},
     };
 
     if (!stream && probs_output.size() > 0) {
@@ -518,6 +527,8 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
                 {"finish_reason", finish_reason},
                 {"index", index},
                 {"delta", json::object()},
+                // non-standard: see to_json_oaicompat_chat()
+                {"stop_type", stop_type_to_str(stop)},
             },
         })},
         {"created",            t},
@@ -1575,10 +1586,12 @@ json server_task_result_metrics::to_json() {
 json server_task_result_slot_save_load::to_json() {
     if (is_save) {
         return json {
-            { "id_slot",   id_slot },
-            { "filename",  filename },
-            { "n_saved",   n_tokens },
-            { "n_written", n_bytes },
+            { "id_slot",    id_slot },
+            { "filename",   filename },
+            { "store",      store },
+            { "n_saved",    n_tokens },
+            { "n_written",  n_bytes },
+            { "ram_store",  ram_store },
             { "timings", {
                 { "save_ms", t_ms }
             }},
@@ -1588,11 +1601,27 @@ json server_task_result_slot_save_load::to_json() {
     return json {
         { "id_slot",    id_slot },
         { "filename",   filename },
+        { "store",      store },
         { "n_restored", n_tokens },
         { "n_read",     n_bytes },
+        { "ram_store",  ram_store },
         { "timings", {
             { "restore_ms", t_ms }
         }},
+    };
+}
+
+//
+// server_task_result_slot_drop
+//
+json server_task_result_slot_drop::to_json() {
+    return json {
+        { "id_slot",   id_slot },
+        { "filename",  filename },
+        { "store",     "ram" },
+        { "n_dropped", n_bytes > 0 ? 1 : 0 },
+        { "n_freed",   n_bytes },
+        { "ram_store", ram_store },
     };
 }
 

@@ -72,6 +72,191 @@ def test_slot_save_restore():
     assert res.body["timings"]["prompt_n"] == 1
 
 
+def test_slot_save_restore_ram():
+    global server
+    server.slot_ram_limit = -1  # no limit
+    server.start()
+
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "What is the capital of France?",
+        "id_slot": 1,
+        "cache_prompt": True,
+    })
+    assert res.status_code == 200
+    assert res.body["timings"]["prompt_n"] == 21  # all tokens are processed
+
+    res = server.make_request("POST", "/slots/1?action=save", data={
+        "filename": "slot1.bin",
+        "store": "ram",
+    })
+    assert res.status_code == 200
+    assert res.body["store"] == "ram"
+    assert res.body["n_saved"] == 84
+    n_written = res.body["n_written"]
+    assert n_written > 0
+    assert res.body["ram_store"]["count"] == 1
+    assert res.body["ram_store"]["bytes"] == n_written
+
+    # nothing was written to disk
+    assert not os.path.exists(os.path.join(server.slot_save_path, "slot1.bin"))
+
+    # move the slot off the saved state
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "What is the capital of Germany?",
+        "id_slot": 1,
+        "cache_prompt": True,
+    })
+    assert res.status_code == 200
+
+    # the state is still in the store after a restore, so it can be restored again
+    for _ in range(2):
+        res = server.make_request("POST", "/slots/0?action=restore", data={
+            "filename": "slot1.bin",
+            "store": "ram",
+        })
+        assert res.status_code == 200
+        assert res.body["store"] == "ram"
+        assert res.body["n_restored"] == 84
+        assert res.body["ram_store"]["count"] == 1
+
+        res = server.make_request("POST", "/completion", data={
+            "prompt": "What is the capital of Germany?",
+            "id_slot": 0,
+            "cache_prompt": True,
+        })
+        assert res.status_code == 200
+        assert res.body["timings"]["prompt_n"] == 6  # only the different part is processed
+
+
+def test_slot_ram_drop():
+    global server
+    server.slot_ram_limit = -1
+    server.start()
+
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "What is the capital of France?",
+        "id_slot": 1,
+        "cache_prompt": True,
+    })
+    assert res.status_code == 200
+
+    res = server.make_request("POST", "/slots/1?action=save", data={
+        "filename": "scratch.bin",
+        "store": "ram",
+    })
+    assert res.status_code == 200
+    n_written = res.body["n_written"]
+
+    res = server.make_request("POST", "/slots/1?action=drop", data={
+        "filename": "scratch.bin",
+    })
+    assert res.status_code == 200
+    assert res.body["n_dropped"] == 1
+    assert res.body["n_freed"] == n_written
+    assert res.body["ram_store"]["count"] == 0
+    assert res.body["ram_store"]["bytes"] == 0
+
+    # dropping a name that is gone is not an error
+    res = server.make_request("POST", "/slots/1?action=drop", data={
+        "filename": "scratch.bin",
+    })
+    assert res.status_code == 200
+    assert res.body["n_dropped"] == 0
+
+    # ... but restoring it is
+    res = server.make_request("POST", "/slots/1?action=restore", data={
+        "filename": "scratch.bin",
+        "store": "ram",
+    })
+    assert res.status_code != 200
+    assert "scratch.bin" in res.body["error"]["message"]
+
+
+def test_slot_ram_limit_refuses_save():
+    global server
+    limit_mib = 1
+    server.slot_ram_limit = limit_mib
+    server.start()
+
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "What is the capital of France?",
+        "id_slot": 1,
+        "cache_prompt": True,
+    })
+    assert res.status_code == 200
+
+    res = server.make_request("POST", "/slots/1?action=save", data={
+        "filename": "fill_0.bin",
+        "store": "ram",
+    })
+    assert res.status_code == 200
+    n_written = res.body["n_written"]
+    assert res.body["ram_store"]["limit"] == limit_mib * 1024 * 1024
+
+    # saving the same slot again under a new name costs the same, so this many more saves
+    # must run into the limit. It has to be refused, never silently evicted
+    n_saved = 1
+    for i in range(1, limit_mib * 1024 * 1024 // n_written + 2):
+        res = server.make_request("POST", "/slots/1?action=save", data={
+            "filename": f"fill_{i}.bin",
+            "store": "ram",
+        })
+        if res.status_code != 200:
+            break
+        assert res.body["ram_store"]["count"] == n_saved + 1
+        n_saved += 1
+    else:
+        assert False, "the RAM slot store never reached its limit"
+
+    assert res.status_code == 503
+    assert "limit" in res.body["error"]["message"]
+
+    # overwriting an existing name is still allowed - it replaces, it does not add
+    res = server.make_request("POST", "/slots/1?action=save", data={
+        "filename": "fill_0.bin",
+        "store": "ram",
+    })
+    assert res.status_code == 200
+    assert res.body["ram_store"]["count"] == n_saved
+
+    # falling back to disk still works
+    res = server.make_request("POST", "/slots/1?action=save", data={
+        "filename": "fallback.bin",
+    })
+    assert res.status_code == 200
+    assert res.body["store"] == "disk"
+
+
+def test_slot_ram_disabled_by_default():
+    global server
+    server.start()
+
+    res = server.make_request("POST", "/completion", data={
+        "prompt": "What is the capital of France?",
+        "id_slot": 1,
+        "cache_prompt": True,
+    })
+    assert res.status_code == 200
+
+    res = server.make_request("POST", "/slots/1?action=save", data={
+        "filename": "slot1.bin",
+        "store": "ram",
+    })
+    assert res.status_code == 501
+    assert res.body["error"]["type"] == "not_supported_error"
+
+
+def test_slot_save_rejects_unknown_store():
+    global server
+    server.start()
+
+    res = server.make_request("POST", "/slots/1?action=save", data={
+        "filename": "slot1.bin",
+        "store": "nvme",
+    })
+    assert res.status_code == 400
+
+
 def test_slot_erase():
     global server
     server.start()

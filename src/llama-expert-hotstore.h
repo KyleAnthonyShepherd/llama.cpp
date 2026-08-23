@@ -16,6 +16,9 @@ struct llama_expert_hotstore {
     int n_layers;
     int n_experts;
     int hot_s;
+    // the slot count the store was asked for at load. resize() never goes above it: the
+    // fitter already weighed that number against everything else on the device.
+    int hot_s_max;
 
     // Landing pad. The old layout sent every cold draw of a token to one sentinel slot, so a
     // token's id list held duplicates, and the CUDA id compaction miscounts those above 4 tokens
@@ -73,12 +76,21 @@ struct llama_expert_hotstore {
     // VRAM one slot costs across every layer
     size_t bytes_per_slot_total() const;
 
-    // Shrink to new_hot_s slots and hand the VRAM back, for when a growing KV cache
-    // needs room the store was given when the context was still small. Frees the old
-    // buffer before allocating the new one - a shrink happens precisely when VRAM is
-    // tight, so an allocate-then-free peak of old+new is what we cannot afford. That
-    // costs a re-plant from host on every shrink. Returns bytes released.
-    size_t shrink(int new_hot_s, const llama_expert_heatmap & heatmap, ggml_backend_buffer_type_t gpu_buft);
+    // VRAM the store holds on the device right now, 0 when it is off. resize() frees this
+    // before it allocates, so it is available to a re-slot on top of what the device reports free
+    size_t bytes_resident() const;
+
+    // largest resident slot count whose store fits in `bytes`, clamped to [0, hot_s_max].
+    // Not bytes/bytes_per_slot_total(): every hot tensor also carries n_expert_used pad
+    // slices, so a store of S residents costs (n_expert_used + S) slot-sized slices
+    int slots_that_fit(size_t bytes) const;
+
+    // Re-slot the store to new_hot_s, clamped to [0, hot_s_max]. Shrinking hands VRAM back
+    // to a growing KV cache; growing takes it back once the context shrinks again. Frees
+    // the old buffer before allocating the new one - a shrink happens precisely when VRAM
+    // is tight, so an allocate-then-free peak of old+new is what we cannot afford. That
+    // costs a re-plant from host either way. Returns bytes released (0 when it grew).
+    size_t resize(int new_hot_s, const llama_expert_heatmap & heatmap, ggml_backend_buffer_type_t gpu_buft);
 
     // true once the first copy of the top-S experts landed (once per session)
     bool is_filled = false;

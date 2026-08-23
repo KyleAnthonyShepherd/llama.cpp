@@ -144,10 +144,11 @@ public:
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
 
-    // grow the cache capacity to n_new cells (already padded to n_pad by the caller).
-    // supported only for n_stream == 1 and caches that don't share cells with another
-    // cache (see [TAG_KV_CACHE_SHARE_CELLS]). on failure the cache remains fully usable
-    // at its old size - no partial state is applied.
+    // set the cache capacity to n_new cells (already padded to n_pad by the caller), in
+    // either direction. supported only for n_stream == 1 and caches that don't share cells
+    // with another cache (see [TAG_KV_CACHE_SHARE_CELLS]). a shrink is refused while any
+    // cell at or above n_new is still in use. on failure the cache remains fully usable at
+    // its old size - no partial state is applied.
     bool resize(uint32_t n_new) override;
 
     // state write/load

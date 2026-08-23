@@ -1012,16 +1012,19 @@ extern "C" {
     // If set to true, the model will only attend to the past tokens
     LLAMA_API void llama_set_causal_attn(struct llama_context * ctx, bool causal_attn);
 
-    // Grow (never shrink) ctx's KV cache capacity to n_ctx_new cells (rounded up
+    // Set ctx's KV cache capacity to n_ctx_new cells, in either direction (rounded up
     // internally to whatever padding the underlying cache requires). Can be called at
     // any time between llama_decode()/llama_encode() calls. llama_decode() will also
-    // call this automatically, when the cache runs out of room, up to the bound set by
+    // grow the cache automatically, when it runs out of room, up to the bound set by
     // llama_context_params::n_ctx_max (0 = automatic growth disabled, the default).
+    // Shrinking drops the cells above the new size, so the caller must first release
+    // them with llama_memory_seq_rm() - it is refused while any of them is still in use.
     // Returns:
-    //    0 = success
-    //   -1 = invalid request (n_ctx_new <= current llama_n_ctx(ctx), or the memory
-    //        topology does not support growth, e.g. multiple KV streams / n_seq_max > 1)
-    //   -2 = allocation failure; the context remains fully valid at its old size
+    //    0 = success (also when the cache already has the size asked for)
+    //   -1 = invalid request (n_ctx_new is 0, or the context has no memory module)
+    //   -2 = the memory module refused the resize (unsupported topology, e.g. multiple KV
+    //        streams / n_seq_max > 1; cells above n_ctx_new still in use; or allocation
+    //        failure). The context remains fully valid at its old size.
     LLAMA_API int32_t llama_set_n_ctx(struct llama_context * ctx, uint32_t n_ctx_new);
 
     // Set whether the model is in warmup mode or not

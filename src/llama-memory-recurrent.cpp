@@ -700,7 +700,7 @@ bool llama_memory_recurrent::get_can_shift() const {
 bool llama_memory_recurrent::resize(uint32_t n_new) {
     GGML_UNUSED(n_new);
 
-    // capacity is sized from n_seq_max, not the context length - nothing to grow
+    // capacity is sized from n_seq_max, not the context length - nothing to resize
     return true;
 }
 

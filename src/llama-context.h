@@ -78,6 +78,14 @@ struct llama_context {
 
     int64_t get_expert_tier_n_bypassed() const;
 
+    // re-slot the expert hot store to the VRAM free right now, up to hot_s_max.
+    // `reserve` re-reserves the compute graph when the store changed - a reserved graph
+    // holds pointers into the store's tensors, which the re-slot frees
+    int32_t refit_expert_hotstore(bool reserve);
+
+    // reserve the worst-case graph for the current sizes; false on failure
+    bool reserve_worst_case_graph();
+
     // return true if the memory was updated
     bool memory_update(bool optimize);
 
@@ -124,7 +132,7 @@ struct llama_context {
     void set_causal_attn(bool value);
     void set_warmup(bool value);
 
-    // grow the KV cache to n_ctx_new cells; see llama_set_n_ctx() in llama.h for the
+    // resize the KV cache to n_ctx_new cells; see llama_set_n_ctx() in llama.h for the
     // return code semantics
     int32_t set_n_ctx(uint32_t n_ctx_new);
 

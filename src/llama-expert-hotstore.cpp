@@ -22,6 +22,7 @@ llama_expert_hotstore::llama_expert_hotstore(
     n_layers(n_layers),
     n_experts(n_experts),
     hot_s(hot_s),
+    hot_s_max(hot_s),
     n_expert_used(n_expert_used),
     bytes_per_slot(n_layers, 0),
     sync_period(sync_period),
@@ -191,13 +192,35 @@ size_t llama_expert_hotstore::bytes_per_slot_total() const {
     return n;
 }
 
-size_t llama_expert_hotstore::shrink(int new_hot_s, const llama_expert_heatmap & heatmap,
-                                     ggml_backend_buffer_type_t gpu_buft) {
-    if (!buf || new_hot_s >= hot_s) {
+size_t llama_expert_hotstore::bytes_resident() const {
+    return buf ? ggml_backend_buffer_get_size(buf.get()) : 0;
+}
+
+int llama_expert_hotstore::slots_that_fit(size_t bytes) const {
+    const size_t per_slot = bytes_per_slot_total();
+    if (per_slot == 0) {
         return 0;
     }
 
-    const size_t released = ggml_backend_buffer_get_size(buf.get());
+    const int n = (int) (bytes / per_slot) - n_expert_used;
+
+    return std::max(0, std::min(n, hot_s_max));
+}
+
+size_t llama_expert_hotstore::resize(int new_hot_s, const llama_expert_heatmap & heatmap,
+                                     ggml_backend_buffer_type_t gpu_buft) {
+    new_hot_s = std::min(new_hot_s, hot_s_max);
+
+    if (new_hot_s == hot_s) {
+        return 0;
+    }
+
+    // a store that never allocated (no CUDA backend, or allocate() failed) stays off
+    if (!buf && hot_s > 0) {
+        return 0;
+    }
+
+    const size_t released = buf ? ggml_backend_buffer_get_size(buf.get()) : 0;
 
     // the graph holds pointers to dst/LUT tensors, so drop the registrations with them
     llama_expert_tier_clear();
@@ -214,13 +237,39 @@ size_t llama_expert_hotstore::shrink(int new_hot_s, const llama_expert_heatmap &
         return released;
     }
 
-    hot_s = new_hot_s;
-    for (int il = 0; il < n_layers; il++) {
-        slot_to_expert[il].assign(hot_s, -1);
-        dwell_count[il].assign(hot_s, 0);
+    // allocate() weighs the request against what the device reports free at that instant,
+    // which moves under us - compute buffers, fragmentation, a sibling context resizing
+    // next. Missing the target must not cost every slot, so step down and try again.
+    // The old buffer is already gone by here, so there is nothing to fall back to.
+    bool ok = false;
+
+    for (int want = new_hot_s; want > 0 && !ok; ) {
+        hot_s = want;
+        for (int il = 0; il < n_layers; il++) {
+            slot_to_expert[il].assign(hot_s, -1);
+            dwell_count[il].assign(hot_s, 0);
+        }
+
+        try {
+            ok = allocate(gpu_buft);
+        } catch (const std::exception & e) {
+            LLAMA_LOG_WARN("%s: %s\n", __func__, e.what());
+        }
+
+        if (!ok) {
+            ctx.reset();
+
+            size_t free_mem = 0, total_mem = 0;
+            ggml_backend_dev_t dev = ggml_backend_buft_get_device(gpu_buft);
+            if (dev) {
+                ggml_backend_dev_memory(dev, &free_mem, &total_mem);
+            }
+
+            want = std::min(slots_that_fit(free_mem), want - 1);
+        }
     }
 
-    if (!allocate(gpu_buft)) {
+    if (!ok) {
         hot_s = 0;
         LLAMA_LOG_WARN("%s: could not re-allocate the hot store at %d slots, cache is now off\n", __func__, new_hot_s);
         return released;
@@ -228,10 +277,10 @@ size_t llama_expert_hotstore::shrink(int new_hot_s, const llama_expert_heatmap &
     copy_top_s(heatmap);
 
     const size_t kept = buf ? ggml_backend_buffer_get_size(buf.get()) : 0;
-    LLAMA_LOG_INFO("%s: expert hot store %d slots, released %zu MiB\n",
-            __func__, hot_s, (released - kept) / (1024 * 1024));
+    LLAMA_LOG_INFO("%s: expert hot store %d slots, %zu MiB\n",
+            __func__, hot_s, kept / (1024 * 1024));
 
-    return released - kept;
+    return released > kept ? released - kept : 0;
 }
 
 void llama_expert_hotstore::plant_static() {
@@ -476,11 +525,11 @@ void llama_expert_hotstore::log() const {
     LLAMA_LOG("  total bytes/slot across all layers = %zu (%zu MiB)\n",
         total, total / (1024 * 1024));
     if (buf) {
-        LLAMA_LOG("  GPU hot store allocated: %s, %zu bytes (%zu MiB) for %d+1 slots (%d expert + 1 sentinel)\n",
+        LLAMA_LOG("  GPU hot store allocated: %s, %zu bytes (%zu MiB) for %d+%d slices (%d expert + %d pad)\n",
             ggml_backend_buffer_name(buf.get()),
             ggml_backend_buffer_get_size(buf.get()),
             ggml_backend_buffer_get_size(buf.get()) / (1024 * 1024),
-            hot_s, hot_s);
+            hot_s, n_expert_used, hot_s, n_expert_used);
     } else if (hot_s > 0) {
         LLAMA_LOG("  hot store DISABLED (%d slots requested)\n", hot_s);
     }

@@ -1698,6 +1698,33 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CTX_GROW_FACTOR"));
     add_opt(common_arg(
+        {"--ctx-grow-headroom"}, "N",
+        string_format(
+            "spare cells the server keeps ahead of generation when `--ctx-max` sizes the KV cache "
+            "(default: %d, 0 = step by --ctx-grow-factor instead). n_predict is a ceiling a client picks, "
+            "not an estimate, so it caps this headroom but never sets it - a request asking for 16k tokens "
+            "no longer reserves 16k cells it will not use",
+            params.n_ctx_grow_headroom),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("ctx-grow-headroom must be non-negative");
+            }
+            params.n_ctx_grow_headroom = value;
+        }
+    ).set_env("LLAMA_ARG_CTX_GROW_HEADROOM"));
+    add_opt(common_arg(
+        {"--ctx-limit"}, "N",
+        string_format(
+            "stop generation cleanly once the context holds N tokens, wherever that lands - "
+            "during prompt processing, reasoning, or output (default: %d, 0 = disabled). "
+            "Prompt tokens past N are not processed. Lets an agent loop keep room to write a "
+            "handoff before it runs out of context; requests may override it with n_ctx_limit",
+            params.n_ctx_limit),
+        [](common_params & params, int value) {
+            params.n_ctx_limit = value;
+        }
+    ).set_env("LLAMA_ARG_CTX_LIMIT").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"-n", "--predict", "--n-predict"}, "N",
         string_format(
             ex == LLAMA_EXAMPLE_COMPLETION
@@ -3681,6 +3708,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--slot-ram-limit"}, "N",
+        string_format(
+            "max RAM in MiB held by named slot states saved with `store: \"ram\"` (default: %d, 0 = disabled, -1 = no limit). "
+            "A save that would breach the limit is refused, it does not evict anything. These states are lost on restart",
+            params.slot_ram_limit_mib),
+        [](common_params & params, int value) {
+            if (value < -1) {
+                throw std::invalid_argument("slot-ram-limit must be -1 or greater");
+            }
+            params.slot_ram_limit_mib = value;
+        }
+    ).set_env("LLAMA_ARG_SLOT_RAM_LIMIT").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",

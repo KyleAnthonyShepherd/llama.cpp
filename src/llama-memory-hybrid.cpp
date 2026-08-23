@@ -203,7 +203,7 @@ void llama_memory_hybrid::state_read(llama_io_read_i & io, llama_seq_id seq_id, 
 
 bool llama_memory_hybrid::resize(uint32_t n_new) {
     // the recurrent child's state size depends on n_seq_max, not the context length,
-    // so only the attention child needs to grow
+    // so only the attention child needs to be resized
     return mem_attn->resize(n_new);
 }
 

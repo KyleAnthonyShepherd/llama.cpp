@@ -150,7 +150,7 @@ llama_pos llama_kv_cache_iswa::seq_pos_max(llama_seq_id seq_id) const {
 
 bool llama_kv_cache_iswa::resize(uint32_t n_new) {
     // the SWA cache is window-sized (or, with --swa-full, a one-time snapshot of the base
-    // size taken at construction) and does not need to track the base cache's growth
+    // size taken at construction) and does not need to track the base cache's size
     return kv_base->resize(n_new);
 }
 

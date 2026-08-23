@@ -6,10 +6,11 @@
 // grow-then-keep-decoding flow would need (that plumbing belongs to a later phase).
 //
 // what is verified for each {flash-attn, KV type} configuration:
-//   - resize() rejects growing to a smaller-or-equal size, leaving the cache fully usable
-//   - resize() to a valid larger size succeeds and reports the new size
+//   - resize() rejects a shrink that would drop live cells, leaving the cache fully usable
+//   - resize() to the size the cache already has is a no-op success
+//   - resize() to a valid larger size, and back down again, succeed and report the new size
 //   - the previously-used cells' K and (both transposed and non-transposed) V bytes are
-//     preserved exactly
+//     preserved exactly, in both directions
 //   - cell/sequence metadata (seq_pos_max) is preserved
 
 #include "arg.h"
@@ -22,6 +23,7 @@
 #include <cstring>
 #include <clocale>
 #include <vector>
+
 
 static llama_context * make_ctx(
         llama_model * model,
@@ -74,9 +76,10 @@ static bool run_scenario(
         ggml_type type_v) {
     fprintf(stderr, "=== scenario: %s ===\n", label);
 
-    const uint32_t n_small = 256;
-    const uint32_t n_big   = 512;
-    const uint32_t n_fill  = 200; // < n_small, so growth is required to go past it
+    const uint32_t n_small = 512;
+    const uint32_t n_big   = 1024;
+    const uint32_t n_fill  = 400; // < n_small, so growth is required to go past it
+    const uint32_t n_tiny  = 256; // < n_fill, so shrinking this far would drop live cells
 
     llama_context * ctx = make_ctx(model, n_small, fa, type_k, type_v);
     if (!ctx) {
@@ -147,14 +150,15 @@ static bool run_scenario(
             : read_contig(v0, n_fill * n_embd_v_gqa * type_size_v);
     }
 
-    // failure path (n_new <= current size) must leave the cache untouched and usable.
+    // failure path (a shrink that would drop cells still in use) must leave the cache
+    // untouched and usable.
     // (an allocation-failure path, e.g. resize() to a size too large to fit in memory, is
     // exercised the same way per the implementation - not covered here since reliably
     // forcing a real allocation failure without risking OOM-killing the test process
     // needs a memory-constrained environment, e.g. a bounded RLIMIT_AS)
 
-    if (kv->resize(n_small)) {
-        fprintf(stderr, "%s: resize() to an equal size unexpectedly succeeded\n", label);
+    if (kv->resize(n_tiny)) {
+        fprintf(stderr, "%s: resize() below the used range unexpectedly succeeded\n", label);
         llama_free(ctx);
         return false;
     }
@@ -166,6 +170,13 @@ static bool run_scenario(
     }
     // undo the probe decode above (its position is not part of the fixed fill range)
     llama_memory_seq_rm(mem, 0, (llama_pos) n_fill, -1);
+
+    // resizing to the size the cache already has is a no-op success
+    if (!kv->resize(n_small) || kv->get_size() != n_small) {
+        fprintf(stderr, "%s: resize() to the current size did not succeed as a no-op\n", label);
+        llama_free(ctx);
+        return false;
+    }
 
     // the real growth
     if (!kv->resize(n_big)) {
@@ -208,6 +219,52 @@ static bool run_scenario(
             return false;
         }
     }
+
+    // and back down: the same copy path in the other direction. the used range stays below
+    // n_small, so the shrink drops only empty cells
+    if (!kv->resize(n_small)) {
+        fprintf(stderr, "%s: resize() back down to a valid smaller size failed\n", label);
+        llama_free(ctx);
+        return false;
+    }
+
+    if (kv->get_size() != n_small) {
+        fprintf(stderr, "%s: unexpected size after shrink: %u (expected %u)\n", label, kv->get_size(), n_small);
+        llama_free(ctx);
+        return false;
+    }
+
+    if (llama_memory_seq_pos_max(mem, 0) != pos_max_before) {
+        fprintf(stderr, "%s: seq_pos_max changed across shrink (%d -> %d)\n",
+                label, pos_max_before, llama_memory_seq_pos_max(mem, 0));
+        llama_free(ctx);
+        return false;
+    }
+
+    k0 = kv->get_k_storage(0);
+    v0 = kv->get_v_storage(0);
+
+    const std::vector<uint8_t> k_shrunk = read_contig(k0, n_fill * n_embd_k_gqa * type_size_k);
+    if (k_shrunk != k_before) {
+        fprintf(stderr, "%s: K bytes changed across shrink\n", label);
+        llama_free(ctx);
+        return false;
+    }
+
+    if (v0) {
+        const std::vector<uint8_t> v_shrunk = v_trans
+            ? read_rows(v0, n_fill * type_size_v, n_embd_v_gqa, n_small * type_size_v)
+            : read_contig(v0, n_fill * n_embd_v_gqa * type_size_v);
+        if (v_shrunk != v_before) {
+            fprintf(stderr, "%s: V bytes changed across shrink\n", label);
+            llama_free(ctx);
+            return false;
+        }
+    }
+
+    // note: no decode probe after a *successful* resize, in either direction - a raw
+    // resize() leaves the scheduler holding a graph sized for the old cache, and decoding
+    // through that crashes. Re-reserving is llama_set_n_ctx()'s job, not resize()'s
 
     fprintf(stderr, "%s: OK\n", label);
 

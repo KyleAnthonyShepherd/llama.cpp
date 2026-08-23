@@ -243,13 +243,19 @@ point it at the wrong kind.)
 
 ### 2.2 What it's actually checking
 
-For each of the three configs: decodes ~200 tokens to fill part of the cache, snapshots
-the raw K/V tensor bytes, calls the internal `resize()` to grow the cache, then checks:
-growing to an equal-or-smaller size is correctly rejected (and the cache stays usable
-afterward); growing to a valid larger size succeeds; the cache's reported size updated
-correctly; the sequence's cached position range didn't change; and the K/V bytes for the
-previously-decoded range are **byte-identical** before and after — i.e. no data
-corruption during the copy.
+For each of the three configs: decodes 400 tokens to fill part of the cache, snapshots
+the raw K/V tensor bytes, then drives the internal `resize()` in both directions and
+checks: a shrink that would drop cells still in use is correctly rejected (and the cache
+stays usable afterward); a resize to the size the cache already has is a no-op success;
+growing to a valid larger size succeeds, and shrinking back down again succeeds; the
+cache's reported size updated correctly each time; the sequence's cached position range
+didn't change; and the K/V bytes for the previously-decoded range are **byte-identical**
+across both the grow and the shrink — i.e. no data corruption during either copy.
+
+Note the test never decodes after a *successful* resize. A raw `resize()` leaves the
+scheduler holding a graph sized for the old cache, and decoding through that crashes;
+re-reserving is `llama_set_n_ctx()`'s job (§3), not `resize()`'s. Section 4 is where
+decode-after-resize gets exercised.
 
 ### 2.3 GPU-specific things worth double-checking on your hardware
 
@@ -463,3 +469,239 @@ after pulling the latest commit: do a **full clean rebuild** (not just an increm
 `rmdir /s build` and reconfigure, or at minimum rebuild every target, not just
 `llama-server`) before assuming it's still broken. See `NOTES.md`'s "Real-hardware
 findings, round 2" section for the full diagnosis.
+
+---
+
+## 5. Testing automatic context *shrinking*
+
+`--ctx-max` grows the KV cache on demand. It now also gives cells back: when a request
+needs far less room than the cache is holding, the server shrinks it before prefill. This
+is for the agent-loop pattern where a session fills the context, writes a handoff file,
+and is replaced by a fresh instance starting from a short prompt - without it, the cache
+stays at the session high-water mark for the life of the server.
+
+The shrink is deliberately lazy. It only fires when the target is at most half of what is
+currently allocated (a resize copies the whole cache, so a small saving is not worth
+paying for), it never goes below the `-c/--ctx-size` the server launched with, and it only
+drops cells the request was going to discard anyway.
+
+### 5.1 The command
+
+```bat
+build-cuda\bin\Release\llama-server.exe -m your-model.gguf ^
+  -c 8192 --ctx-max 262144 --parallel 1 --port 8080
+```
+
+### 5.2 What to watch for
+
+Send a long request, then a short one. The log should show both directions:
+
+```
+slot maybe_grow_f: id  0 | task 0  | grew KV cache ahead of prefill: n_ctx 8192 -> 5120 ...
+slot maybe_shrink: id  0 | task 18 | shrank KV cache ahead of prefill: n_ctx 5120 -> 8192 (prompt = 5 tokens, reused = 0)
+```
+
+and, from libllama itself:
+
+```
+llama_context::set_n_ctx: n_ctx: 204800 -> 16384 (n_ctx_seq: 204800 -> 16384)
+llama_kv_cache::resize: resizing KV cache: 204800 -> 16384 cells
+```
+
+Then confirm generation still works *after* the shrink - that is the part worth watching,
+since it depends on the graph being re-reserved at the new size. A cycle of
+long-then-short requests exercises grow and shrink repeatedly against the same context.
+
+### 5.3 The expert hot store
+
+On a MoE model with `-ehs`, growth already drops hot expert slots to make room for the KV
+cache. Shrinking now runs that in reverse: once the cache has released its VRAM, the store
+is taken back up towards the slot count it was asked for at load, bounded by what the
+device reports free. The store is never taken above its original `-ehs` value - the fitter
+already weighed that number against everything else on the device.
+
+An easy way to force the whole cycle without waiting on a huge prefill: growth is sized
+from `prompt + n_predict`, so a *one-token* prompt with a large `n_predict` grows the cache
+at prefill time. Fire it, let the client disconnect, then send an ordinary short request to
+trigger the shrink.
+
+```bat
+curl -s http://127.0.0.1:8080/completion -H "Content-Type: application/json" ^
+  -d "{\"prompt\":\"Hello\",\"n_predict\":70000,\"cache_prompt\":false}" --max-time 30
+curl -s http://127.0.0.1:8080/completion -H "Content-Type: application/json" ^
+  -d "{\"prompt\":\"The capital of France is\",\"n_predict\":24,\"cache_prompt\":false}"
+```
+
+### 5.4 What was verified
+
+**Small model, mechanics only** (`stories15M-q4_0.gguf`, over HTTP): four full grow/shrink
+cycles (512 -> 5120 -> 512), each followed by correct generation, plus the `resize()` unit
+test's byte-identity checks in both directions.
+
+**Real model, hot store included**: `Qwen3.6-35B-A3B-UD-Q4_K_S` (19.9 GiB) on a 6 GB
+RTX 3060 Laptop, launched with `-c 2048 --ctx-max 131072 -np 1 -ehs -1 -fitt 256`. At load
+the fitter took 27 slots (2389 MiB, ~88 MiB/slot) leaving 567 MiB free, with the KV at
+20 KiB/cell. Two grow/shrink cycles:
+
+```
+set_n_ctx: KV needs 1370 MiB with 424 MiB free, dropping 14 hot expert slots
+resize: expert hot store 13 slots, 1433 MiB
+resize: resizing KV cache: 2048 -> 70144 cells
+...
+resize: resizing KV cache: 70144 -> 2048 cells
+resize: expert hot store 27 slots, 2389 MiB
+```
+
+The store came back to the full 27 slots both times, generation after each shrink was
+coherent, and the hot hit rate settled at 15-23%, i.e. the re-planted store is actually
+being routed through and not merely allocated. VRAM ended at 5489 MiB used / 506 MiB free
+against 5428 / 567 at load.
+
+Worth knowing: the second cycle dropped 17 slots where the first dropped 14, because the
+free-VRAM reading that drives the drop decision was lower (252 vs 424 MiB). That reading is
+taken inside `set_n_ctx()` mid-request, not at idle, so it is not directly comparable to
+what `nvidia-smi` shows between requests. The store regrows to the same count afterwards
+either way, so this is a deeper dip mid-cycle, not a permanent loss.
+
+**A resize does not leak VRAM.** Measured at idle across a full cycle with `-ehs 0`, so the
+hot store is not a confounder (used / free MiB):
+
+| | plain | with `--spec-type draft-mtp` |
+| --- | --- | --- |
+| after load (n_ctx 2048) | 4573 / 1422 | 4443 / 1552 |
+| after grow to 70144 | 5800 / 195 | 5857 / 138 |
+| after shrink to 2048 | 4492 / 1503 | 4475 / 1520 |
+
+Both configs come back to their starting footprint (within ~30 MiB), so the compute buffers
+are *not* ratcheting up across a grow/shrink cycle in practice, and neither is `ctx_dft`.
+The `// TODO: also consider shrinking the buffer` in `llama-context.cpp` is still real, but
+it is not costing anything measurable here.
+
+**With MTP drafting** (same model and flags plus `--spec-type draft-mtp
+--spec-draft-n-max 3`): `ctx_dft` is a separate context for this architecture, and it
+tracks `ctx_tgt` in both directions. Two cycles, no `failed to resize` warnings:
+
+```
+srv  refresh_n_ct: resized MTP draft context in lockstep: n_ctx 2048 -> 70144
+...
+srv  refresh_n_ct: resized MTP draft context in lockstep: n_ctx 70144 -> 2048
+```
+
+The shrink direction is the one that could have gone wrong - a resize is refused while any
+cell above the target is still live, and `ctx_dft` holds its own cells. It works because
+the shrink helper's `seq_rm` runs through `common_memory`, which covers both contexts, so
+`ctx_dft` is already clear by the time it is asked to shrink.
+
+Drafting keeps working across the boundary: acceptance was 0.595 (mean len 2.79) before any
+resize, then 0.771 / 3.25 and 0.537 / 2.61 after the two shrinks - i.e. inside the normal
+run-to-run spread, not degraded. Generation stayed coherent throughout.
+
+Under MTP the mid-cycle dip is deeper: the store fell to 3 slots during the second grow
+before coming back to 20. `ctx_dft` holds VRAM of its own, so the ceiling is 20 rather than
+27 here.
+
+Read that "3 slots" carefully, though - it is not 3 slots' worth of VRAM. The hot tensor
+holds `n_expert_used + hot_s` slices, because every cold draw position needs its own zero
+slice (the landing pad, see `llama-expert-hotstore.h`). At 68.3 MiB per slice and
+`n_expert_used = 8`, the pad alone is 546 MiB that can never be freed:
+
+| hot_s | slices | buffer |
+| --- | --- | --- |
+| 27 | 8 + 27 = 35 | 2389 MiB |
+| 20 | 8 + 20 = 28 | 1911 MiB |
+| 3 | 8 + 3 = 11 | 751 MiB |
+
+So at the bottom of the dip, 73% of the store's 751 MiB is pad and only 205 MiB is resident
+experts - 3 of 256, about 1.2% coverage. That is close to the floor of what the store can
+usefully be, and it is the thing to watch on a card this tight if drafting quality ever
+looks off right after a growth.
+
+---
+
+## 6. Testing the context budget (`--ctx-limit` / `n_ctx_limit`)
+
+Stops generation cleanly once the context reaches N tokens, wherever that lands. The point
+is to let an agent loop stop *before* the context is exhausted, leaving room to write a
+handoff, without having to guess from the outside where generation will end.
+
+### 6.1 The command
+
+```bat
+build-cuda\bin\Release\llama-server.exe -m your-model.gguf ^
+  -c 8192 --ctx-limit 6000 --port 8080
+```
+
+Individual requests override it with `"n_ctx_limit": N` in the request body.
+
+### 6.2 The three cases, and what each should return
+
+All of these end with `"stop_type": "ctx_limit"`. `tokens_cached` reports how much context
+was actually used.
+
+| case | what happens |
+| --- | --- |
+| limit reached during output | generation stops at the wall; `tokens_evaluated + tokens_predicted` lands on the limit |
+| limit reached during reasoning | same - the check does not care what the model is in the middle of |
+| prompt alone is over the limit | prefill stops at the wall, **zero** tokens are generated, `truncated` is `true` |
+| cached prefix already at the limit | nothing to process; returns immediately, cache untouched, zero tokens |
+
+The last two are the deliberate ones: the prompt's tail is simply never processed, so a
+prompt longer than the limit is not an error. An agent can read part of a large file and
+still be told to stop and hand off, rather than having the whole request rejected.
+
+**Do not disambiguate by arithmetic.** `usage.prompt_tokens` counts the whole submitted
+prompt even when only part of it was evaluated, so `total_tokens == n_ctx_limit` does *not*
+hold for an over-limit prompt. `stop_type` is emitted next to `finish_reason` on the
+OpenAI-compatible routes for exactly this reason - `finish_reason` is `length` for both a
+context-budget stop and an ordinary `max_tokens` stop.
+
+### 6.2.1 Regression: a limit at or below the cached prefix
+
+This crashed the server before it was fixed, and it needs a *warm* cache to reproduce - the
+same request against a cold slot has `n_past == 0` and takes a different path. Send any
+request, then repeat it with a limit below the prompt length:
+
+```bash
+curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Think, then write about steel."}],
+       "max_tokens":4000,"n_ctx_limit":80}'
+curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Think, then write about steel."}],
+       "max_tokens":4000,"n_ctx_limit":10}'
+```
+
+The second must return `stop_type: ctx_limit` with `completion_tokens: 0` and the server
+must still be alive. The log line to look for is:
+
+```
+slot operator (): cached prefix already reaches the context limit, nothing to process (n_past = 20, task.n_tokens = 20, n_ctx_limit = 10)
+```
+
+The original bug was cutting `n_past` back to `n_ctx_limit - 1` and letting prefill continue
+from there. On a recurrent or hybrid memory that rollback is not always possible, and
+`common_context_seq_rm()` answers an impossible removal with `GGML_ABORT` - the process
+dies. It is worth re-testing on a **hybrid** model specifically (the Qwen3.6-35B-A3B family
+is one); a plain attention model can roll back freely and never showed the fault.
+
+### 6.3 Verified
+
+Against `stories15M-q4_0.gguf` over HTTP with `--ctx-limit 60`:
+
+- 10-token prompt, `n_predict 400` -> stopped after 50 generated tokens, 60 total,
+  `stop_type: ctx_limit`
+- 373-token prompt -> prefilled to exactly 60, 0 generated, `truncated: true`,
+  `stop_type: ctx_limit`
+- per-request `n_ctx_limit` above the slot's own `n_ctx` -> correctly not the binding
+  constraint; the pre-existing out-of-context stop takes over
+- `n_ctx_limit: 0` -> disabled, ordinary `n_predict` stop
+
+On `Qwen3.6-35B-A3B-UD-Q4_K_S` (hybrid + MTP + `-ehs -1` + checkpoints), which is where the
+rollback fault lived:
+
+- the two-request regression above, run repeatedly - server survives, `completion_tokens: 0`
+- a conversation grown across a fixed `n_ctx_limit` of 400 over seven turns: prompt grows
+  18 -> 375 while the total stays pinned at ~400, and a turn that finishes early still
+  reports `stop_type: eos`, so the budget does not interfere with ordinary stops
+- a 550-token prompt against limits of 400, 400 (warm), and 100 (warm) -> all return
+  `ctx_limit` with zero tokens; raising the limit to 4000 afterwards generates normally and
+  ends on `eos`, i.e. the slot is not left in a poisoned state

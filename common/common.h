@@ -681,6 +681,7 @@ struct common_params {
     bool log_json = false;
 
     std::string slot_save_path;
+    int32_t slot_ram_limit_mib = 0; // max RAM held by named slot states; 0 = disabled, -1 = no limit
     std::string media_path; // path to directory for loading media files
 
     float slot_prompt_similarity = 0.1f;
@@ -752,6 +753,10 @@ struct common_params {
     // reason llama_context_params appends new fields rather than inserting them
     int32_t n_ctx_max       =     0; // upper bound for automatic KV cache growth; 0 = disabled
     float   ctx_grow_factor =  1.5f; // growth multiplier used by automatic growth inside llama_decode()
+
+    int32_t n_ctx_grow_headroom = 2048; // spare cells the server keeps ahead of generation; 0 = step by ctx_grow_factor
+
+    int32_t n_ctx_limit     =     0; // stop generation once the context holds this many tokens; 0 = disabled
 };
 
 // call once at the start of a program if it uses libcommon

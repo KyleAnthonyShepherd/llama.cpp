@@ -25,6 +25,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_SLOT_SAVE,
     SERVER_TASK_TYPE_SLOT_RESTORE,
     SERVER_TASK_TYPE_SLOT_ERASE,
+    SERVER_TASK_TYPE_SLOT_DROP,
     SERVER_TASK_TYPE_GET_LORA,
     SERVER_TASK_TYPE_SET_LORA,
 };
@@ -45,6 +46,7 @@ enum stop_type {
     STOP_TYPE_EOS,
     STOP_TYPE_WORD,
     STOP_TYPE_LIMIT,
+    STOP_TYPE_CTX_LIMIT,
 };
 
 struct task_params {
@@ -61,6 +63,8 @@ struct task_params {
     int32_t n_predict = -1; // new tokens to predict
     int32_t n_indent  =  0; // minimum line indentation for the generated text in number of whitespace characters
     int32_t n_cmpl    =  1; // number of completions to generate from this prompt
+
+    int32_t n_ctx_limit = 0; // stop once the slot holds this many tokens, 0 = no limit
 
     int32_t n_cache_reuse = 0; // min chunk size to attempt reusing from the cache via KV shifting (0 = disabled)
 
@@ -161,11 +165,13 @@ struct server_task {
 
     server_task_type type;
 
-    // used by SERVER_TASK_TYPE_SLOT_SAVE, SERVER_TASK_TYPE_SLOT_RESTORE, SERVER_TASK_TYPE_SLOT_ERASE
+    // used by SERVER_TASK_TYPE_SLOT_SAVE, SERVER_TASK_TYPE_SLOT_RESTORE, SERVER_TASK_TYPE_SLOT_ERASE,
+    // SERVER_TASK_TYPE_SLOT_DROP
     struct slot_action {
         int id_slot;
         std::string filename;
-        std::string filepath;
+        std::string filepath; // empty when use_ram is set
+        bool use_ram = false; // keep the state in the RAM store instead of on disk
     };
     slot_action slot_action;
 
@@ -552,11 +558,23 @@ struct server_task_result_slot_save_load : server_task_result {
     size_t n_bytes;
     double t_ms;
 
+    std::string store;  // "disk" or "ram"
+    json ram_store;     // usage of the RAM store after the operation
+
     virtual json to_json() override;
 };
 
 struct server_task_result_slot_erase : server_task_result {
     size_t n_erased;
+
+    virtual json to_json() override;
+};
+
+struct server_task_result_slot_drop : server_task_result {
+    std::string filename;
+
+    size_t n_bytes; // 0 when the name was not in the store
+    json ram_store;
 
     virtual json to_json() override;
 };
@@ -658,6 +676,35 @@ struct server_prompt_cache {
     bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot);
 
     void update();
+};
+
+// named slot states kept in RAM, written and read by /slots?action=save|restore with `store: "ram"`.
+// unlike server_prompt_cache this is addressed by name and never evicts on its own - the client
+// owns the lifetime and drops each entry when it is done with it
+struct server_slot_ram_store {
+    bool   enabled = false;
+    size_t limit   = 0; // in bytes, 0 = no limit
+
+    std::map<std::string, server_prompt_cache_state> states;
+
+    size_t size() const {
+        size_t res = 0;
+
+        for (const auto & [name, state] : states) {
+            res += state.size();
+        }
+
+        return res;
+    }
+
+    json to_json() const {
+        return json {
+            { "enabled", enabled },
+            { "count",   states.size() },
+            { "bytes",   size() },
+            { "limit",   limit },
+        };
+    }
 };
 
 // used exclusively by router mode
