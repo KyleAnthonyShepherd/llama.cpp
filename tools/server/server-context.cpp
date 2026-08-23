@@ -207,9 +207,19 @@ struct server_batch {
 // highest. When the generation moves into a region the hot store does not cover the rate rises,
 // the prediction steepens, and the width falls to 0 on its own.
 struct server_spec_width {
-    // per-sample decay. ~35 steps of half-life, long enough to average out the host bus and short
-    // enough to follow a change of phase inside one generation
-    static constexpr double DECAY = 0.98;
+    // Two decays, because the two things being tracked move at different speeds.
+    //
+    // The fit maps a cold expert count to a step time. That is a property of the box and the
+    // model, so it moves slowly and wants a long window: ~35 samples of half-life, long enough to
+    // average out whatever else is touching the host bus.
+    //
+    // Acceptance is a property of the text being generated and it moves fast. A thinking model
+    // opens by restating the prompt, accepts nearly every draft token, then starts reasoning and
+    // acceptance collapses inside a few decodes. Measured at one shared decay of 0.98, the
+    // controller carried that opening optimism through the collapse and sat at the ceiling for the
+    // whole run - mean draft width 2.9 of 3 - and lost the transition window it used to win.
+    static constexpr double DECAY_FIT = 0.98;
+    static constexpr double DECAY_ACC = 0.90;
 
     // samples before the fit is trusted, and how often to take a width the fit did not ask for
     static constexpr int N_WARMUP = 16;
@@ -271,19 +281,19 @@ struct server_spec_width {
         // only positions the draft actually reached say anything about acceptance
         for (int i = 0; i < width && i < (int) acc.size(); ++i) {
             const double hit = i < n_accepted ? 1.0 : 0.0;
-            acc[i] = DECAY*acc[i] + (1.0 - DECAY)*hit;
+            acc[i] = DECAY_ACC*acc[i] + (1.0 - DECAY_ACC)*hit;
         }
 
         const double x = cold_distinct;
         const double y = t_step_us;
 
-        s_w  = DECAY*s_w  + 1.0;
-        s_x  = DECAY*s_x  + x;
-        s_y  = DECAY*s_y  + y;
-        s_xx = DECAY*s_xx + x*x;
-        s_xy = DECAY*s_xy + x*y;
+        s_w  = DECAY_FIT*s_w  + 1.0;
+        s_x  = DECAY_FIT*s_x  + x;
+        s_y  = DECAY_FIT*s_y  + y;
+        s_xx = DECAY_FIT*s_xx + x*x;
+        s_xy = DECAY_FIT*s_xy + x*y;
 
-        cold_at[width] = cold_ok[width] ? DECAY*cold_at[width] + (1.0 - DECAY)*x : x;
+        cold_at[width] = cold_ok[width] ? DECAY_FIT*cold_at[width] + (1.0 - DECAY_FIT)*x : x;
         cold_ok[width] = 1;
         cold_rate = x / n_tokens;
 
@@ -291,17 +301,19 @@ struct server_spec_width {
         n_sample++;
     }
 
-    // cold experts a batch of this width would touch. A width that has never run is guessed
-    // from the widest one that has, at that one's rate per token - an overestimate, since the
-    // count saturates, so an unexplored width has to earn its way in
+    // cold experts a batch of this width would touch. A width that has never run is guessed from
+    // the NEAREST one that has, at that one's rate per token. Nearest, not widest: the count
+    // saturates with the batch, so scaling a rate across a gap reads high for a wider width and
+    // low for a narrower one, and reading a narrow width low is what made the fit collapse to 0
+    // before width 0 was sampled at all. The shortest extrapolation is the least wrong one.
     double cold_pred(int w) const {
-        if (cold_ok[w]) {
-            return cold_at[w];
-        }
+        const int n = (int) cold_at.size();
 
-        for (int k = (int) cold_at.size() - 1; k >= 0; --k) {
-            if (cold_ok[k]) {
-                return cold_at[k]*(1 + w)/(1 + k);
+        for (int d = 0; d < n; ++d) {
+            for (int k : {w - d, w + d}) {
+                if (k >= 0 && k < n && cold_ok[k]) {
+                    return cold_at[k]*(1 + w)/(1 + k);
+                }
             }
         }
 
@@ -328,8 +340,15 @@ struct server_spec_width {
         n_step++;
 
         if (!ready()) {
-            // spread the warm-up over the whole range so the fit sees more than one width
-            n_max_cur = 1 + (n_step % n_max_cfg);
+            // Warm up from the top, not the bottom. The opening of a request is the most
+            // predictable part of it - a thinking model restates the prompt almost word for word -
+            // so the widest draft is usually right exactly while the fit still knows nothing.
+            // Measured over the first 100 tokens: a fixed width 3 was worth 1.49x over drafting
+            // nothing, and sweeping up from 1 collected only 1.29x of it.
+            // Odd steps take the ceiling, even steps rotate through the rest, so the fit still
+            // gets its spread and acc fills fastest - a sample at the ceiling scores every
+            // draft position at once.
+            n_max_cur = (n_step % 2) ? n_max_cfg : 1 + ((n_step/2) % n_max_cfg);
             return n_max_cur;
         }
 
