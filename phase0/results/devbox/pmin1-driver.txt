@@ -1,0 +1,109 @@
+  1200 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-p1-w1-r1.jsonl
+=== sw-p1-w1-r1 ===
+  1200 tokens, 26.31 t/s overall
+  server timings: pp 12.32 t/s (18 tok), tg 26.33 t/s (1200 tok)
+  draft: 506/692 accepted
+    tok    0- 100   18.60 t/s
+    tok  100- 200   25.81 t/s
+    tok  200- 300   24.24 t/s
+    tok  300- 400   27.95 t/s
+    tok  400- 500   28.07 t/s
+    tok  500- 600   29.91 t/s
+    tok  600- 700   28.19 t/s
+    tok  700- 800   27.01 t/s
+    tok  800- 900   26.89 t/s
+    tok  900-1000   28.32 t/s
+    tok 1000-1100   27.23 t/s
+  hot store: S=28 slots
+  draft-mtp    drafted on 692/692 calls, mean width 1.0 tok, accepted 506/692
+  1200 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-p1-auto-r1.jsonl
+=== sw-p1-auto-r1 ===
+  1200 tokens, 22.47 t/s overall
+  server timings: pp 12.38 t/s (18 tok), tg 22.49 t/s (1200 tok)
+  draft: 495/682 accepted
+    tok    0- 100   16.93 t/s
+    tok  100- 200   25.50 t/s
+    tok  200- 300   21.70 t/s
+    tok  300- 400   20.19 t/s
+    tok  400- 500   22.78 t/s
+    tok  500- 600   24.71 t/s
+    tok  600- 700   23.02 t/s
+    tok  700- 800   22.46 t/s
+    tok  800- 900   23.36 t/s
+    tok  900-1000   23.44 t/s
+    tok 1000-1100   23.53 t/s
+  hot store: S=28 slots
+  draft-mtp    drafted on 682/704 calls, mean width 1.0 tok, accepted 495/682
+  1197 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-p1-auto-r2.jsonl
+=== sw-p1-auto-r2 ===
+  1197 tokens, 21.32 t/s overall
+  server timings: pp 9.17 t/s (18 tok), tg 21.40 t/s (1200 tok)
+  draft: 515/660 accepted
+    tok    0- 100   13.30 t/s
+    tok  100- 200   19.75 t/s
+    tok  200- 300   18.13 t/s
+    tok  300- 400   23.27 t/s
+    tok  400- 500   21.19 t/s
+    tok  500- 600   23.97 t/s
+    tok  600- 700   24.15 t/s
+    tok  700- 800   24.24 t/s
+    tok  800- 900   24.61 t/s
+    tok  900-1000   23.70 t/s
+    tok 1000-1100   23.79 t/s
+  hot store: S=28 slots
+  draft-mtp    drafted on 660/684 calls, mean width 1.0 tok, accepted 515/660
+  1200 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-p1-w1-r2.jsonl
+=== sw-p1-w1-r2 ===
+  1200 tokens, 23.23 t/s overall
+  server timings: pp 9.98 t/s (18 tok), tg 23.25 t/s (1200 tok)
+  draft: 506/692 accepted
+    tok    0- 100   15.92 t/s
+    tok  100- 200   24.61 t/s
+    tok  200- 300   22.70 t/s
+    tok  300- 400   23.97 t/s
+    tok  400- 500   24.91 t/s
+    tok  500- 600   26.01 t/s
+    tok  600- 700   25.30 t/s
+    tok  700- 800   23.44 t/s
+    tok  800- 900   24.34 t/s
+    tok  900-1000   24.81 t/s
+    tok 1000-1100   23.19 t/s
+  hot store: S=28 slots
+  draft-mtp    drafted on 692/692 calls, mean width 1.0 tok, accepted 506/692
+  mean of 2/2 repeat(s) per config
+  window           sw-p1-auto    sw-p1-w1
+  0-100                 15.12      17.26*
+  100-200               22.62      25.21*
+  200-300               19.91      23.47*
+  300-400               21.73      25.96*
+  400-500               21.98      26.49*
+  500-600               24.34      27.96*
+  600-700               23.59      26.75*
+  700-800               23.35      25.22*
+  800-900               23.99      25.61*
+  900-1000              23.57      26.56*
+  1000-1100             23.66      25.21*
+  overall               21.90       24.77
+  windows won               0          11
+  noise floor           13.3% (widest gap between repeats of one config)
+  best-worst            13.1% (sw-p1-w1 over sw-p1-auto)
+
+  speedup against sw-p1-w1, same window
+  window           sw-p1-auto
+  0-100                  0.88
+  100-200                0.90
+  200-300                0.85
+  300-400                0.84
+  400-500                0.83
+  500-600                0.87
+  600-700                0.88
+  700-800                0.93
+  800-900                0.94
+  900-1000               0.89
+  1000-1100              0.94
+
+  One config wins every window: the best width does not move. Re-tune the constant
+  and stop - PLAN-adaptive-draft-width.md section 6 calls this the kill criterion.
+
+  BUT the best-worst gap is inside the noise floor. Nothing here is a result yet -
+  add repeats until the gap clears the spread between repeats of one config.
