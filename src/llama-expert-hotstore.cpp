@@ -491,7 +491,7 @@ void llama_expert_hotstore::log_hit_rate(const std::vector<std::pair<int, ggml_t
     if (moe_sel.empty() || !is_filled) {
         return;
     }
-    size_t hits = 0, total = 0, distinct = 0;
+    size_t hits = 0, total = 0, distinct = 0, distinct_cold = 0;
     int    n_layers_seen = 0;
     int    n_tokens      = 0;
     std::vector<uint8_t> seen(n_experts);
@@ -514,7 +514,12 @@ void llama_expert_hotstore::log_hit_rate(const std::vector<std::pair<int, ggml_t
             }
         }
         for (int e = 0; e < n_experts; e++) {
-            distinct += seen[e];
+            if (seen[e]) {
+                distinct++;
+                if (slot_of(il, e) < 0) {
+                    distinct_cold++;
+                }
+            }
         }
         n_tokens = (int) n;
         n_layers_seen++;
@@ -523,9 +528,11 @@ void llama_expert_hotstore::log_hit_rate(const std::vector<std::pair<int, ggml_t
         // union is the mean number of distinct experts one layer touches in this batch. it bounds
         // what a store of S slots can save: at most S/union of the expert reads, whatever the
         // ranking. it grows with the batch, so a wide draft shrinks the store's ceiling.
-        LLAMA_LOG("=== expert hot hit rate: %zu/%zu = %.1f%% (m=%d, union %.1f/%d) ===\n",
+        // cold is the part of that union no slot holds, summed over layers - what the batch
+        // actually costs on the host bus, and what the adaptive draft width regresses against.
+        LLAMA_LOG("=== expert hot hit rate: %zu/%zu = %.1f%% (m=%d, union %.1f/%d) cold %zu ===\n",
                 hits, total, 100.0f * (float) hits / (float) total,
-                n_tokens, (float) distinct / (float) n_layers_seen, n_experts);
+                n_tokens, (float) distinct / (float) n_layers_seen, n_experts, distinct_cold);
     }
 }
 
