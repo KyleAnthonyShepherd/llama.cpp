@@ -1,0 +1,801 @@
+{"tok": 0, "t_us": 0, "text": "<think>"}
+{"tok": 1, "t_us": 141000, "text": "\n"}
+{"tok": 2, "t_us": 250000, "text": "Here"}
+{"tok": 3, "t_us": 250000, "text": "'s"}
+{"tok": 4, "t_us": 250000, "text": " a"}
+{"tok": 5, "t_us": 359999, "text": " thinking"}
+{"tok": 6, "t_us": 359999, "text": " process"}
+{"tok": 7, "t_us": 359999, "text": ":"}
+{"tok": 8, "t_us": 452999, "text": "\n\n"}
+{"tok": 9, "t_us": 452999, "text": "1"}
+{"tok": 10, "t_us": 452999, "text": "."}
+{"tok": 11, "t_us": 547000, "text": " "}
+{"tok": 12, "t_us": 547000, "text": " **"}
+{"tok": 13, "t_us": 547000, "text": "An"}
+{"tok": 14, "t_us": 657000, "text": "alyze"}
+{"tok": 15, "t_us": 657000, "text": " User"}
+{"tok": 16, "t_us": 657000, "text": " Input"}
+{"tok": 17, "t_us": 750000, "text": ":**"}
+{"tok": 18, "t_us": 750000, "text": "\n"}
+{"tok": 19, "t_us": 750000, "text": "  "}
+{"tok": 20, "t_us": 859999, "text": " -"}
+{"tok": 21, "t_us": 859999, "text": " **"}
+{"tok": 22, "t_us": 859999, "text": "Part"}
+{"tok": 23, "t_us": 952999, "text": " "}
+{"tok": 24, "t_us": 952999, "text": "1"}
+{"tok": 25, "t_us": 952999, "text": ":**"}
+{"tok": 26, "t_us": 1063000, "text": " Explain"}
+{"tok": 27, "t_us": 1063000, "text": " in"}
+{"tok": 28, "t_us": 1063000, "text": " flowing"}
+{"tok": 29, "t_us": 1141000, "text": " prose"}
+{"tok": 30, "t_us": 1141000, "text": ","}
+{"tok": 31, "t_us": 1141000, "text": " no"}
+{"tok": 32, "t_us": 1250000, "text": " code"}
+{"tok": 33, "t_us": 1250000, "text": ","}
+{"tok": 34, "t_us": 1250000, "text": " no"}
+{"tok": 35, "t_us": 1327999, "text": " bullet"}
+{"tok": 36, "t_us": 1327999, "text": " lists"}
+{"tok": 37, "t_us": 1327999, "text": ","}
+{"tok": 38, "t_us": 1422000, "text": " how"}
+{"tok": 39, "t_us": 1422000, "text": " a"}
+{"tok": 40, "t_us": 1422000, "text": " work"}
+{"tok": 41, "t_us": 1500000, "text": "-ste"}
+{"tok": 42, "t_us": 1500000, "text": "aling"}
+{"tok": 43, "t_us": 1500000, "text": " scheduler"}
+{"tok": 44, "t_us": 1593999, "text": " decides"}
+{"tok": 45, "t_us": 1593999, "text": " which"}
+{"tok": 46, "t_us": 1593999, "text": " queue"}
+{"tok": 47, "t_us": 2032000, "text": " to"}
+{"tok": 48, "t_us": 2032000, "text": " take"}
+{"tok": 49, "t_us": 2032000, "text": " work"}
+{"tok": 50, "t_us": 2109999, "text": " from"}
+{"tok": 51, "t_us": 2109999, "text": "."}
+{"tok": 52, "t_us": 2109999, "text": " Write"}
+{"tok": 53, "t_us": 2188000, "text": " about"}
+{"tok": 54, "t_us": 2188000, "text": " "}
+{"tok": 55, "t_us": 2188000, "text": "3"}
+{"tok": 56, "t_us": 2266000, "text": "0"}
+{"tok": 57, "t_us": 2266000, "text": "0"}
+{"tok": 58, "t_us": 2266000, "text": " words"}
+{"tok": 59, "t_us": 2343999, "text": "."}
+{"tok": 60, "t_us": 2343999, "text": "\n"}
+{"tok": 61, "t_us": 2343999, "text": "  "}
+{"tok": 62, "t_us": 2422000, "text": " -"}
+{"tok": 63, "t_us": 2422000, "text": " **"}
+{"tok": 64, "t_us": 2422000, "text": "Part"}
+{"tok": 65, "t_us": 2500000, "text": " "}
+{"tok": 66, "t_us": 2500000, "text": "2"}
+{"tok": 67, "t_us": 2500000, "text": ":**"}
+{"tok": 68, "t_us": 2577999, "text": " Rep"}
+{"tok": 69, "t_us": 2577999, "text": "roduce"}
+{"tok": 70, "t_us": 2577999, "text": " the"}
+{"tok": 71, "t_us": 2641000, "text": " provided"}
+{"tok": 72, "t_us": 2641000, "text": " document"}
+{"tok": 73, "t_us": 2641000, "text": " ver"}
+{"tok": 74, "t_us": 2718999, "text": "batim"}
+{"tok": 75, "t_us": 2718999, "text": ","}
+{"tok": 76, "t_us": 2718999, "text": " twice"}
+{"tok": 77, "t_us": 2797000, "text": ","}
+{"tok": 78, "t_us": 2797000, "text": " with"}
+{"tok": 79, "t_us": 2797000, "text": " no"}
+{"tok": 80, "t_us": 2875000, "text": " commentary"}
+{"tok": 81, "t_us": 2875000, "text": "."}
+{"tok": 82, "t_us": 2875000, "text": "\n"}
+{"tok": 83, "t_us": 2938000, "text": "  "}
+{"tok": 84, "t_us": 2952999, "text": " -"}
+{"tok": 85, "t_us": 2952999, "text": " **"}
+{"tok": 86, "t_us": 3016000, "text": "Constraints"}
+{"tok": 87, "t_us": 3016000, "text": ":**"}
+{"tok": 88, "t_us": 3016000, "text": " Answer"}
+{"tok": 89, "t_us": 3109999, "text": " in"}
+{"tok": 90, "t_us": 3109999, "text": " two"}
+{"tok": 91, "t_us": 3109999, "text": " parts"}
+{"tok": 92, "t_us": 3188000, "text": ","}
+{"tok": 93, "t_us": 3188000, "text": " in"}
+{"tok": 94, "t_us": 3188000, "text": " this"}
+{"tok": 95, "t_us": 3327999, "text": " order"}
+{"tok": 96, "t_us": 3327999, "text": ","}
+{"tok": 97, "t_us": 3327999, "text": " with"}
+{"tok": 98, "t_us": 3407000, "text": " nothing"}
+{"tok": 99, "t_us": 3407000, "text": " else"}
+{"tok": 100, "t_us": 3407000, "text": "."}
+{"tok": 101, "t_us": 3484999, "text": " No"}
+{"tok": 102, "t_us": 3484999, "text": " extra"}
+{"tok": 103, "t_us": 3484999, "text": " text"}
+{"tok": 104, "t_us": 3563000, "text": ","}
+{"tok": 105, "t_us": 3563000, "text": " no"}
+{"tok": 106, "t_us": 3563000, "text": " greetings"}
+{"tok": 107, "t_us": 3625000, "text": ","}
+{"tok": 108, "t_us": 3625000, "text": " no"}
+{"tok": 109, "t_us": 3625000, "text": " conclusions"}
+{"tok": 110, "t_us": 3702999, "text": "."}
+{"tok": 111, "t_us": 3702999, "text": "\n\n"}
+{"tok": 112, "t_us": 3702999, "text": "2"}
+{"tok": 113, "t_us": 3782000, "text": "."}
+{"tok": 114, "t_us": 3782000, "text": " "}
+{"tok": 115, "t_us": 3782000, "text": " **"}
+{"tok": 116, "t_us": 3859999, "text": "De"}
+{"tok": 117, "t_us": 3859999, "text": "construct"}
+{"tok": 118, "t_us": 3859999, "text": " Part"}
+{"tok": 119, "t_us": 3938000, "text": " "}
+{"tok": 120, "t_us": 3938000, "text": "1"}
+{"tok": 121, "t_us": 3938000, "text": " Requirements"}
+{"tok": 122, "t_us": 4000000, "text": ":**"}
+{"tok": 123, "t_us": 4000000, "text": "\n"}
+{"tok": 124, "t_us": 4000000, "text": "  "}
+{"tok": 125, "t_us": 4063000, "text": " -"}
+{"tok": 126, "t_us": 4063000, "text": " Topic"}
+{"tok": 127, "t_us": 4063000, "text": ":"}
+{"tok": 128, "t_us": 4157000, "text": " How"}
+{"tok": 129, "t_us": 4157000, "text": " a"}
+{"tok": 130, "t_us": 4157000, "text": " work"}
+{"tok": 131, "t_us": 4234999, "text": "-ste"}
+{"tok": 132, "t_us": 4234999, "text": "aling"}
+{"tok": 133, "t_us": 4234999, "text": " scheduler"}
+{"tok": 134, "t_us": 4313000, "text": " decides"}
+{"tok": 135, "t_us": 4313000, "text": " which"}
+{"tok": 136, "t_us": 4313000, "text": " queue"}
+{"tok": 137, "t_us": 4391000, "text": " to"}
+{"tok": 138, "t_us": 4391000, "text": " take"}
+{"tok": 139, "t_us": 4391000, "text": " work"}
+{"tok": 140, "t_us": 4468999, "text": " from"}
+{"tok": 141, "t_us": 4468999, "text": "."}
+{"tok": 142, "t_us": 4468999, "text": "\n"}
+{"tok": 143, "t_us": 4547000, "text": "  "}
+{"tok": 144, "t_us": 4547000, "text": " -"}
+{"tok": 145, "t_us": 4547000, "text": " Format"}
+{"tok": 146, "t_us": 4672000, "text": ":"}
+{"tok": 147, "t_us": 4672000, "text": " Flow"}
+{"tok": 148, "t_us": 4672000, "text": "ing"}
+{"tok": 149, "t_us": 4750000, "text": " prose"}
+{"tok": 150, "t_us": 4750000, "text": ","}
+{"tok": 151, "t_us": 4750000, "text": " no"}
+{"tok": 152, "t_us": 4827999, "text": " code"}
+{"tok": 153, "t_us": 4827999, "text": ","}
+{"tok": 154, "t_us": 4827999, "text": " no"}
+{"tok": 155, "t_us": 4922000, "text": " bullet"}
+{"tok": 156, "t_us": 4922000, "text": " lists"}
+{"tok": 157, "t_us": 4922000, "text": "."}
+{"tok": 158, "t_us": 5000000, "text": "\n"}
+{"tok": 159, "t_us": 5000000, "text": "  "}
+{"tok": 160, "t_us": 5000000, "text": " -"}
+{"tok": 161, "t_us": 5077999, "text": " Length"}
+{"tok": 162, "t_us": 5077999, "text": ":"}
+{"tok": 163, "t_us": 5077999, "text": " About"}
+{"tok": 164, "t_us": 5172000, "text": " "}
+{"tok": 165, "t_us": 5172000, "text": "3"}
+{"tok": 166, "t_us": 5172000, "text": "0"}
+{"tok": 167, "t_us": 5250000, "text": "0"}
+{"tok": 168, "t_us": 5250000, "text": " words"}
+{"tok": 169, "t_us": 5250000, "text": "."}
+{"tok": 170, "t_us": 5327999, "text": "\n"}
+{"tok": 171, "t_us": 5327999, "text": "  "}
+{"tok": 172, "t_us": 5327999, "text": " -"}
+{"tok": 173, "t_us": 5407000, "text": " Content"}
+{"tok": 174, "t_us": 5407000, "text": ":"}
+{"tok": 175, "t_us": 5407000, "text": " Need"}
+{"tok": 176, "t_us": 5484999, "text": " to"}
+{"tok": 177, "t_us": 5500000, "text": " explain"}
+{"tok": 178, "t_us": 5500000, "text": " the"}
+{"tok": 179, "t_us": 5577999, "text": " decision"}
+{"tok": 180, "t_us": 5657000, "text": " process"}
+{"tok": 181, "t_us": 5734999, "text": " in"}
+{"tok": 182, "t_us": 5827999, "text": " work"}
+{"tok": 183, "t_us": 5827999, "text": "-ste"}
+{"tok": 184, "t_us": 5827999, "text": "aling"}
+{"tok": 185, "t_us": 5907000, "text": " sched"}
+{"tok": 186, "t_us": 5907000, "text": "ulers"}
+{"tok": 187, "t_us": 5907000, "text": "."}
+{"tok": 188, "t_us": 6000000, "text": " Typically"}
+{"tok": 189, "t_us": 6000000, "text": ","}
+{"tok": 190, "t_us": 6000000, "text": " work"}
+{"tok": 191, "t_us": 6109999, "text": "-ste"}
+{"tok": 192, "t_us": 6109999, "text": "aling"}
+{"tok": 193, "t_us": 6234999, "text": " sched"}
+{"tok": 194, "t_us": 6234999, "text": "ulers"}
+{"tok": 195, "t_us": 6234999, "text": " have"}
+{"tok": 196, "t_us": 6359999, "text": " per"}
+{"tok": 197, "t_us": 6438000, "text": "-thread"}
+{"tok": 198, "t_us": 6516000, "text": " de"}
+{"tok": 199, "t_us": 6593999, "text": "ques"}
+{"tok": 200, "t_us": 6593999, "text": " ("}
+{"tok": 201, "t_us": 6593999, "text": "or"}
+{"tok": 202, "t_us": 6688000, "text": " queues"}
+{"tok": 203, "t_us": 6782000, "text": ")."}
+{"tok": 204, "t_us": 6782000, "text": " Each"}
+{"tok": 205, "t_us": 6875000, "text": " thread"}
+{"tok": 206, "t_us": 6875000, "text": " owns"}
+{"tok": 207, "t_us": 6875000, "text": " a"}
+{"tok": 208, "t_us": 6984999, "text": " deque"}
+{"tok": 209, "t_us": 6984999, "text": " where"}
+{"tok": 210, "t_us": 7063000, "text": " it"}
+{"tok": 211, "t_us": 7063000, "text": " pushes"}
+{"tok": 212, "t_us": 7063000, "text": " and"}
+{"tok": 213, "t_us": 7157000, "text": " pops"}
+{"tok": 214, "t_us": 7250000, "text": " from"}
+{"tok": 215, "t_us": 7327999, "text": " the"}
+{"tok": 216, "t_us": 7422000, "text": " bottom"}
+{"tok": 217, "t_us": 7500000, "text": " ("}
+{"tok": 218, "t_us": 7500000, "text": "L"}
+{"tok": 219, "t_us": 7593999, "text": "IFO"}
+{"tok": 220, "t_us": 7593999, "text": ")."}
+{"tok": 221, "t_us": 7593999, "text": " When"}
+{"tok": 222, "t_us": 7688000, "text": " idle"}
+{"tok": 223, "t_us": 7797000, "text": ","}
+{"tok": 224, "t_us": 7797000, "text": " a"}
+{"tok": 225, "t_us": 7891000, "text": " thread"}
+{"tok": 226, "t_us": 7891000, "text": " steals"}
+{"tok": 227, "t_us": 7891000, "text": " from"}
+{"tok": 228, "t_us": 8000000, "text": " the"}
+{"tok": 229, "t_us": 8000000, "text": " top"}
+{"tok": 230, "t_us": 8000000, "text": " of"}
+{"tok": 231, "t_us": 8093999, "text": " another"}
+{"tok": 232, "t_us": 8093999, "text": " thread"}
+{"tok": 233, "t_us": 8188000, "text": "'s"}
+{"tok": 234, "t_us": 8188000, "text": " deque"}
+{"tok": 235, "t_us": 8188000, "text": " ("}
+{"tok": 236, "t_us": 8282000, "text": "F"}
+{"tok": 237, "t_us": 8282000, "text": "IFO"}
+{"tok": 238, "t_us": 8282000, "text": ")."}
+{"tok": 239, "t_us": 8359999, "text": " The"}
+{"tok": 240, "t_us": 8359999, "text": " decision"}
+{"tok": 241, "t_us": 8438000, "text": " process"}
+{"tok": 242, "t_us": 8532000, "text": " involves"}
+{"tok": 243, "t_us": 8532000, "text": " checking"}
+{"tok": 244, "t_us": 8609999, "text": " local"}
+{"tok": 245, "t_us": 8750000, "text": " deque"}
+{"tok": 246, "t_us": 8843999, "text": " first"}
+{"tok": 247, "t_us": 8843999, "text": ","}
+{"tok": 248, "t_us": 8843999, "text": " then"}
+{"tok": 249, "t_us": 8922000, "text": " randomly"}
+{"tok": 250, "t_us": 9000000, "text": " selecting"}
+{"tok": 251, "t_us": 9000000, "text": " a"}
+{"tok": 252, "t_us": 9000000, "text": " victim"}
+{"tok": 253, "t_us": 9093999, "text": " thread"}
+{"tok": 254, "t_us": 9093999, "text": ","}
+{"tok": 255, "t_us": 9172000, "text": " then"}
+{"tok": 256, "t_us": 9266000, "text": " attempting"}
+{"tok": 257, "t_us": 9266000, "text": " to"}
+{"tok": 258, "t_us": 9266000, "text": " steal"}
+{"tok": 259, "t_us": 9343999, "text": " from"}
+{"tok": 260, "t_us": 9343999, "text": " the"}
+{"tok": 261, "t_us": 9343999, "text": " top"}
+{"tok": 262, "t_us": 9438000, "text": " of"}
+{"tok": 263, "t_us": 9438000, "text": " that"}
+{"tok": 264, "t_us": 9532000, "text": " victim"}
+{"tok": 265, "t_us": 9532000, "text": "'s"}
+{"tok": 266, "t_us": 9532000, "text": " deque"}
+{"tok": 267, "t_us": 9609999, "text": "."}
+{"tok": 268, "t_us": 9609999, "text": " I"}
+{"tok": 269, "t_us": 9702999, "text": " need"}
+{"tok": 270, "t_us": 9782000, "text": " to"}
+{"tok": 271, "t_us": 9782000, "text": " frame"}
+{"tok": 272, "t_us": 9782000, "text": " this"}
+{"tok": 273, "t_us": 9875000, "text": " in"}
+{"tok": 274, "t_us": 9875000, "text": " flowing"}
+{"tok": 275, "t_us": 9952999, "text": " prose"}
+{"tok": 276, "t_us": 9952999, "text": ","}
+{"tok": 277, "t_us": 10047000, "text": " focusing"}
+{"tok": 278, "t_us": 10047000, "text": " on"}
+{"tok": 279, "t_us": 10047000, "text": " the"}
+{"tok": 280, "t_us": 10141000, "text": " decision"}
+{"tok": 281, "t_us": 10141000, "text": " logic"}
+{"tok": 282, "t_us": 10234999, "text": ","}
+{"tok": 283, "t_us": 10343999, "text": " without"}
+{"tok": 284, "t_us": 10422000, "text": " using"}
+{"tok": 285, "t_us": 10516000, "text": " lists"}
+{"tok": 286, "t_us": 10593999, "text": " or"}
+{"tok": 287, "t_us": 10593999, "text": " code"}
+{"tok": 288, "t_us": 10688000, "text": "."}
+{"tok": 289, "t_us": 10688000, "text": " I"}
+{"tok": 290, "t_us": 10688000, "text": "'ll"}
+{"tok": 291, "t_us": 10782000, "text": " aim"}
+{"tok": 292, "t_us": 10782000, "text": " for"}
+{"tok": 293, "t_us": 10782000, "text": " ~"}
+{"tok": 294, "t_us": 10907000, "text": "3"}
+{"tok": 295, "t_us": 10907000, "text": "0"}
+{"tok": 296, "t_us": 10907000, "text": "0"}
+{"tok": 297, "t_us": 11047000, "text": " words"}
+{"tok": 298, "t_us": 11047000, "text": "."}
+{"tok": 299, "t_us": 11047000, "text": "\n\n"}
+{"tok": 300, "t_us": 11125000, "text": "  "}
+{"tok": 301, "t_us": 11125000, "text": " Draft"}
+{"tok": 302, "t_us": 11218999, "text": "ing"}
+{"tok": 303, "t_us": 11313000, "text": " Part"}
+{"tok": 304, "t_us": 11313000, "text": " "}
+{"tok": 305, "t_us": 11313000, "text": "1"}
+{"tok": 306, "t_us": 11407000, "text": " ("}
+{"tok": 307, "t_us": 11407000, "text": "mental"}
+{"tok": 308, "t_us": 11407000, "text": " refinement"}
+{"tok": 309, "t_us": 11500000, "text": "):"}
+{"tok": 310, "t_us": 11500000, "text": "\n"}
+{"tok": 311, "t_us": 11500000, "text": "  "}
+{"tok": 312, "t_us": 11593999, "text": " A"}
+{"tok": 313, "t_us": 11593999, "text": " work"}
+{"tok": 314, "t_us": 11593999, "text": "-ste"}
+{"tok": 315, "t_us": 11688000, "text": "aling"}
+{"tok": 316, "t_us": 11688000, "text": " scheduler"}
+{"tok": 317, "t_us": 11688000, "text": " orchestr"}
+{"tok": 318, "t_us": 11782000, "text": "ates"}
+{"tok": 319, "t_us": 11782000, "text": " parallel"}
+{"tok": 320, "t_us": 11875000, "text": " execution"}
+{"tok": 321, "t_us": 11875000, "text": " by"}
+{"tok": 322, "t_us": 11875000, "text": " distributing"}
+{"tok": 323, "t_us": 11952999, "text": " computational"}
+{"tok": 324, "t_us": 12047000, "text": " tasks"}
+{"tok": 325, "t_us": 12047000, "text": " across"}
+{"tok": 326, "t_us": 12047000, "text": " multiple"}
+{"tok": 327, "t_us": 12125000, "text": " worker"}
+{"tok": 328, "t_us": 12218999, "text": " threads"}
+{"tok": 329, "t_us": 12218999, "text": ","}
+{"tok": 330, "t_us": 12297000, "text": " each"}
+{"tok": 331, "t_us": 12297000, "text": " maintaining"}
+{"tok": 332, "t_us": 12375000, "text": " its"}
+{"tok": 333, "t_us": 12375000, "text": " own"}
+{"tok": 334, "t_us": 12375000, "text": " private"}
+{"tok": 335, "t_us": 12452999, "text": " task"}
+{"tok": 336, "t_us": 12452999, "text": " queue"}
+{"tok": 337, "t_us": 12452999, "text": "."}
+{"tok": 338, "t_us": 12532000, "text": " The"}
+{"tok": 339, "t_us": 12625000, "text": " fundamental"}
+{"tok": 340, "t_us": 12702999, "text": " decision"}
+{"tok": 341, "t_us": 12875000, "text": " of"}
+{"tok": 342, "t_us": 12968999, "text": " which"}
+{"tok": 343, "t_us": 12968999, "text": " queue"}
+{"tok": 344, "t_us": 12968999, "text": " to"}
+{"tok": 345, "t_us": 13077999, "text": " draw"}
+{"tok": 346, "t_us": 13157000, "text": " work"}
+{"tok": 347, "t_us": 13250000, "text": " from"}
+{"tok": 348, "t_us": 13250000, "text": " begins"}
+{"tok": 349, "t_us": 13313000, "text": " locally"}
+{"tok": 350, "t_us": 13407000, "text": "."}
+{"tok": 351, "t_us": 13484999, "text": " When"}
+{"tok": 352, "t_us": 13484999, "text": " a"}
+{"tok": 353, "t_us": 13484999, "text": " worker"}
+{"tok": 354, "t_us": 13563000, "text": " thread"}
+{"tok": 355, "t_us": 13563000, "text": " completes"}
+{"tok": 356, "t_us": 13641000, "text": " its"}
+{"tok": 357, "t_us": 13641000, "text": " current"}
+{"tok": 358, "t_us": 13718999, "text": " operation"}
+{"tok": 359, "t_us": 13813000, "text": ","}
+{"tok": 360, "t_us": 13813000, "text": " it"}
+{"tok": 361, "t_us": 13813000, "text": " first"}
+{"tok": 362, "t_us": 13891000, "text": " ins"}
+{"tok": 363, "t_us": 14000000, "text": "pects"}
+{"tok": 364, "t_us": 14000000, "text": " its"}
+{"tok": 365, "t_us": 14000000, "text": " own"}
+{"tok": 366, "t_us": 14093999, "text": " deque"}
+{"tok": 367, "t_us": 14093999, "text": "."}
+{"tok": 368, "t_us": 14093999, "text": " Because"}
+{"tok": 369, "t_us": 14172000, "text": " it"}
+{"tok": 370, "t_us": 14266000, "text": " originally"}
+{"tok": 371, "t_us": 14343999, "text": " pushed"}
+{"tok": 372, "t_us": 14343999, "text": " tasks"}
+{"tok": 373, "t_us": 14422000, "text": " onto"}
+{"tok": 374, "t_us": 14422000, "text": " the"}
+{"tok": 375, "t_us": 14516000, "text": " bottom"}
+{"tok": 376, "t_us": 14516000, "text": " of"}
+{"tok": 377, "t_us": 14516000, "text": " this"}
+{"tok": 378, "t_us": 14593999, "text": " structure"}
+{"tok": 379, "t_us": 14688000, "text": ","}
+{"tok": 380, "t_us": 14688000, "text": " it"}
+{"tok": 381, "t_us": 14688000, "text": " naturally"}
+{"tok": 382, "t_us": 14766000, "text": " pops"}
+{"tok": 383, "t_us": 14766000, "text": " from"}
+{"tok": 384, "t_us": 14766000, "text": " the"}
+{"tok": 385, "t_us": 14843999, "text": " same"}
+{"tok": 386, "t_us": 14843999, "text": " end"}
+{"tok": 387, "t_us": 14843999, "text": ","}
+{"tok": 388, "t_us": 14922000, "text": " ensuring"}
+{"tok": 389, "t_us": 15000000, "text": " cache"}
+{"tok": 390, "t_us": 15077999, "text": " locality"}
+{"tok": 391, "t_us": 15077999, "text": " and"}
+{"tok": 392, "t_us": 15077999, "text": " minimizing"}
+{"tok": 393, "t_us": 15157000, "text": " contention"}
+{"tok": 394, "t_us": 15250000, "text": "."}
+{"tok": 395, "t_us": 15250000, "text": " This"}
+{"tok": 396, "t_us": 15359999, "text": " local"}
+{"tok": 397, "t_us": 15359999, "text": " execution"}
+{"tok": 398, "t_us": 15422000, "text": " follows"}
+{"tok": 399, "t_us": 15500000, "text": " a"}
+{"tok": 400, "t_us": 15500000, "text": " last"}
+{"tok": 401, "t_us": 15577999, "text": "-in"}
+{"tok": 402, "t_us": 15577999, "text": ","}
+{"tok": 403, "t_us": 15672000, "text": " first"}
+{"tok": 404, "t_us": 15672000, "text": "-out"}
+{"tok": 405, "t_us": 15672000, "text": " pattern"}
+{"tok": 406, "t_us": 15750000, "text": ","}
+{"tok": 407, "t_us": 15750000, "text": " which"}
+{"tok": 408, "t_us": 15750000, "text": " tends"}
+{"tok": 409, "t_us": 15827999, "text": " to"}
+{"tok": 410, "t_us": 15827999, "text": " keep"}
+{"tok": 411, "t_us": 15907000, "text": " related"}
+{"tok": 412, "t_us": 15907000, "text": " data"}
+{"tok": 413, "t_us": 15907000, "text": " in"}
+{"tok": 414, "t_us": 15984999, "text": " processor"}
+{"tok": 415, "t_us": 16063000, "text": " caches"}
+{"tok": 416, "t_us": 16063000, "text": " and"}
+{"tok": 417, "t_us": 16063000, "text": " reduces"}
+{"tok": 418, "t_us": 16125000, "text": " synchronization"}
+{"tok": 419, "t_us": 16218999, "text": " overhead"}
+{"tok": 420, "t_us": 16218999, "text": "."}
+{"tok": 421, "t_us": 16218999, "text": " Only"}
+{"tok": 422, "t_us": 16297000, "text": " when"}
+{"tok": 423, "t_us": 16375000, "text": " the"}
+{"tok": 424, "t_us": 16375000, "text": " local"}
+{"tok": 425, "t_us": 16452999, "text": " deque"}
+{"tok": 426, "t_us": 16532000, "text": " is"}
+{"tok": 427, "t_us": 16625000, "text": " empty"}
+{"tok": 428, "t_us": 16625000, "text": " does"}
+{"tok": 429, "t_us": 16625000, "text": " the"}
+{"tok": 430, "t_us": 16688000, "text": " scheduler"}
+{"tok": 431, "t_us": 16688000, "text": " trigger"}
+{"tok": 432, "t_us": 16782000, "text": " the"}
+{"tok": 433, "t_us": 16782000, "text": " stealing"}
+{"tok": 434, "t_us": 16843999, "text": " mechanism"}
+{"tok": 435, "t_us": 16938000, "text": "."}
+{"tok": 436, "t_us": 16938000, "text": " At"}
+{"tok": 437, "t_us": 17016000, "text": " this"}
+{"tok": 438, "t_us": 17016000, "text": " point"}
+{"tok": 439, "t_us": 17109999, "text": ","}
+{"tok": 440, "t_us": 17109999, "text": " the"}
+{"tok": 441, "t_us": 17109999, "text": " idle"}
+{"tok": 442, "t_us": 17172000, "text": " worker"}
+{"tok": 443, "t_us": 17250000, "text": " must"}
+{"tok": 444, "t_us": 17250000, "text": " select"}
+{"tok": 445, "t_us": 17250000, "text": " a"}
+{"tok": 446, "t_us": 17343999, "text": " victim"}
+{"tok": 447, "t_us": 17452999, "text": " thread"}
+{"tok": 448, "t_us": 17452999, "text": " from"}
+{"tok": 449, "t_us": 17547000, "text": " the"}
+{"tok": 450, "t_us": 17625000, "text": " pool"}
+{"tok": 451, "t_us": 17625000, "text": " of"}
+{"tok": 452, "t_us": 17625000, "text": " active"}
+{"tok": 453, "t_us": 17688000, "text": " participants"}
+{"tok": 454, "t_us": 17688000, "text": "."}
+{"tok": 455, "t_us": 17688000, "text": " Rather"}
+{"tok": 456, "t_us": 17766000, "text": " than"}
+{"tok": 457, "t_us": 17766000, "text": " scanning"}
+{"tok": 458, "t_us": 17843999, "text": " every"}
+{"tok": 459, "t_us": 17907000, "text": " queue"}
+{"tok": 460, "t_us": 17907000, "text": " sequentially"}
+{"tok": 461, "t_us": 17907000, "text": ","}
+{"tok": 462, "t_us": 17984999, "text": " which"}
+{"tok": 463, "t_us": 17984999, "text": " would"}
+{"tok": 464, "t_us": 17984999, "text": " introduce"}
+{"tok": 465, "t_us": 18063000, "text": " significant"}
+{"tok": 466, "t_us": 18063000, "text": " latency"}
+{"tok": 467, "t_us": 18141000, "text": " and"}
+{"tok": 468, "t_us": 18141000, "text": " lock"}
+{"tok": 469, "t_us": 18218999, "text": " contention"}
+{"tok": 470, "t_us": 18218999, "text": ","}
+{"tok": 471, "t_us": 18218999, "text": " the"}
+{"tok": 472, "t_us": 18297000, "text": " scheduler"}
+{"tok": 473, "t_us": 18297000, "text": " typically"}
+{"tok": 474, "t_us": 18297000, "text": " employs"}
+{"tok": 475, "t_us": 18375000, "text": " a"}
+{"tok": 476, "t_us": 18375000, "text": " randomized"}
+{"tok": 477, "t_us": 18375000, "text": " selection"}
+{"tok": 478, "t_us": 18438000, "text": " strategy"}
+{"tok": 479, "t_us": 18438000, "text": "."}
+{"tok": 480, "t_us": 18438000, "text": " It"}
+{"tok": 481, "t_us": 18516000, "text": " picks"}
+{"tok": 482, "t_us": 18516000, "text": " a"}
+{"tok": 483, "t_us": 18577999, "text": " target"}
+{"tok": 484, "t_us": 18577999, "text": " thread"}
+{"tok": 485, "t_us": 18577999, "text": " at"}
+{"tok": 486, "t_us": 18657000, "text": " random"}
+{"tok": 487, "t_us": 18657000, "text": " and"}
+{"tok": 488, "t_us": 18718999, "text": " attempts"}
+{"tok": 489, "t_us": 18718999, "text": " to"}
+{"tok": 490, "t_us": 18718999, "text": " extract"}
+{"tok": 491, "t_us": 18797000, "text": " a"}
+{"tok": 492, "t_us": 18859999, "text": " task"}
+{"tok": 493, "t_us": 18859999, "text": " from"}
+{"tok": 494, "t_us": 18859999, "text": " the"}
+{"tok": 495, "t_us": 18968999, "text": " top"}
+{"tok": 496, "t_us": 18968999, "text": " of"}
+{"tok": 497, "t_us": 18968999, "text": " that"}
+{"tok": 498, "t_us": 19047000, "text": " thread"}
+{"tok": 499, "t_us": 19125000, "text": "\u2019s"}
+{"tok": 500, "t_us": 19125000, "text": " deque"}
+{"tok": 501, "t_us": 19202999, "text": "."}
+{"tok": 502, "t_us": 19202999, "text": " This"}
+{"tok": 503, "t_us": 19202999, "text": " top"}
+{"tok": 504, "t_us": 19282000, "text": "-down"}
+{"tok": 505, "t_us": 19343999, "text": " extraction"}
+{"tok": 506, "t_us": 19422000, "text": " operates"}
+{"tok": 507, "t_us": 19500000, "text": " on"}
+{"tok": 508, "t_us": 19500000, "text": " a"}
+{"tok": 509, "t_us": 19500000, "text": " first"}
+{"tok": 510, "t_us": 19577999, "text": "-in"}
+{"tok": 511, "t_us": 19577999, "text": ","}
+{"tok": 512, "t_us": 19577999, "text": " first"}
+{"tok": 513, "t_us": 19672000, "text": "-out"}
+{"tok": 514, "t_us": 19672000, "text": " basis"}
+{"tok": 515, "t_us": 19734999, "text": ","}
+{"tok": 516, "t_us": 19734999, "text": " which"}
+{"tok": 517, "t_us": 19813000, "text": " balances"}
+{"tok": 518, "t_us": 19875000, "text": " the"}
+{"tok": 519, "t_us": 19875000, "text": " workload"}
+{"tok": 520, "t_us": 19952999, "text": " across"}
+{"tok": 521, "t_us": 20032000, "text": " the"}
+{"tok": 522, "t_us": 20141000, "text": " system"}
+{"tok": 523, "t_us": 20141000, "text": " and"}
+{"tok": 524, "t_us": 20141000, "text": " prevents"}
+{"tok": 525, "t_us": 20313000, "text": " starvation"}
+{"tok": 526, "t_us": 20313000, "text": "."}
+{"tok": 527, "t_us": 20313000, "text": " The"}
+{"tok": 528, "t_us": 20391000, "text": " stealing"}
+{"tok": 529, "t_us": 20391000, "text": " attempt"}
+{"tok": 530, "t_us": 20468999, "text": " is"}
+{"tok": 531, "t_us": 20468999, "text": " usually"}
+{"tok": 532, "t_us": 20532000, "text": " guarded"}
+{"tok": 533, "t_us": 20532000, "text": " by"}
+{"tok": 534, "t_us": 20532000, "text": " atomic"}
+{"tok": 535, "t_us": 20609999, "text": " operations"}
+{"tok": 536, "t_us": 20609999, "text": " or"}
+{"tok": 537, "t_us": 20702999, "text": " lightweight"}
+{"tok": 538, "t_us": 20702999, "text": " locks"}
+{"tok": 539, "t_us": 20782000, "text": " to"}
+{"tok": 540, "t_us": 20782000, "text": " ensure"}
+{"tok": 541, "t_us": 20859999, "text": " thread"}
+{"tok": 542, "t_us": 20938000, "text": " safety"}
+{"tok": 543, "t_us": 20938000, "text": "."}
+{"tok": 544, "t_us": 20938000, "text": " If"}
+{"tok": 545, "t_us": 21047000, "text": " the"}
+{"tok": 546, "t_us": 21047000, "text": " chosen"}
+{"tok": 547, "t_us": 21109999, "text": " victim"}
+{"tok": 548, "t_us": 21109999, "text": " is"}
+{"tok": 549, "t_us": 21109999, "text": " also"}
+{"tok": 550, "t_us": 21188000, "text": " actively"}
+{"tok": 551, "t_us": 21250000, "text": " popping"}
+{"tok": 552, "t_us": 21327999, "text": " from"}
+{"tok": 553, "t_us": 21327999, "text": " its"}
+{"tok": 554, "t_us": 21391000, "text": " own"}
+{"tok": 555, "t_us": 21391000, "text": " bottom"}
+{"tok": 556, "t_us": 21468999, "text": " end"}
+{"tok": 557, "t_us": 21547000, "text": ","}
+{"tok": 558, "t_us": 21547000, "text": " the"}
+{"tok": 559, "t_us": 21547000, "text": " steal"}
+{"tok": 560, "t_us": 21625000, "text": " may"}
+{"tok": 561, "t_us": 21688000, "text": " fail"}
+{"tok": 562, "t_us": 21688000, "text": ","}
+{"tok": 563, "t_us": 21688000, "text": " prompting"}
+{"tok": 564, "t_us": 21766000, "text": " the"}
+{"tok": 565, "t_us": 21766000, "text": " scheduler"}
+{"tok": 566, "t_us": 21766000, "text": " to"}
+{"tok": 567, "t_us": 21827999, "text": " try"}
+{"tok": 568, "t_us": 21891000, "text": " another"}
+{"tok": 569, "t_us": 21891000, "text": " randomly"}
+{"tok": 570, "t_us": 21968999, "text": " selected"}
+{"tok": 571, "t_us": 22032000, "text": " thread"}
+{"tok": 572, "t_us": 22109999, "text": "."}
+{"tok": 573, "t_us": 22109999, "text": " This"}
+{"tok": 574, "t_us": 22188000, "text": " iterative"}
+{"tok": 575, "t_us": 22188000, "text": " probing"}
+{"tok": 576, "t_us": 22266000, "text": " continues"}
+{"tok": 577, "t_us": 22266000, "text": " until"}
+{"tok": 578, "t_us": 22266000, "text": " a"}
+{"tok": 579, "t_us": 22343999, "text": " task"}
+{"tok": 580, "t_us": 22343999, "text": " is"}
+{"tok": 581, "t_us": 22343999, "text": " successfully"}
+{"tok": 582, "t_us": 22407000, "text": " stolen"}
+{"tok": 583, "t_us": 22484999, "text": " or"}
+{"tok": 584, "t_us": 22484999, "text": " all"}
+{"tok": 585, "t_us": 22547000, "text": " candidates"}
+{"tok": 586, "t_us": 22625000, "text": " have"}
+{"tok": 587, "t_us": 22625000, "text": " been"}
+{"tok": 588, "t_us": 22625000, "text": " exhausted"}
+{"tok": 589, "t_us": 22702999, "text": "."}
+{"tok": 590, "t_us": 22702999, "text": " The"}
+{"tok": 591, "t_us": 22702999, "text": " entire"}
+{"tok": 592, "t_us": 22782000, "text": " decision"}
+{"tok": 593, "t_us": 22843999, "text": " process"}
+{"tok": 594, "t_us": 22922000, "text": " is"}
+{"tok": 595, "t_us": 22922000, "text": " designed"}
+{"tok": 596, "t_us": 22922000, "text": " to"}
+{"tok": 597, "t_us": 23016000, "text": " minimize"}
+{"tok": 598, "t_us": 23016000, "text": " global"}
+{"tok": 599, "t_us": 23093999, "text": " synchronization"}
+{"tok": 600, "t_us": 23093999, "text": ","}
+{"tok": 601, "t_us": 23093999, "text": " favor"}
+{"tok": 602, "t_us": 23172000, "text": " local"}
+{"tok": 603, "t_us": 23234999, "text": " execution"}
+{"tok": 604, "t_us": 23234999, "text": ","}
+{"tok": 605, "t_us": 23234999, "text": " and"}
+{"tok": 606, "t_us": 23313000, "text": " distribute"}
+{"tok": 607, "t_us": 23313000, "text": " idle"}
+{"tok": 608, "t_us": 23375000, "text": " work"}
+{"tok": 609, "t_us": 23375000, "text": " evenly"}
+{"tok": 610, "t_us": 23452999, "text": " through"}
+{"tok": 611, "t_us": 23516000, "text": " randomized"}
+{"tok": 612, "t_us": 23516000, "text": " probing"}
+{"tok": 613, "t_us": 23516000, "text": ","}
+{"tok": 614, "t_us": 23593999, "text": " thereby"}
+{"tok": 615, "t_us": 23593999, "text": " maintaining"}
+{"tok": 616, "t_us": 23672000, "text": " high"}
+{"tok": 617, "t_us": 23672000, "text": " throughput"}
+{"tok": 618, "t_us": 23672000, "text": " while"}
+{"tok": 619, "t_us": 23750000, "text": " avoiding"}
+{"tok": 620, "t_us": 23843999, "text": " bott"}
+{"tok": 621, "t_us": 23922000, "text": "lene"}
+{"tok": 622, "t_us": 23922000, "text": "cks"}
+{"tok": 623, "t_us": 23922000, "text": "."}
+{"tok": 624, "t_us": 24016000, "text": "\n\n"}
+{"tok": 625, "t_us": 24016000, "text": "  "}
+{"tok": 626, "t_us": 24109999, "text": " Word"}
+{"tok": 627, "t_us": 24109999, "text": " count"}
+{"tok": 628, "t_us": 24109999, "text": " check"}
+{"tok": 629, "t_us": 24218999, "text": ":"}
+{"tok": 630, "t_us": 24218999, "text": " ~"}
+{"tok": 631, "t_us": 24218999, "text": "2"}
+{"tok": 632, "t_us": 24343999, "text": "4"}
+{"tok": 633, "t_us": 24343999, "text": "8"}
+{"tok": 634, "t_us": 24343999, "text": " words"}
+{"tok": 635, "t_us": 24452999, "text": "."}
+{"tok": 636, "t_us": 24452999, "text": " I"}
+{"tok": 637, "t_us": 24452999, "text": "'ll"}
+{"tok": 638, "t_us": 24547000, "text": " expand"}
+{"tok": 639, "t_us": 24547000, "text": " slightly"}
+{"tok": 640, "t_us": 24547000, "text": " to"}
+{"tok": 641, "t_us": 24641000, "text": " get"}
+{"tok": 642, "t_us": 24734999, "text": " closer"}
+{"tok": 643, "t_us": 24734999, "text": " to"}
+{"tok": 644, "t_us": 24734999, "text": " "}
+{"tok": 645, "t_us": 24859999, "text": "3"}
+{"tok": 646, "t_us": 24859999, "text": "0"}
+{"tok": 647, "t_us": 24859999, "text": "0"}
+{"tok": 648, "t_us": 24952999, "text": "."}
+{"tok": 649, "t_us": 24952999, "text": "\n"}
+{"tok": 650, "t_us": 24952999, "text": "  "}
+{"tok": 651, "t_us": 25032000, "text": " Let"}
+{"tok": 652, "t_us": 25032000, "text": "'s"}
+{"tok": 653, "t_us": 25032000, "text": " add"}
+{"tok": 654, "t_us": 25109999, "text": " a"}
+{"tok": 655, "t_us": 25109999, "text": " bit"}
+{"tok": 656, "t_us": 25109999, "text": " more"}
+{"tok": 657, "t_us": 25188000, "text": " detail"}
+{"tok": 658, "t_us": 25266000, "text": " about"}
+{"tok": 659, "t_us": 25266000, "text": " the"}
+{"tok": 660, "t_us": 25266000, "text": " decision"}
+{"tok": 661, "t_us": 25343999, "text": " criteria"}
+{"tok": 662, "t_us": 25343999, "text": " and"}
+{"tok": 663, "t_us": 25343999, "text": " load"}
+{"tok": 664, "t_us": 25438000, "text": " balancing"}
+{"tok": 665, "t_us": 25438000, "text": "."}
+{"tok": 666, "t_us": 25438000, "text": "\n"}
+{"tok": 667, "t_us": 25532000, "text": "  "}
+{"tok": 668, "t_us": 25532000, "text": " \""}
+{"tok": 669, "t_us": 25532000, "text": "A"}
+{"tok": 670, "t_us": 25625000, "text": " work"}
+{"tok": 671, "t_us": 25625000, "text": "-ste"}
+{"tok": 672, "t_us": 25625000, "text": "aling"}
+{"tok": 673, "t_us": 25702999, "text": " scheduler"}
+{"tok": 674, "t_us": 25702999, "text": " orchestr"}
+{"tok": 675, "t_us": 25702999, "text": "ates"}
+{"tok": 676, "t_us": 25813000, "text": " parallel"}
+{"tok": 677, "t_us": 25813000, "text": " execution"}
+{"tok": 678, "t_us": 25813000, "text": " by"}
+{"tok": 679, "t_us": 25891000, "text": " distributing"}
+{"tok": 680, "t_us": 25891000, "text": " computational"}
+{"tok": 681, "t_us": 25891000, "text": " tasks"}
+{"tok": 682, "t_us": 25968999, "text": " across"}
+{"tok": 683, "t_us": 25968999, "text": " multiple"}
+{"tok": 684, "t_us": 25968999, "text": " worker"}
+{"tok": 685, "t_us": 26047000, "text": " threads"}
+{"tok": 686, "t_us": 26047000, "text": ","}
+{"tok": 687, "t_us": 26047000, "text": " each"}
+{"tok": 688, "t_us": 26125000, "text": " maintaining"}
+{"tok": 689, "t_us": 26125000, "text": " its"}
+{"tok": 690, "t_us": 26125000, "text": " own"}
+{"tok": 691, "t_us": 26202999, "text": " private"}
+{"tok": 692, "t_us": 26202999, "text": " task"}
+{"tok": 693, "t_us": 26202999, "text": " queue"}
+{"tok": 694, "t_us": 26297000, "text": "."}
+{"tok": 695, "t_us": 26297000, "text": " The"}
+{"tok": 696, "t_us": 26297000, "text": " fundamental"}
+{"tok": 697, "t_us": 26391000, "text": " decision"}
+{"tok": 698, "t_us": 26391000, "text": " of"}
+{"tok": 699, "t_us": 26391000, "text": " which"}
+{"tok": 700, "t_us": 26484999, "text": " queue"}
+{"tok": 701, "t_us": 26484999, "text": " to"}
+{"tok": 702, "t_us": 26484999, "text": " draw"}
+{"tok": 703, "t_us": 26593999, "text": " work"}
+{"tok": 704, "t_us": 26593999, "text": " from"}
+{"tok": 705, "t_us": 26593999, "text": " begins"}
+{"tok": 706, "t_us": 26718999, "text": " locally"}
+{"tok": 707, "t_us": 26718999, "text": "."}
+{"tok": 708, "t_us": 26718999, "text": " When"}
+{"tok": 709, "t_us": 26813000, "text": " a"}
+{"tok": 710, "t_us": 26813000, "text": " worker"}
+{"tok": 711, "t_us": 26813000, "text": " thread"}
+{"tok": 712, "t_us": 26891000, "text": " completes"}
+{"tok": 713, "t_us": 26891000, "text": " its"}
+{"tok": 714, "t_us": 26891000, "text": " current"}
+{"tok": 715, "t_us": 26984999, "text": " operation"}
+{"tok": 716, "t_us": 26984999, "text": ","}
+{"tok": 717, "t_us": 26984999, "text": " it"}
+{"tok": 718, "t_us": 27077999, "text": " first"}
+{"tok": 719, "t_us": 27077999, "text": " ins"}
+{"tok": 720, "t_us": 27077999, "text": "pects"}
+{"tok": 721, "t_us": 27157000, "text": " its"}
+{"tok": 722, "t_us": 27157000, "text": " own"}
+{"tok": 723, "t_us": 27157000, "text": " deque"}
+{"tok": 724, "t_us": 27250000, "text": "."}
+{"tok": 725, "t_us": 27250000, "text": " Because"}
+{"tok": 726, "t_us": 27250000, "text": " it"}
+{"tok": 727, "t_us": 27327999, "text": " originally"}
+{"tok": 728, "t_us": 27327999, "text": " pushed"}
+{"tok": 729, "t_us": 27327999, "text": " tasks"}
+{"tok": 730, "t_us": 27438000, "text": " onto"}
+{"tok": 731, "t_us": 27438000, "text": " the"}
+{"tok": 732, "t_us": 27438000, "text": " bottom"}
+{"tok": 733, "t_us": 27532000, "text": " of"}
+{"tok": 734, "t_us": 27532000, "text": " this"}
+{"tok": 735, "t_us": 27532000, "text": " structure"}
+{"tok": 736, "t_us": 27641000, "text": ","}
+{"tok": 737, "t_us": 27641000, "text": " it"}
+{"tok": 738, "t_us": 27641000, "text": " naturally"}
+{"tok": 739, "t_us": 27734999, "text": " pops"}
+{"tok": 740, "t_us": 27734999, "text": " from"}
+{"tok": 741, "t_us": 27734999, "text": " the"}
+{"tok": 742, "t_us": 27843999, "text": " same"}
+{"tok": 743, "t_us": 27843999, "text": " end"}
+{"tok": 744, "t_us": 27843999, "text": ","}
+{"tok": 745, "t_us": 27938000, "text": " ensuring"}
+{"tok": 746, "t_us": 27938000, "text": " cache"}
+{"tok": 747, "t_us": 27938000, "text": " locality"}
+{"tok": 748, "t_us": 28032000, "text": " and"}
+{"tok": 749, "t_us": 28032000, "text": " minimizing"}
+{"tok": 750, "t_us": 28032000, "text": " contention"}
+{"tok": 751, "t_us": 28125000, "text": "."}
+{"tok": 752, "t_us": 28125000, "text": " This"}
+{"tok": 753, "t_us": 28125000, "text": " local"}
+{"tok": 754, "t_us": 28202999, "text": " execution"}
+{"tok": 755, "t_us": 28202999, "text": " follows"}
+{"tok": 756, "t_us": 28202999, "text": " a"}
+{"tok": 757, "t_us": 28297000, "text": " last"}
+{"tok": 758, "t_us": 28297000, "text": "-in"}
+{"tok": 759, "t_us": 28297000, "text": ","}
+{"tok": 760, "t_us": 28391000, "text": " first"}
+{"tok": 761, "t_us": 28391000, "text": "-out"}
+{"tok": 762, "t_us": 28391000, "text": " pattern"}
+{"tok": 763, "t_us": 28468999, "text": ","}
+{"tok": 764, "t_us": 28468999, "text": " which"}
+{"tok": 765, "t_us": 28468999, "text": " tends"}
+{"tok": 766, "t_us": 28547000, "text": " to"}
+{"tok": 767, "t_us": 28547000, "text": " keep"}
+{"tok": 768, "t_us": 28563000, "text": " related"}
+{"tok": 769, "t_us": 28641000, "text": " data"}
+{"tok": 770, "t_us": 28641000, "text": " in"}
+{"tok": 771, "t_us": 28641000, "text": " processor"}
+{"tok": 772, "t_us": 28734999, "text": " caches"}
+{"tok": 773, "t_us": 28734999, "text": " and"}
+{"tok": 774, "t_us": 28734999, "text": " reduces"}
+{"tok": 775, "t_us": 28827999, "text": " synchronization"}
+{"tok": 776, "t_us": 28827999, "text": " overhead"}
+{"tok": 777, "t_us": 28827999, "text": "."}
+{"tok": 778, "t_us": 28922000, "text": " Only"}
+{"tok": 779, "t_us": 28922000, "text": " when"}
+{"tok": 780, "t_us": 28922000, "text": " the"}
+{"tok": 781, "t_us": 29016000, "text": " local"}
+{"tok": 782, "t_us": 29016000, "text": " deque"}
+{"tok": 783, "t_us": 29016000, "text": " is"}
+{"tok": 784, "t_us": 29109999, "text": " empty"}
+{"tok": 785, "t_us": 29188000, "text": " does"}
+{"tok": 786, "t_us": 29188000, "text": " the"}
+{"tok": 787, "t_us": 29188000, "text": " scheduler"}
+{"tok": 788, "t_us": 29282000, "text": " trigger"}
+{"tok": 789, "t_us": 29282000, "text": " the"}
+{"tok": 790, "t_us": 29282000, "text": " stealing"}
+{"tok": 791, "t_us": 29375000, "text": " mechanism"}
+{"tok": 792, "t_us": 29375000, "text": "."}
+{"tok": 793, "t_us": 29375000, "text": " At"}
+{"tok": 794, "t_us": 29468999, "text": " this"}
+{"tok": 795, "t_us": 29468999, "text": " point"}
+{"tok": 796, "t_us": 29468999, "text": ","}
+{"tok": 797, "t_us": 29563000, "text": " the"}
+{"tok": 798, "t_us": 29563000, "text": " idle"}
+{"tok": 799, "t_us": 29563000, "text": " worker"}
+{"index": 0, "tokens": [], "id_slot": 0, "stop": true, "model": "I:/Kyle_Shepherd/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-Q4_K_S.gguf", "tokens_predicted": 800, "tokens_evaluated": 576, "generation_settings": {"seed": 1234, "temperature": 0.0, "dynatemp_range": 0.0, "dynatemp_exponent": 1.0, "top_k": 20, "top_p": 0.949999988079071, "min_p": 0.05000000074505806, "top_n_sigma": -1.0, "xtc_probability": 0.0, "xtc_threshold": 0.10000000149011612, "typical_p": 1.0, "repeat_last_n": 64, "repeat_penalty": 1.0, "presence_penalty": 0.0, "frequency_penalty": 0.0, "dry_multiplier": 0.0, "dry_base": 1.75, "dry_allowed_length": 2, "dry_penalty_last_n": 64, "dry_sequence_breakers": ["\n", ":", "\"", "*"], "mirostat": 0, "mirostat_tau": 5.0, "mirostat_eta": 0.10000000149011612, "adaptive_target": -1.0, "adaptive_decay": 0.8999999761581421, "stop": [], "max_tokens": 800, "n_predict": 800, "n_keep": 0, "n_discard": 0, "n_ctx_limit": 0, "ignore_eos": false, "stream": true, "logit_bias": [], "n_probs": 0, "min_keep": 0, "grammar": "", "grammar_lazy": false, "grammar_triggers": [], "preserved_tokens": [], "chat_format": "Content-only", "reasoning_format": "deepseek", "reasoning_in_content": false, "generation_prompt": "", "samplers": ["penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"], "speculative.types": "none,draft-mtp", "timings_per_token": false, "post_sampling_probs": false, "backend_sampling": false, "lora": []}, "prompt": "<|im_start|>user\nAnswer in two parts, in this order, with nothing else.\n\nPart 1. Explain in flowing prose, no code and no bullet lists, how a work-stealing scheduler decides which queue to take work from. Write about 300 words.\n\nPart 2. Then reproduce the document below verbatim, twice, with no commentary.\n\n=== DOCUMENT ===\nThe scheduler keeps three queues. The ready queue holds tasks whose inputs are\npresent and whose output buffer has already been reserved. The blocked queue\nholds tasks waiting on an input that some other task still has to produce. The\nretired queue holds tasks whose output has been consumed by every reader and\nwhose buffer can therefore be handed back to the allocator.\n\nA task moves from blocked to ready when the last of its inputs is marked\npresent. A task moves from ready to retired when its kernel has completed and\nevery reader has taken a reference. Nothing moves in the other direction. The\ngraph is acyclic by construction, so a task that is retired can never become\nblocked again, and a buffer that has been handed back is never reclaimed by the\ntask that produced it.\n\nBuffer reservation happens before the kernel is enqueued, not after. This costs\na small amount of address space that may go unused if the kernel fails, and it\nbuys the guarantee that a kernel never stalls waiting for memory that a later\ntask is holding. Deadlock through mutual buffer waits is the failure mode this\nordering exists to remove, and it is worth the wasted address space.\n\nReference counts are held per reader, not per buffer. A buffer with four readers\ncarries four references and is released when the fourth reader drops its own.\nHolding the count per buffer would be smaller, but it would make a double-drop\nby one reader indistinguishable from an honest drop by two, and that bug is\nsilent until the buffer is reused by an unrelated task hundreds of steps later.\n\nThe allocator itself is a simple bump pointer with a free list of exact-size\nblocks. Exact-size matching is deliberate. Splitting and coalescing would raise\nutilisation, and it would also make the peak footprint depend on the order in\nwhich tasks happen to retire, which makes a run that fits on one machine fail\non an identical one. A fixed size class costs memory and buys reproducibility.\n\nEvery queue transition is logged behind a compile-time flag. The log records\nthe task id, the queue it left, the queue it entered, and the step counter at\nthe time of the move. It does not record timestamps. Wall-clock times make the\nlog unusable as a diff between two runs, and a diff between two runs is the only\nthing the log has ever been useful for.<|im_end|>\n<|im_start|>assistant\n", "has_new_line": true, "truncated": false, "stop_type": "limit", "stopping_word": "", "tokens_cached": 1375, "timings": {"cache_n": 0, "prompt_n": 576, "prompt_ms": 6297.128, "prompt_per_token_ms": 10.932513888888888, "prompt_per_second": 91.470270256536, "predicted_n": 800, "predicted_ms": 29563.9, "predicted_per_token_ms": 36.954875, "predicted_per_second": 27.06002929248171, "draft_n": 680, "draft_n_accepted": 459}, "content": "<think>\nHere's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Part 1:** Explain in flowing prose, no code, no bullet lists, how a work-stealing scheduler decides which queue to take work from. Write about 300 words.\n   - **Part 2:** Reproduce the provided document verbatim, twice, with no commentary.\n   - **Constraints:** Answer in two parts, in this order, with nothing else. No extra text, no greetings, no conclusions.\n\n2.  **Deconstruct Part 1 Requirements:**\n   - Topic: How a work-stealing scheduler decides which queue to take work from.\n   - Format: Flowing prose, no code, no bullet lists.\n   - Length: About 300 words.\n   - Content: Need to explain the decision process in work-stealing schedulers. Typically, work-stealing schedulers have per-thread deques (or queues). Each thread owns a deque where it pushes and pops from the bottom (LIFO). When idle, a thread steals from the top of another thread's deque (FIFO). The decision process involves checking local deque first, then randomly selecting a victim thread, then attempting to steal from the top of that victim's deque. I need to frame this in flowing prose, focusing on the decision logic, without using lists or code. I'll aim for ~300 words.\n\n   Drafting Part 1 (mental refinement):\n   A work-stealing scheduler orchestrates parallel execution by distributing computational tasks across multiple worker threads, each maintaining its own private task queue. The fundamental decision of which queue to draw work from begins locally. When a worker thread completes its current operation, it first inspects its own deque. Because it originally pushed tasks onto the bottom of this structure, it naturally pops from the same end, ensuring cache locality and minimizing contention. This local execution follows a last-in, first-out pattern, which tends to keep related data in processor caches and reduces synchronization overhead. Only when the local deque is empty does the scheduler trigger the stealing mechanism. At this point, the idle worker must select a victim thread from the pool of active participants. Rather than scanning every queue sequentially, which would introduce significant latency and lock contention, the scheduler typically employs a randomized selection strategy. It picks a target thread at random and attempts to extract a task from the top of that thread\u2019s deque. This top-down extraction operates on a first-in, first-out basis, which balances the workload across the system and prevents starvation. The stealing attempt is usually guarded by atomic operations or lightweight locks to ensure thread safety. If the chosen victim is also actively popping from its own bottom end, the steal may fail, prompting the scheduler to try another randomly selected thread. This iterative probing continues until a task is successfully stolen or all candidates have been exhausted. The entire decision process is designed to minimize global synchronization, favor local execution, and distribute idle work evenly through randomized probing, thereby maintaining high throughput while avoiding bottlenecks.\n\n   Word count check: ~248 words. I'll expand slightly to get closer to 300.\n   Let's add a bit more detail about the decision criteria and load balancing.\n   \"A work-stealing scheduler orchestrates parallel execution by distributing computational tasks across multiple worker threads, each maintaining its own private task queue. The fundamental decision of which queue to draw work from begins locally. When a worker thread completes its current operation, it first inspects its own deque. Because it originally pushed tasks onto the bottom of this structure, it naturally pops from the same end, ensuring cache locality and minimizing contention. This local execution follows a last-in, first-out pattern, which tends to keep related data in processor caches and reduces synchronization overhead. Only when the local deque is empty does the scheduler trigger the stealing mechanism. At this point, the idle worker"}

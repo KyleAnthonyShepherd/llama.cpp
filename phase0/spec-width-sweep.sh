@@ -11,9 +11,13 @@
 #     the cold expert count per batch. The hit-rate readback costs throughput, so its t/s is
 #     not a result - that is what E1 is for. At temperature 0 both runs emit the same tokens,
 #     so the two line up by token index.
-# E2  does the optimum move inside a run? the two-phase prompt generates prose and then copies
-#     a document verbatim. If a different width wins the prose windows and the copy windows,
-#     a controller has something to win and the gap is its size. THIS IS THE ONE THAT DECIDES.
+# E2  does the optimum move inside a run? THIS IS THE ONE THAT DECIDES.
+#     The prompt asks for prose and then a verbatim copy, but that is not where the phase change
+#     lands. Measured: the model opens a <think> block by restating the request almost word for
+#     word - MTP predicts that nearly perfectly - and around token 200 it stops echoing and
+#     starts reasoning. 800 tokens never reaches the copy at all. The echo phase is the better
+#     experiment anyway, because every thinking model opens that way on every request.
+#     Read the --baseline w0 table, not the raw one: a ratio inside one window cancels the drift.
 # E3  is the hit rate the thing that moves? correlate E2's per-window winner against E1x's
 #     per-window hit rate. Reporter only, no new runs.
 # E4  what the always-on cold count costs. Needs two binaries: BIN_A from before the counter
@@ -33,8 +37,8 @@ set -u
 PHASE0_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$PHASE0_DIR/.." && pwd)"
 OUT="$PHASE0_DIR/results/devbox"
-BIN="${BIN:-$REPO_ROOT/build/bin/Release/llama-server.exe}"
-[ -x "$BIN" ] || BIN="$REPO_ROOT/build/bin/llama-server"
+BIN="${BIN:-$REPO_ROOT/build-cuda/bin/Release/llama-server.exe}"
+[ -x "$BIN" ] || BIN="$REPO_ROOT/build-cuda/bin/llama-server"
 MODEL="${MODEL:-$(cat "$OUT/model-path.txt")}"
 TAG="${TAG:-sw}"
 
@@ -131,7 +135,17 @@ run_case() {
     python "$PHASE0_DIR/spec-width-report.py" one "$jsonl" "$log"
 }
 
-mtp() { echo "--spec-type draft-mtp --spec-draft-n-max $1"; }
+# Width 0 is no speculation at all, and --spec-draft-n-max 0 is NOT that: every draft loop pushes
+# a token before it tests n_max (common/speculative.cpp:1668), so 0 still drafts one and the w0 arm
+# would silently measure w1. The controller's own width 0 is a true skip - the server never calls
+# the drafter when n_draft_max is 0 - so only the fixed-width arm needs this.
+mtp() {
+    if [ "$1" = "0" ]; then
+        echo ""
+    else
+        echo "--spec-type draft-mtp --spec-draft-n-max $1"
+    fi
+}
 
 build_prompts
 
@@ -165,12 +179,22 @@ for c in "${@:-e2}"; do
     # E2: the decision. One generation that changes phase halfway. If the window table has one
     # winner throughout, the plan says stop.
     e2) for rep in 1 2; do
-            for w in $WIDTHS; do
+            # the second repeat runs the widths backwards. Running them in the same order twice
+            # aliases this box's position artifact straight onto width: measured, both w0 arms
+            # ran first and came out slowest, both w3 arms ran last and came out fastest
+            if [ "$rep" = "1" ]; then
+                order="$WIDTHS"
+            else
+                order="$(echo "$WIDTHS" | tr ' ' '
+' | tac | tr '
+' ' ')"
+            fi
+            for w in $order; do
                 run_case "e2-w$w-r$rep" "$OUT/.p-two-phase.txt" $(mtp $w)
             done
         done
         echo "=== E2 per-window winner ==="
-        python "$PHASE0_DIR/spec-width-report.py" compare "$OUT/$TAG"-e2-w*.jsonl
+        python "$PHASE0_DIR/spec-width-report.py" compare --baseline w0 "$OUT/$TAG"-e2-w*.jsonl
         ;;
 
     # E2x: the same prompt instrumented once, so E3 has a per-window hit rate to correlate the

@@ -1,0 +1,151 @@
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-e2-w0-r1.jsonl
+=== sw-e2-w0-r1 ===
+  800 tokens, 25.42 t/s overall
+  server timings: pp 96.01 t/s (576 tok), tg 25.45 t/s (800 tok)
+    tok    0- 100   21.19 t/s
+    tok  100- 200   26.12 t/s
+    tok  200- 300   24.90 t/s
+    tok  300- 400   27.47 t/s
+    tok  400- 500   27.46 t/s
+    tok  500- 600   27.59 t/s
+    tok  600- 700   25.10 t/s
+  hot store: S=33 slots
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-e2-w1-r1.jsonl
+=== sw-e2-w1-r1 ===
+  800 tokens, 26.69 t/s overall
+  server timings: pp 92.52 t/s (576 tok), tg 26.72 t/s (800 tok)
+  draft: 351/448 accepted
+    tok    0- 100   27.23 t/s
+    tok  100- 200   29.50 t/s
+    tok  200- 300   23.02 t/s
+    tok  300- 400   26.23 t/s
+    tok  400- 500   27.24 t/s
+    tok  500- 600   26.23 t/s
+    tok  600- 700   26.34 t/s
+  hot store: S=28 slots
+  draft-mtp    drafted on 448/448 calls, mean width 1.0 tok, accepted 351/448
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-e2-w2-r1.jsonl
+=== sw-e2-w2-r1 ===
+  800 tokens, 26.81 t/s overall
+  server timings: pp 85.58 t/s (576 tok), tg 26.84 t/s (800 tok)
+  draft: 459/680 accepted
+    tok    0- 100   30.05 t/s
+    tok  100- 200   30.92 t/s
+    tok  200- 300   20.58 t/s
+    tok  300- 400   23.79 t/s
+    tok  400- 500   26.45 t/s
+    tok  500- 600   23.70 t/s
+    tok  600- 700   31.53 t/s
+  hot store: S=26 slots
+  draft-mtp    drafted on 340/340 calls, mean width 2.0 tok, accepted 459/680
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-e2-w3-r1.jsonl
+=== sw-e2-w3-r1 ===
+  800 tokens, 26.08 t/s overall
+  server timings: pp 97.27 t/s (576 tok), tg 26.11 t/s (800 tok)
+  draft: 515/852 accepted
+    tok    0- 100   28.57 t/s
+    tok  100- 200   33.69 t/s
+    tok  200- 300   24.43 t/s
+    tok  300- 400   25.91 t/s
+    tok  400- 500   22.07 t/s
+    tok  500- 600   25.10 t/s
+    tok  600- 700   23.61 t/s
+  hot store: S=26 slots
+  draft-mtp    drafted on 284/284 calls, mean width 3.0 tok, accepted 515/852
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-e2-w0-r2.jsonl
+=== sw-e2-w0-r2 ===
+  800 tokens, 21.19 t/s overall
+  server timings: pp 92.79 t/s (576 tok), tg 21.22 t/s (800 tok)
+    tok    0- 100   19.94 t/s
+    tok  100- 200   22.15 t/s
+    tok  200- 300   19.69 t/s
+    tok  300- 400   21.47 t/s
+    tok  400- 500   21.99 t/s
+    tok  500- 600   22.07 t/s
+    tok  600- 700   21.55 t/s
+  hot store: S=33 slots
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-e2-w1-r2.jsonl
+=== sw-e2-w1-r2 ===
+  800 tokens, 24.80 t/s overall
+  server timings: pp 82.62 t/s (576 tok), tg 24.83 t/s (800 tok)
+  draft: 351/448 accepted
+    tok    0- 100   25.20 t/s
+    tok  100- 200   25.60 t/s
+    tok  200- 300   21.77 t/s
+    tok  300- 400   25.81 t/s
+    tok  400- 500   25.29 t/s
+    tok  500- 600   25.50 t/s
+    tok  600- 700   24.71 t/s
+  hot store: S=28 slots
+  draft-mtp    drafted on 448/448 calls, mean width 1.0 tok, accepted 351/448
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-e2-w2-r2.jsonl
+=== sw-e2-w2-r2 ===
+  800 tokens, 27.03 t/s overall
+  server timings: pp 91.47 t/s (576 tok), tg 27.06 t/s (800 tok)
+  draft: 459/680 accepted
+    tok    0- 100   29.35 t/s
+    tok  100- 200   31.38 t/s
+    tok  200- 300   22.07 t/s
+    tok  300- 400   22.86 t/s
+    tok  400- 500   27.59 t/s
+    tok  500- 600   25.20 t/s
+    tok  600- 700   29.49 t/s
+  hot store: S=26 slots
+  draft-mtp    drafted on 340/340 calls, mean width 2.0 tok, accepted 459/680
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-e2-w3-r2.jsonl
+=== sw-e2-w3-r2 ===
+  800 tokens, 28.39 t/s overall
+  server timings: pp 92.09 t/s (576 tok), tg 28.42 t/s (800 tok)
+  draft: 515/852 accepted
+    tok    0- 100   33.33 t/s
+    tok  100- 200   38.10 t/s
+    tok  200- 300   25.00 t/s
+    tok  300- 400   24.43 t/s
+    tok  400- 500   25.70 t/s
+    tok  500- 600   26.34 t/s
+    tok  600- 700   26.23 t/s
+  hot store: S=26 slots
+  draft-mtp    drafted on 284/284 calls, mean width 3.0 tok, accepted 515/852
+=== E2 per-window winner ===
+  window          sw-e2-w0-r1 sw-e2-w0-r2 sw-e2-w1-r1 sw-e2-w1-r2 sw-e2-w2-r1 sw-e2-w2-r2 sw-e2-w3-r1 sw-e2-w3-r2
+  0-100                 21.19       19.94       27.23       25.20       30.05       29.35       28.57      33.33*
+  100-200               26.12       22.15       29.50       25.60       30.92       31.38       33.69      38.10*
+  200-300               24.90       19.69       23.02       21.77       20.58       22.07       24.43      25.00*
+  300-400              27.47*       21.47       26.23       25.81       23.79       22.86       25.91       24.43
+  400-500               27.46       21.99       27.24       25.29       26.45      27.59*       22.07       25.70
+  500-600              27.59*       22.07       26.23       25.50       23.70       25.20       25.10       26.34
+  600-700               25.10       21.55       26.34       24.71      31.53*       29.49       23.61       26.23
+  overall               25.42       21.19       26.69       24.80       26.81       27.03       26.08       28.39
+  windows won               2           0           0           0           1           1           0           3
+
+  more than one arm wins a window: the best width moves inside the run, so a
+  controller has something to win. See PLAN-adaptive-draft-width.md section 6, E2.
+  mean of 2/2/2/2 repeat(s) per config
+  window             sw-e2-w0    sw-e2-w1    sw-e2-w2    sw-e2-w3
+  0-100                 20.56       26.22       29.70      30.95*
+  100-200               24.14       27.55       31.15      35.89*
+  200-300               22.30       22.40       21.32      24.71*
+  300-400               24.47      26.02*       23.32       25.17
+  400-500               24.73       26.27      27.02*       23.89
+  500-600               24.83      25.86*       24.45       25.72
+  600-700               23.33       25.52      30.51*       24.92
+  overall               23.30       25.74       26.92       27.24
+  windows won               0           2           2           3
+  noise floor           19.9% (widest gap between repeats of one config)
+  best-worst            16.9% (sw-e2-w3 over sw-e2-w0)
+
+  speedup against sw-e2-w0, same window
+  window             sw-e2-w1    sw-e2-w2    sw-e2-w3
+  0-100                  1.27        1.44        1.51
+  100-200                1.14        1.29        1.49
+  200-300                1.00        0.96        1.11
+  300-400                1.06        0.95        1.03
+  400-500                1.06        1.09        0.97
+  500-600                1.04        0.98        1.04
+  600-700                1.09        1.31        1.07
+
+  More than one config wins a window: the best width moves inside the run, so a
+  controller has something to win. See PLAN-adaptive-draft-width.md section 6, E2.
+
+  BUT the best-worst gap is inside the noise floor. Nothing here is a result yet -
+  add repeats until the gap clears the spread between repeats of one config.

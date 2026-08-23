@@ -151,42 +151,104 @@ def cmd_one(args):
             len(sel)))
 
 
+RE_REP = re.compile(r"-r\d+$")
+
+
 def cmd_compare(args):
-    arms = [load(p) for p in args.jsonl]
-    arms = [(n, t) for n, t, _ in arms if len(t) > WINDOW]
-    if not arms:
+    """Compare arms per window, averaging the repeats of each config first.
+
+    Repeats of one config are not separate arms. Treating them as such lets this box's
+    run-to-run drift - measured at 20% between two identical width 0 runs - win windows on
+    its own and read as if the best width moved.
+    """
+    loaded = [load(p) for p in args.jsonl]
+    loaded = [(n, t) for n, t, _ in loaded if len(t) > WINDOW]
+    if not loaded:
         print("no arm has more than %d tokens" % WINDOW)
         return
 
-    per_arm = {n: dict(windows(t)) for n, t in arms}
-    names = [n for n, _ in arms]
-    begs = sorted({b for w in per_arm.values() for b in w})
+    # config name -> [per-repeat window dicts], and -> [per-repeat overall]
+    reps, alls = {}, {}
+    for n, t in loaded:
+        cfg = RE_REP.sub("", n)
+        reps.setdefault(cfg, []).append(dict(windows(t)))
+        alls.setdefault(cfg, []).append(overall(t))
 
-    print("  %-14s %s" % ("window", "".join("%12s" % n[-11:] for n in names)))
+    cfgs = sorted(reps)
+    begs = sorted({b for rs in reps.values() for r in rs for b in r})
+
+    def mean(vs):
+        vs = [v for v in vs if v is not None]
+        return sum(vs)/len(vs) if vs else None
+
+    print("  mean of %s repeat(s) per config" % "/".join(str(len(reps[c])) for c in cfgs))
+    print("  %-14s %s" % ("window", "".join("%12s" % c[-11:] for c in cfgs)))
+
     n_best = {}
     for beg in begs:
-        row = [per_arm[n].get(beg) for n in names]
+        row = [mean([r.get(beg) for r in reps[c]]) for c in cfgs]
         best = max((v for v in row if v is not None), default=None)
         cells = []
-        for n, v in zip(names, row):
+        for c, v in zip(cfgs, row):
             if v is None:
                 cells.append("%12s" % "-")
             elif v == best:
-                n_best[n] = n_best.get(n, 0) + 1
+                n_best[c] = n_best.get(c, 0) + 1
                 cells.append("%11.2f*" % v)
             else:
                 cells.append("%12.2f" % v)
         print("  %-14s %s" % ("%d-%d" % (beg, beg + WINDOW), "".join(cells)))
 
-    print("  %-14s %s" % ("overall", "".join("%12.2f" % overall(t) for _, t in arms)))
-    print("  %-14s %s" % ("windows won", "".join("%12d" % n_best.get(n, 0) for n in names)))
+    print("  %-14s %s" % ("overall", "".join("%12.2f" % mean(alls[c]) for c in cfgs)))
+    print("  %-14s %s" % ("windows won", "".join("%12d" % n_best.get(c, 0) for c in cfgs)))
 
+    # the spread between repeats of one config bounds what a difference between configs has
+    # to clear before it means anything
+    spread = 0.0
+    for c in cfgs:
+        v = alls[c]
+        if len(v) > 1 and min(v) > 0:
+            spread = max(spread, (max(v) - min(v))/min(v))
+    print("  %-14s %11.1f%% (widest gap between repeats of one config)" % ("noise floor", 100.0*spread))
+
+    order = sorted(cfgs, key=lambda c: mean(alls[c]))
+    gap = (mean(alls[order[-1]]) - mean(alls[order[0]]))/mean(alls[order[0]])
+    print("  %-14s %11.1f%% (%s over %s)" % ("best-worst", 100.0*gap, order[-1][-11:], order[0][-11:]))
+
+    # Ratios inside one window against a baseline arm cancel most of the between-run drift the
+    # raw table carries, so this is the table E2 should actually be read off.
+    if args.baseline:
+        base = [c for c in cfgs if c.endswith(args.baseline)]
+        if not base:
+            print("\n  baseline %r matches no config" % args.baseline)
+            return
+        b0 = base[0]
+        rest = [c for c in cfgs if c != b0]
+
+        print("\n  speedup against %s, same window" % b0[-11:])
+        print("  %-14s %s" % ("window", "".join("%12s" % c[-11:] for c in rest)))
+        for beg in begs:
+            bv = mean([r.get(beg) for r in reps[b0]])
+            if not bv:
+                continue
+            cells = []
+            for c in rest:
+                v = mean([r.get(beg) for r in reps[c]])
+                cells.append("%12.2f" % (v/bv) if v else "%12s" % "-")
+            print("  %-14s %s" % ("%d-%d" % (beg, beg + WINDOW), "".join(cells)))
+
+    print()
     if len(n_best) > 1:
-        print("\n  more than one arm wins a window: the best width moves inside the run, so a")
+        print("  More than one config wins a window: the best width moves inside the run, so a")
         print("  controller has something to win. See PLAN-adaptive-draft-width.md section 6, E2.")
     else:
-        print("\n  one arm wins every window: the best width does not move. Re-tune the constant")
+        print("  One config wins every window: the best width does not move. Re-tune the constant")
         print("  and stop - PLAN-adaptive-draft-width.md section 6 calls this the kill criterion.")
+
+    if gap < spread:
+        print()
+        print("  BUT the best-worst gap is inside the noise floor. Nothing here is a result yet -")
+        print("  add repeats until the gap clears the spread between repeats of one config.")
 
 
 def cmd_cold(args):
@@ -223,6 +285,7 @@ def main():
 
     p = sub.add_parser("compare")
     p.add_argument("jsonl", nargs="+")
+    p.add_argument("--baseline", help="config name suffix to divide every window by, e.g. w0")
     p.set_defaults(fn=cmd_compare)
 
     p = sub.add_parser("cold")

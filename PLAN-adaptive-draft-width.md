@@ -314,6 +314,40 @@ here.
 
 *This is the experiment that matters. E1 without E2 only re-tunes a constant.*
 
+### 6.1 E2 RESULT - yes, and by a lot
+
+Run 2026-08-23, `sw-e2-*`, 8 arms (widths 0-3 x 2 repeats), 800 tokens, `-ehs -1`, temp 0.
+**Measured**, speedup against width 0 in the same window, which cancels the between-run drift the
+raw numbers carry:
+
+| window | w1 | w2 | w3 |
+|---|---|---|---|
+| 0-100 | 1.27 | 1.44 | **1.51** |
+| 100-200 | 1.14 | 1.29 | **1.49** |
+| 200-300 | 1.00 | 0.96 | 1.11 |
+| 300-400 | 1.06 | 0.95 | 1.03 |
+| 400-500 | 1.06 | 1.09 | 0.97 |
+| 500-600 | 1.04 | 0.98 | 1.04 |
+| 600-700 | 1.09 | **1.31** | 1.07 |
+
+Width 3 is worth **1.5x** for the first 200 tokens and **nothing** after - 0.97 to 1.11, and at
+400-500 it is slower than not speculating at all. No fixed width has both halves. That is the
+case for a controller, and it is much stronger than section 1.2 predicted.
+
+**Where the phase change comes from, and it is not what the prompt asked for.** The model opens a
+`<think>` block by restating the request nearly word for word, which MTP predicts almost
+perfectly; around token 200 it stops echoing and starts reasoning, and acceptance collapses. The
+prompt's Part 2 verbatim copy is never reached inside 800 tokens. **This is the better experiment
+anyway**: every thinking model opens every request that way, so the fast phase is not a contrived
+workload, it is the first few hundred tokens of ordinary use.
+
+**What this run does NOT establish.** The best *fixed* width overall. Run-to-run spread between
+two identical width-0 arms was **19.9%**, wider than the 16.9% best-to-worst gap across widths, and
+both repeats swept the widths in the same order so a position artifact aliased onto width (both w0
+arms ran first and came out slowest, both w3 arms ran last and came out fastest). The second repeat
+now runs the widths backwards. That question belongs to E1 and needs more repeats either way.
+
+
 **E3 - is the hit rate actually the thing that varies?** Same run as E2; correlate the per-window
 optimal width against the per-window hit rate. If the correlation is weak, section 4.2 regresses
 against the wrong variable, and the honest outcome is a plain measured-throughput bandit over
