@@ -1,0 +1,26 @@
+  mean of 2/2/2/2/2 repeat(s) per config
+  window           sw-ad-auto w-ad-fixed0 w-ad-fixed1 w-ad-fixed2 w-ad-fixed3
+  0-100                 26.90       20.88       25.35       30.55      31.15*
+  100-200               33.62       24.83       30.26      33.74*       33.61
+  200-300              26.89*       23.35       24.29       22.25       21.05
+  300-400               24.11       25.16      28.20*       23.27       24.72
+  400-500               24.66       25.58      25.62*       25.55       24.57
+  500-600               25.45       25.45       24.33       25.05      26.72*
+  600-700               26.67       24.39       23.37      29.90*       24.96
+  overall               27.07       24.04       25.69       27.09       26.78
+  windows won               1           0           2           2           2
+  noise floor           12.2% (widest gap between repeats of one config)
+  best-worst            12.7% (w-ad-fixed2 over w-ad-fixed0)
+
+  speedup against w-ad-fixed0, same window
+  window           sw-ad-auto w-ad-fixed1 w-ad-fixed2 w-ad-fixed3
+  0-100                  1.29        1.21        1.46        1.49
+  100-200                1.35        1.22        1.36        1.35
+  200-300                1.15        1.04        0.95        0.90
+  300-400                0.96        1.12        0.93        0.98
+  400-500                0.96        1.00        1.00        0.96
+  500-600                1.00        0.96        0.98        1.05
+  600-700                1.09        0.96        1.23        1.02
+
+  More than one config wins a window: the best width moves inside the run, so a
+  controller has something to win. See PLAN-adaptive-draft-width.md section 6, E2.

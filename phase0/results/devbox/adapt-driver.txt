@@ -1,0 +1,162 @@
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-ad-fixed0-r1.jsonl
+=== sw-ad-fixed0-r1 ===
+  800 tokens, 25.43 t/s overall
+  server timings: pp 97.71 t/s (576 tok), tg 25.45 t/s (800 tok)
+    tok    0- 100   20.85 t/s
+    tok  100- 200   26.12 t/s
+    tok  200- 300   25.30 t/s
+    tok  300- 400   26.78 t/s
+    tok  400- 500   27.01 t/s
+    tok  500- 600   27.70 t/s
+    tok  600- 700   25.91 t/s
+  hot store: S=33 slots
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-ad-fixed1-r1.jsonl
+=== sw-ad-fixed1-r1 ===
+  800 tokens, 24.96 t/s overall
+  server timings: pp 89.46 t/s (576 tok), tg 24.98 t/s (800 tok)
+  draft: 351/448 accepted
+    tok    0- 100   24.15 t/s
+    tok  100- 200   30.19 t/s
+    tok  200- 300   24.61 t/s
+    tok  300- 400   29.63 t/s
+    tok  400- 500   25.00 t/s
+    tok  500- 600   22.22 t/s
+    tok  600- 700   22.22 t/s
+  hot store: S=28 slots
+  draft-mtp    drafted on 448/448 calls, mean width 1.0 tok, accepted 351/448
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-ad-fixed2-r1.jsonl
+=== sw-ad-fixed2-r1 ===
+  800 tokens, 26.84 t/s overall
+  server timings: pp 93.54 t/s (576 tok), tg 26.88 t/s (800 tok)
+  draft: 459/680 accepted
+    tok    0- 100   30.48 t/s
+    tok  100- 200   32.32 t/s
+    tok  200- 300   21.48 t/s
+    tok  300- 400   23.19 t/s
+    tok  400- 500   25.71 t/s
+    tok  500- 600   25.00 t/s
+    tok  600- 700   29.90 t/s
+  hot store: S=26 slots
+  draft-mtp    drafted on 340/340 calls, mean width 2.0 tok, accepted 459/680
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-ad-fixed3-r1.jsonl
+=== sw-ad-fixed3-r1 ===
+  800 tokens, 26.54 t/s overall
+  server timings: pp 90.59 t/s (576 tok), tg 26.57 t/s (800 tok)
+  draft: 515/852 accepted
+    tok    0- 100   30.92 t/s
+    tok  100- 200   32.99 t/s
+    tok  200- 300   21.19 t/s
+    tok  300- 400   24.24 t/s
+    tok  400- 500   24.24 t/s
+    tok  500- 600   26.55 t/s
+    tok  600- 700   24.52 t/s
+  hot store: S=26 slots
+  draft-mtp    drafted on 284/284 calls, mean width 3.0 tok, accepted 515/852
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-ad-auto-r1.jsonl
+=== sw-ad-auto-r1 ===
+  800 tokens, 27.23 t/s overall
+  server timings: pp 90.62 t/s (576 tok), tg 27.25 t/s (800 tok)
+  draft: 467/660 accepted
+    tok    0- 100   27.35 t/s
+    tok  100- 200   34.59 t/s
+    tok  200- 300   26.78 t/s
+    tok  300- 400   21.99 t/s
+    tok  400- 500   24.52 t/s
+    tok  500- 600   25.50 t/s
+    tok  600- 700   29.10 t/s
+  hot store: S=26 slots
+  draft-mtp    drafted on 332/332 calls, mean width 2.0 tok, accepted 467/660
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-ad-auto-r2.jsonl
+=== sw-ad-auto-r2 ===
+  800 tokens, 26.91 t/s overall
+  server timings: pp 91.51 t/s (576 tok), tg 26.95 t/s (800 tok)
+  draft: 456/692 accepted
+    tok    0- 100   26.45 t/s
+    tok  100- 200   32.65 t/s
+    tok  200- 300   27.01 t/s
+    tok  300- 400   26.23 t/s
+    tok  400- 500   24.80 t/s
+    tok  500- 600   25.40 t/s
+    tok  600- 700   24.24 t/s
+  hot store: S=26 slots
+  draft-mtp    drafted on 342/342 calls, mean width 2.0 tok, accepted 456/692
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-ad-fixed3-r2.jsonl
+=== sw-ad-fixed3-r2 ===
+  800 tokens, 27.01 t/s overall
+  server timings: pp 91.79 t/s (576 tok), tg 27.05 t/s (800 tok)
+  draft: 515/852 accepted
+    tok    0- 100   31.38 t/s
+    tok  100- 200   34.22 t/s
+    tok  200- 300   20.91 t/s
+    tok  300- 400   25.20 t/s
+    tok  400- 500   24.90 t/s
+    tok  500- 600   26.89 t/s
+    tok  600- 700   25.40 t/s
+  hot store: S=26 slots
+  draft-mtp    drafted on 284/284 calls, mean width 3.0 tok, accepted 515/852
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-ad-fixed2-r2.jsonl
+=== sw-ad-fixed2-r2 ===
+  800 tokens, 27.35 t/s overall
+  server timings: pp 91.95 t/s (576 tok), tg 27.38 t/s (800 tok)
+  draft: 459/680 accepted
+    tok    0- 100   30.63 t/s
+    tok  100- 200   35.16 t/s
+    tok  200- 300   23.02 t/s
+    tok  300- 400   23.36 t/s
+    tok  400- 500   25.40 t/s
+    tok  500- 600   25.09 t/s
+    tok  600- 700   29.90 t/s
+  hot store: S=26 slots
+  draft-mtp    drafted on 340/340 calls, mean width 2.0 tok, accepted 459/680
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-ad-fixed1-r2.jsonl
+=== sw-ad-fixed1-r2 ===
+  800 tokens, 26.43 t/s overall
+  server timings: pp 91.11 t/s (576 tok), tg 26.46 t/s (800 tok)
+  draft: 351/448 accepted
+    tok    0- 100   26.55 t/s
+    tok  100- 200   30.33 t/s
+    tok  200- 300   23.98 t/s
+    tok  300- 400   26.77 t/s
+    tok  400- 500   26.23 t/s
+    tok  500- 600   26.44 t/s
+    tok  600- 700   24.52 t/s
+  hot store: S=28 slots
+  draft-mtp    drafted on 448/448 calls, mean width 1.0 tok, accepted 351/448
+  800 tokens streamed -> I:/Kyle_Shepherd/opt-llama/phase0/results/devbox/sw-ad-fixed0-r2.jsonl
+=== sw-ad-fixed0-r2 ===
+  800 tokens, 22.66 t/s overall
+  server timings: pp 95.55 t/s (576 tok), tg 22.69 t/s (800 tok)
+    tok    0- 100   20.92 t/s
+    tok  100- 200   23.53 t/s
+    tok  200- 300   21.40 t/s
+    tok  300- 400   23.53 t/s
+    tok  400- 500   24.15 t/s
+    tok  500- 600   23.19 t/s
+    tok  600- 700   22.86 t/s
+  hot store: S=33 slots
+  mean of 2/2/2/2/2 repeat(s) per config
+  window           sw-ad-auto w-ad-fixed0 w-ad-fixed1 w-ad-fixed2 w-ad-fixed3
+  0-100                 26.90       20.88       25.35       30.55      31.15*
+  100-200               33.62       24.83       30.26      33.74*       33.61
+  200-300              26.89*       23.35       24.29       22.25       21.05
+  300-400               24.11       25.16      28.20*       23.27       24.72
+  400-500               24.66       25.58      25.62*       25.55       24.57
+  500-600               25.45       25.45       24.33       25.05      26.72*
+  600-700               26.67       24.39       23.37      29.90*       24.96
+  overall               27.07       24.04       25.69       27.09       26.78
+  windows won               1           0           2           2           2
+  noise floor           12.2% (widest gap between repeats of one config)
+  best-worst            12.7% (w-ad-fixed2 over w-ad-fixed0)
+
+  speedup against w-ad-fixed0, same window
+  window           sw-ad-auto w-ad-fixed1 w-ad-fixed2 w-ad-fixed3
+  0-100                  1.29        1.21        1.46        1.49
+  100-200                1.35        1.22        1.36        1.35
+  200-300                1.15        1.04        0.95        0.90
+  300-400                0.96        1.12        0.93        0.98
+  400-500                0.96        1.00        1.00        0.96
+  500-600                1.00        0.96        0.98        1.05
+  600-700                1.09        0.96        1.23        1.02
+
+  More than one config wins a window: the best width moves inside the run, so a
+  controller has something to win. See PLAN-adaptive-draft-width.md section 6, E2.

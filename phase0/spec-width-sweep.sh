@@ -50,6 +50,10 @@ SEED="${SEED:-1234}"
 # widths to sweep. 3 is the ceiling: a verify batch is 1 + width and the tier serves 4 tokens
 WIDTHS="${WIDTHS:-0 1 2 3}"
 
+# repeats per config. The measured spread between two identical runs on this box is ~20%, so
+# anything smaller than that needs more than 2 before it is a result
+REPS="${REPS:-2}"
+
 # every arm holds these fixed. -fitt leaves room for the KV cache the way the other phase0 runs do
 COMMON="-ehs -1 -fitt 256 --flash-attn on"
 
@@ -248,13 +252,27 @@ PY
             ;;
 
     # step 5. Only worth running once E2 says the optimum moves.
-    adapt) for rep in 1 2; do
-               for w in $WIDTHS; do
-                   run_case "ad-fixed$w-r$rep" "$OUT/.p-two-phase.txt" $(mtp $w)
+    # The adaptive arm is in the rotation like any other width, and every other repeat runs the
+    # rotation backwards. Running it last every time would hand it this box's position artifact,
+    # which is the one direction a result here must not be able to come from.
+    adapt) rep=1
+           while [ "$rep" -le "$REPS" ]; do
+               arms="$WIDTHS auto"
+               if [ $((rep % 2)) -eq 0 ]; then
+                   arms="$(echo "$arms" | tr ' ' '
+' | tac | tr '
+' ' ')"
+               fi
+               for a in $arms; do
+                   if [ "$a" = "auto" ]; then
+                       run_case "ad-auto-r$rep" "$OUT/.p-two-phase.txt" $(mtp 3) --spec-adaptive-width
+                   else
+                       run_case "ad-fixed$a-r$rep" "$OUT/.p-two-phase.txt" $(mtp $a)
+                   fi
                done
-               run_case "ad-auto-r$rep" "$OUT/.p-two-phase.txt" $(mtp 3) --spec-adaptive-width
+               rep=$((rep+1))
            done
-           python "$PHASE0_DIR/spec-width-report.py" compare "$OUT/$TAG"-ad-*.jsonl
+           python "$PHASE0_DIR/spec-width-report.py" compare --baseline fixed0 "$OUT/$TAG"-ad-*.jsonl
            ;;
 
     # wiring check. Same prompt on all three so the numbers can be read side by side, though

@@ -370,6 +370,60 @@ the scan is free; confirm it, because it runs on every decode.
   `--spec-draft-n-max 0`. Compare against the 2% idle figure recorded in `a0ca094e1`.
 - A long run, to confirm the fit does not drift into a corner and stay there.
 
+### 7.1 ADAPT RESULT - the controller ties the best constant, and does not beat it
+
+Run 2026-08-23, `sw-ad-*`, 10 arms (widths 0-3 and adaptive, x2 repeats, rotation reversed on the
+second so the adaptive arm cannot collect the position artifact). 800 tokens, `-ehs -1`, temp 0.
+
+**Measured**, mean of both repeats:
+
+| config | t/s | store | speedup vs width 1 |
+|---|---|---|---|
+| width 0 (no speculation) | 24.04 | S=33 | 0.94 |
+| width 1 (today's default) | 25.69 | S=28 | - |
+| width 2 | **27.09** | S=26 | **1.055** |
+| width 3 | 26.78 | S=26 | 1.042 |
+| adaptive, ceiling 3 | 27.07 | S=26 | 1.054 |
+
+Speedup against width 0 in the same window:
+
+| window | auto | w1 | w2 | w3 |
+|---|---|---|---|---|
+| 0-100 | 1.29 | 1.21 | 1.46 | **1.49** |
+| 100-200 | 1.35 | 1.22 | **1.36** | 1.35 |
+| 200-300 | **1.15** | 1.04 | 0.95 | 0.90 |
+| 300-400 | 0.96 | **1.12** | 0.93 | 0.98 |
+| 400-500 | 0.96 | 1.00 | 1.00 | 0.96 |
+| 500-600 | 1.00 | 0.96 | 0.98 | **1.05** |
+| 600-700 | 1.09 | 0.96 | **1.23** | 1.02 |
+
+Three things follow, in the order they are worth acting on.
+
+**1. The shipped default is wrong, and fixing it costs nothing.** Width 2 beats width 1 by 5.5% and
+needs no new code. The controller's whole measured gain over the default (5.4%) is available by
+changing one number. The adaptive arm converges to a mean draft width of 2.0 in both repeats, which
+is the controller agreeing.
+
+**2. Warm-up costs the controller the one phase it should win.** Window 0-100 is where width 3 is
+worth 1.49, and the controller gets 1.29 because it is still sweeping widths 1, 2, 3 to seed the
+fit. The fast phase is the first ~200 tokens of a request and warm-up eats a large part of it.
+Seeding `cold_at` and the acceptance array from the previous request instead of starting cold is
+the obvious fix - the fit already persists across tasks (section 4.1), but `n_step` restarts the
+sweep. **This is the highest-value change left.**
+
+**3. It does win the transition.** At window 200-300, where acceptance collapses, auto is the
+fastest arm at 1.15 against 0.90-1.04 for every constant. That is the controller doing exactly what
+it was built for. It is one window.
+
+**Caveats that bound all of the above.** Spread between repeats of one config was 12.2% and the
+best-to-worst gap across configs was 12.7%, so even "width 2 beats width 1" needs more repeats
+before it is safe. And the adaptive arm ran with S=26 hot slots against width 0's S=33 (risk 3), so
+it is carrying a handicap the table does not show.
+
+**Verdict: do not ship the controller yet.** Retune the default to 2, fix warm-up, then re-run this
+arm with `REPS=4`.
+
+
 ---
 
 ## 8. Risks, stated plainly
