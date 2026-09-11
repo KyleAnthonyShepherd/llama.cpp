@@ -82,7 +82,11 @@ struct llama_context {
 
     // give the expert hot store's VRAM back so a KV cache of n_ctx_seq_new cells fits;
     // false when nothing was dropped
-    bool shrink_expert_hotstore_for_kv(uint32_t n_ctx_seq_new);
+    bool shrink_expert_hotstore(size_t n_bytes);
+    int32_t free_expert_hotstore_bytes(size_t n_bytes);
+    bool drop_expert_hotstore_slots(int n);
+
+    size_t compute_growth_bytes();
 
     // re-slot the expert hot store to the VRAM free right now, up to hot_s_max.
     // `reserve` re-reserves the compute graph when the store changed - a reserved graph
@@ -393,6 +397,10 @@ private:
     std::unique_ptr<llama_expert_heatmap> expert_heatmap;
     std::unique_ptr<llama_expert_hotstore> expert_hotstore;
 
+    // what the last context growth had to find in VRAM, so refit_expert_hotstore() can leave
+    // room for the next one instead of handing slots straight back. 0 until one is measured.
+    size_t ctx_grow_need = 0;
+
     // buffer type the hot store was allocated from; needed to re-allocate it smaller
     // when a growing KV cache wants the VRAM back (see set_n_ctx())
     ggml_backend_buffer_type_t expert_hotstore_buft = nullptr;
@@ -415,10 +423,6 @@ private:
     // -1 until the store is filled
     int32_t expert_cold_distinct = -1;
     int32_t expert_cold_n_tokens = 0;
-
-    // KV cell types, kept so set_n_ctx() can size the grown cache without the memory module
-    ggml_type kv_type_k = GGML_TYPE_F16;
-    ggml_type kv_type_v = GGML_TYPE_F16;
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;

@@ -1174,6 +1174,7 @@ private:
         if (has_mmproj) {
             mparams.use_gpu          = params_base.mmproj_use_gpu;
             mparams.device           = params_base.mmproj_device;
+            mparams.weights_host     = params_base.mmproj_weights_host;
             mparams.print_timings    = false;
             mparams.n_threads        = params_base.cpuparams.n_threads;
             mparams.flash_attn_type  = params_base.flash_attn_type;
@@ -1198,6 +1199,11 @@ private:
                     total += size;
                 }
                 SRV_TRC("[mtmd] estimated worst-case memory usage of mmproj is %.2f MiB (took %.2f ms)\n", total / (1024.0 * 1024.0), t_elapsed / 1000.0);
+                // under --mmproj-weights-host the weights sit on a different device than the
+                // encode, so the total above is not what any one device has to find
+                for (auto & [dev, size] : mmproj_mem) {
+                    SRV_TRC("[mtmd]   %s: %.2f MiB\n", ggml_backend_dev_name(dev), size / (1024.0 * 1024.0));
+                }
                 GGML_ASSERT(!params_base.fit_params_target.empty());
                 for (auto & [dev, size] : mmproj_mem) {
                     for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
@@ -3228,6 +3234,20 @@ private:
 
                 metrics_flush_idle();
 
+                // Take the expert hot store back up to what fits now that nothing is running.
+                // A resize that ran while the device was momentarily short gives up slots that
+                // no later resize is obliged to hand back, so without this the store only ever
+                // ratchets down over the life of the server.
+                const int32_t n_hot = llama_expert_hotstore_refit(ctx_tgt);
+
+                if (n_hot >= 0 && n_hot != n_hot_idle) {
+                    if (n_hot_idle >= 0) {
+                        SRV_INF("expert hot store refit while idle: %d -> %d slots\n", n_hot_idle, n_hot);
+                    }
+
+                    n_hot_idle = n_hot;
+                }
+
                 return; // skip further processing
 
             } else {
@@ -4544,6 +4564,9 @@ private:
         });
     }
 
+    // last slot count reported by the idle refit, so a steady state stays quiet in the log
+    int32_t n_hot_idle = -1;
+
     // context size of a single slot, capped by --kv-unified-per-slot and by the training context of the model
     int n_ctx_slot() const {
         int res = llama_n_ctx_seq(ctx_tgt);
@@ -4580,6 +4603,14 @@ private:
             const int32_t n_ctx_seq_dft = llama_n_ctx_seq(ctx_dft);
 
             if (n_ctx_seq_dft != n_ctx_seq_now) {
+                // the draft owns no expert hot store - ctx_tgt holds it, and on a growing
+                // context it has usually just taken everything the device had free. The draft
+                // has nothing of its own to give, so ask ctx_tgt to make the room for it
+                const size_t need = llama_resize_peak_bytes(ctx_dft, (uint32_t) n_ctx_seq_now);
+                if (need > 0) {
+                    llama_expert_hotstore_free_bytes(ctx_tgt, need);
+                }
+
                 const int32_t ret = llama_set_n_ctx(ctx_dft, (uint32_t) n_ctx_seq_now);
 
                 if (ret == 0) {
@@ -4592,8 +4623,21 @@ private:
                     // resizing ctx_tgt's memory already covers it in that case, so there's
                     // nothing actually wrong; the return code doesn't distinguish that from
                     // a real allocation failure, so this stays a warning either way
-                    SRV_WRN("failed to resize MTP draft context in lockstep (ret = %d) - "
-                            "drafting may degrade near the new context boundary\n", ret);
+                    SRV_WRN("failed to resize MTP draft context in lockstep (ret = %d)\n", ret);
+
+                    // the two have to track the same position range, so a draft that cannot
+                    // follow takes the target back down with it - generation then stops at the
+                    // old context limit instead of failing the next draft decode outright
+                    if (llama_set_n_ctx(ctx_tgt, (uint32_t) n_ctx_seq_dft) == 0) {
+                        n_ctx = llama_n_ctx(ctx_tgt);
+
+                        for (auto & slot : slots) {
+                            slot.n_ctx = llama_n_ctx_seq(ctx_tgt);
+                        }
+
+                        SRV_WRN("took the target context back to n_ctx = %d to stay in lockstep\n",
+                                llama_n_ctx_seq(ctx_tgt));
+                    }
                 }
             }
         }

@@ -2761,6 +2761,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples(mmproj_examples).set_env("MTMD_BACKEND_DEVICE")); // no LLAMA_ARG_ prefix for backward compatibility reason
     add_opt(common_arg(
+        {"--mmproj-weights-host"},
+        {"--no-mmproj-weights-host"},
+        string_format("keep the multimodal projector weights in RAM and run the encode on the GPU anyway, "
+                      "freeing the VRAM they would hold (default: %s)", params.mmproj_weights_host ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.mmproj_weights_host = value;
+        }
+    ).set_examples(mmproj_examples).set_env("LLAMA_ARG_MMPROJ_WEIGHTS_HOST"));
+    add_opt(common_arg(
         {"--image", "--audio", "--video"}, "FILE",
         "path to an image, audio, or video file. use with multimodal models, use comma-separated values for multiple files\n",
         [](common_params & params, const std::string & value) {

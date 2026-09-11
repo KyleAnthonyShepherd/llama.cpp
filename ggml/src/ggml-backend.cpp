@@ -13,6 +13,8 @@
 #include "ggml-alloc.h"
 #include "ggml-impl.h"
 
+#include <atomic>
+
 #include <assert.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -34,6 +36,16 @@
 const char * ggml_backend_buft_name(ggml_backend_buffer_type_t buft) {
     GGML_ASSERT(buft);
     return buft->iface.get_name(buft);
+}
+
+static std::atomic<bool> g_vram_strict{false};
+
+void ggml_backend_set_vram_strict(bool strict) {
+    g_vram_strict.store(strict, std::memory_order_relaxed);
+}
+
+bool ggml_backend_get_vram_strict(void) {
+    return g_vram_strict.load(std::memory_order_relaxed);
 }
 
 ggml_backend_buffer_t ggml_backend_buft_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {

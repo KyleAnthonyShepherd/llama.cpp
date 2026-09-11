@@ -115,6 +115,16 @@ struct llama_memory_i {
         return false;
     }
 
+    // free device memory, on top of what this memory already holds, that a resize to n_new
+    // needs at its peak. Callers use it to make room before asking, instead of reading the
+    // allocator's return code - see llama_context::set_n_ctx().
+    // default: nothing to resize, so nothing is needed.
+    virtual size_t resize_peak_bytes(uint32_t n_new) const {
+        GGML_UNUSED(n_new);
+
+        return 0;
+    }
+
     // if data == true, the data buffers will also be cleared together with the metadata
     virtual void clear(bool data) = 0;
 

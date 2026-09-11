@@ -169,6 +169,16 @@ struct clip_ctx {
 
     // for measuring memory usage
     bool no_alloc = false;
+
+    // weights live in the CPU buft while `backend` stays on the GPU; ggml_backend_sched
+    // offloads the encode matmuls back to it (op_offload, see ggml_backend_sched_new below)
+    bool weights_host = false;
+
+    // backend whose buffer type holds the weights. both the allocation and the memory
+    // accounting go through this, so they cannot disagree about where the weights are
+    ggml_backend_t weights_backend() const {
+        return (weights_host && backend != backend_cpu) ? backend_cpu : backend;
+    }
     std::map<ggml_backend_dev_t, size_t> mem_usage;
     std::map<ggml_backend_dev_t, size_t> mem_compute;
 
@@ -181,6 +191,7 @@ struct clip_ctx {
     clip_ctx(clip_context_params & ctx_params) {
         flash_attn_type = ctx_params.flash_attn_type;
         no_alloc = ctx_params.no_alloc;
+        weights_host = ctx_params.weights_host;
         backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
         if (!backend_cpu) {
             throw std::runtime_error("failed to initialize CPU backend");
@@ -2147,7 +2158,7 @@ struct clip_model_loader {
                 loaded_tensor_names.insert(name);
                 cur = data_tensor;
                 // add to weight memory counter
-                ctx_clip.mem_usage[ggml_backend_get_device(ctx_clip.backend)] += ggml_nbytes(cur);
+                ctx_clip.mem_usage[ggml_backend_get_device(ctx_clip.weights_backend())] += ggml_nbytes(cur);
             }
             return cur;
         };
@@ -3597,7 +3608,11 @@ struct clip_model_loader {
             }
 
             // alloc memory and offload data
-            ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(ctx_clip.backend);
+            ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(ctx_clip.weights_backend());
+            if (ctx_clip.weights_backend() != ctx_clip.backend) {
+                LOG_INF("%s: vision weights stay in host RAM, the encode still runs on %s\n",
+                        __func__, ggml_backend_name(ctx_clip.backend));
+            }
             ctx_clip.buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(ctx_clip.ctx_data.get(), buft));
             ggml_backend_buffer_set_usage(ctx_clip.buf.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
             // read the weight from file

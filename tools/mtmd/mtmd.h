@@ -97,6 +97,9 @@ typedef bool (*mtmd_progress_callback)(float progress, void * user_data);
 struct mtmd_context_params {
     bool use_gpu;
     ggml_backend_dev_t device;
+    // keep the vision weights in host RAM and let the scheduler offload the encode to the GPU.
+    // trades a small constant cost per encode for the VRAM the weights would hold
+    bool weights_host;
     bool print_timings;
     int n_threads;
     const char * image_marker; // deprecated, use media_marker instead

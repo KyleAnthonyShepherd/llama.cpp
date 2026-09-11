@@ -107,6 +107,15 @@ LLAMA_API bool llama_expert_cold_last(const struct llama_context * ctx, int32_t 
 // Returns the resident slot count, or -1 when the context has no hot store.
 LLAMA_API int32_t llama_expert_hotstore_refit(struct llama_context * ctx);
 
+// Free device memory a resize of ctx to n_ctx_seq_new cells needs at its peak, on top of what
+// its memory already holds. 0 when nothing has to be found.
+LLAMA_API size_t llama_resize_peak_bytes(const struct llama_context * ctx, uint32_t n_ctx_seq_new);
+
+// Hand VRAM back from ctx's expert hot store until n_bytes of the device are free, for a caller
+// that has to fit something this context does not know about - a sibling context's KV cache,
+// for instance. Returns the slot count the store is left at, or -1 when it has no store.
+LLAMA_API int32_t llama_expert_hotstore_free_bytes(struct llama_context * ctx, size_t n_bytes);
+
 LLAMA_API ggml_backend_dev_t llama_model_get_device(const struct llama_model * model, int i);
 
 LLAMA_API llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * ctx);

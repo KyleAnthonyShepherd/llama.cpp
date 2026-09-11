@@ -1257,6 +1257,82 @@ uint32_t llama_kv_cache::get_n_pad() const {
     return n_pad;
 }
 
+llama_kv_cache::layer_storage llama_kv_cache::build_layer_storage(size_t i, uint32_t n_cells) const {
+    const auto & layer = layers[i];
+
+    layer_storage out;
+
+    // 2 tensors (k, v) plus their per-stream views (n_stream == 1 wherever this is used)
+    ggml_init_params params = {
+        /*.mem_size   =*/ size_t(2u*(1 + n_stream)*ggml_tensor_overhead()),
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ true,
+    };
+
+    out.ctx = ggml_context_ptr(ggml_init(params));
+    if (!out.ctx) {
+        return out;
+    }
+
+    ggml_context * ctx = out.ctx.get();
+
+    // k always exists (only v can be null, for MLA layers)
+    out.k = ggml_new_tensor_3d(ctx, layer.k->type, layer.k->ne[0], n_cells, layer.k->ne[2]);
+    ggml_format_name(out.k, "%s", layer.k->name);
+    out.k_stream = ggml_view_2d(ctx, out.k, out.k->ne[0], n_cells, out.k->nb[1], 0);
+
+    if (layer.v) {
+        out.v = ggml_new_tensor_3d(ctx, layer.v->type, layer.v->ne[0], n_cells, layer.v->ne[2]);
+        ggml_format_name(out.v, "%s", layer.v->name);
+        out.v_stream = ggml_view_2d(ctx, out.v, out.v->ne[0], n_cells, out.v->nb[1], 0);
+    }
+
+    return out;
+}
+
+size_t llama_kv_cache::resize_peak_bytes(uint32_t n_new) const {
+    const uint32_t n_old = get_size();
+
+    if (n_new == n_old || n_old == 0 || other || n_stream != 1) {
+        return 0;
+    }
+
+    size_t bytes_old = 0;
+    size_t hold_max  = 0;
+
+    for (const auto & [_, buf] : ctxs_bufs) {
+        const size_t bytes = ggml_backend_buffer_get_size(buf.get());
+
+        bytes_old += bytes;
+        hold_max   = std::max(hold_max, bytes);
+    }
+
+    size_t bytes_new = 0;
+    size_t new_max   = 0;
+
+    for (size_t i = 0; i < layers.size(); ++i) {
+        const layer_storage ls = build_layer_storage(i, n_new);
+        if (!ls.ctx) {
+            return 0;
+        }
+
+        const size_t bytes = ggml_backend_alloc_ctx_tensors_from_buft_size(
+                ls.ctx.get(), ggml_backend_buffer_get_type(layers[i].k->buffer));
+
+        bytes_new += bytes;
+        new_max    = std::max(new_max, bytes);
+    }
+
+    // resize() moves one layer at a time and hands an old buffer back once every layer in it
+    // has moved, so what is held peaks either at the start (the whole old cache plus the first
+    // new layer) or at the end (the whole new cache plus the last old layer). A cache that
+    // lives in a single buffer cannot hand anything back until the last copy lands, which is
+    // the same formula with hold_max covering all of it.
+    const size_t peak = std::max(bytes_old + new_max, bytes_new + hold_max);
+
+    return peak > bytes_old ? peak - bytes_old : 0;
+}
+
 bool llama_kv_cache::resize(uint32_t n_new) {
     const uint32_t n_old = get_size();
 
@@ -1296,127 +1372,181 @@ bool llama_kv_cache::resize(uint32_t n_new) {
 
     LLAMA_LOG_INFO("%s: resizing KV cache: %u -> %u cells\n", __func__, n_old, n_new);
 
-    // define a comparator for the buft -> ctx map to ensure that the order is well-defined
-    // (mirrors the grouping done in the constructor)
-    struct ggml_backend_buft_comparator {
-        bool operator()(const ggml_backend_buffer_type_t & lhs, const ggml_backend_buffer_type_t & rhs) const {
-            return strcmp(ggml_backend_buft_name(lhs), ggml_backend_buft_name(rhs)) < 0;
+    // which of the cache's buffers each layer lives in. Several layers share one buffer (that
+    // is how the cache is built), so a buffer can only go back once the last of them moved
+    // out. Resolve this before touching anything, so a cache whose layers are not where we
+    // expect them is refused without any state changing.
+    std::vector<size_t> owner(layers.size());
+
+    for (size_t i = 0; i < layers.size(); ++i) {
+        bool found = false;
+
+        for (size_t j = 0; j < ctxs_bufs.size() && !found; ++j) {
+            if (ctxs_bufs[j].second.get() == layers[i].k->buffer) {
+                owner[i] = j;
+                found    = true;
+            }
         }
+
+        if (!found) {
+            LLAMA_LOG_ERROR("%s: layer %zu is not in any of the cache's own buffers\n", __func__, i);
+            return false;
+        }
+    }
+
+    struct layer_home {
+        ggml_context_ptr        ctx;
+        ggml_backend_buffer_ptr buf;
+        int                     n_live = 0;
     };
-    std::map<ggml_backend_buffer_type_t, ggml_context_ptr, ggml_backend_buft_comparator> ctx_map;
 
-    auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
-        auto it = ctx_map.find(buft);
-        if (it == ctx_map.end()) {
-            // 2 tensors per layer (k, v) plus their per-stream views (n_stream == 1 here,
-            // enforced above), mirroring the constructor's sizing
-            ggml_init_params params = {
-                /*.mem_size   =*/ size_t(2u*(1 + n_stream)*layers.size()*ggml_tensor_overhead()),
-                /*.mem_buffer =*/ nullptr,
-                /*.no_alloc   =*/ true,
-            };
+    std::vector<std::shared_ptr<layer_home>> homes(layers.size());
 
-            ggml_context * ctx = ggml_init(params);
-            if (!ctx) {
-                return nullptr;
+    {
+        std::vector<std::shared_ptr<layer_home>> cur;
+        cur.reserve(ctxs_bufs.size());
+
+        for (auto & [ctx, buf] : ctxs_bufs) {
+            auto home = std::make_shared<layer_home>();
+
+            home->ctx = std::move(ctx);
+            home->buf = std::move(buf);
+
+            cur.push_back(std::move(home));
+        }
+
+        ctxs_bufs.clear();
+
+        for (size_t i = 0; i < layers.size(); ++i) {
+            homes[i] = cur[owner[i]];
+            homes[i]->n_live++;
+        }
+    }
+
+    // hand the homes back to the cache, one entry per distinct home
+    auto commit = [&]() {
+        std::vector<layer_home *> done;
+
+        for (auto & home : homes) {
+            if (std::find(done.begin(), done.end(), home.get()) != done.end()) {
+                continue;
             }
 
-            ctx_map.emplace(buft, ctx);
-
-            return ctx;
+            done.push_back(home.get());
+            ctxs_bufs.emplace_back(std::move(home->ctx), std::move(home->buf));
         }
-
-        return it->second.get();
     };
 
-    // new K/V tensors and their (single, since n_stream == 1) per-stream views, indexed
-    // like `layers`
-    std::vector<ggml_tensor *> k_new(layers.size(), nullptr);
-    std::vector<ggml_tensor *> v_new(layers.size(), nullptr);
-    std::vector<ggml_tensor *> k_stream_new(layers.size(), nullptr);
-    std::vector<ggml_tensor *> v_stream_new(layers.size(), nullptr);
+    // kept across layers so the copy does not fault in a fresh host block every time
+    std::vector<uint8_t> host;
 
-    for (size_t i = 0; i < layers.size(); ++i) {
-        const auto & layer = layers[i];
+    // move layer i into its own buffer of n_cells, keeping the cells both sizes have in
+    // common. Moving a layer at a time is what bounds the peak: rebuilding the whole cache at
+    // once has to hold both copies of it, this holds the larger copy plus a single layer.
+    auto migrate = [&](size_t i, uint32_t n_cells) -> bool {
+        auto & layer = layers[i];
 
-        // k always exists (only v can be null, for MLA layers); k and v of the same
-        // layer are always allocated in the same buffer type (see the constructor)
+        const uint32_t n_from = (uint32_t) layer.k->ne[1];
+
         ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(layer.k->buffer);
 
-        ggml_context * ctx = ctx_for_buft(buft);
-        if (!ctx) {
-            LLAMA_LOG_ERROR("%s: failed to create ggml context for resized kv cache\n", __func__);
+        layer_storage ls = build_layer_storage(i, n_cells);
+        if (!ls.ctx) {
+            LLAMA_LOG_ERROR("%s: failed to create ggml context for layer %zu of the resized kv cache\n", __func__, i);
             return false;
         }
 
-        k_new[i] = ggml_new_tensor_3d(ctx, layer.k->type, layer.k->ne[0], n_new, layer.k->ne[2]);
-        ggml_format_name(k_new[i], "%s", layer.k->name);
-        k_stream_new[i] = ggml_view_2d(ctx, k_new[i], k_new[i]->ne[0], n_new, k_new[i]->nb[1], 0);
-
-        if (layer.v) {
-            v_new[i] = ggml_new_tensor_3d(ctx, layer.v->type, layer.v->ne[0], n_new, layer.v->ne[2]);
-            ggml_format_name(v_new[i], "%s", layer.v->name);
-            v_stream_new[i] = ggml_view_2d(ctx, v_new[i], v_new[i]->ne[0], n_new, v_new[i]->nb[1], 0);
-        }
-    }
-
-    std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs_new;
-    ctxs_bufs_new.reserve(ctx_map.size());
-
-    for (auto & [buft, ctx] : ctx_map) {
-        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft);
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ls.ctx.get(), buft);
         if (!buf) {
-            LLAMA_LOG_ERROR("%s: failed to allocate buffer for resized kv cache (%s)\n", __func__, ggml_backend_buft_name(buft));
+            LLAMA_LOG_ERROR("%s: failed to allocate layer %zu of the resized kv cache at %u cells (%s)\n",
+                    __func__, i, n_cells, ggml_backend_buft_name(buft));
             return false;
         }
-
-        LLAMA_LOG_INFO("%s: %10s KV buffer size = %8.2f MiB\n", __func__, ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf)/1024.0/1024.0);
 
         ggml_backend_buffer_clear(buf, 0);
-
-        ctxs_bufs_new.emplace_back(std::move(ctx), buf);
-    }
-
-    // everything below this point cannot fail - copy the existing data into the new,
-    // larger storage
-    for (size_t i = 0; i < layers.size(); ++i) {
-        const auto & layer = layers[i];
 
         // K (and V when not transposed) is row-major with the resized dimension (kv_size)
         // as the slower/outer dimension - the cells both sizes have in common are a
         // contiguous prefix of both tensors
         {
-            const size_t nbytes = std::min(ggml_nbytes(layer.k), ggml_nbytes(k_new[i]));
+            const size_t nbytes = std::min(ggml_nbytes(layer.k), ggml_nbytes(ls.k));
 
-            std::vector<uint8_t> host(nbytes);
+            host.resize(nbytes);
             ggml_backend_tensor_get(layer.k, host.data(), 0, nbytes);
-            ggml_backend_tensor_set(k_new[i], host.data(), 0, nbytes);
+            ggml_backend_tensor_set(ls.k, host.data(), 0, nbytes);
         }
 
         if (layer.v) {
             if (!v_trans) {
-                const size_t nbytes = std::min(ggml_nbytes(layer.v), ggml_nbytes(v_new[i]));
+                const size_t nbytes = std::min(ggml_nbytes(layer.v), ggml_nbytes(ls.v));
 
-                std::vector<uint8_t> host(nbytes);
+                host.resize(nbytes);
                 ggml_backend_tensor_get(layer.v, host.data(), 0, nbytes);
-                ggml_backend_tensor_set(v_new[i], host.data(), 0, nbytes);
+                ggml_backend_tensor_set(ls.v, host.data(), 0, nbytes);
             } else {
                 // V is transposed (FA off): physically, each of the n_embd_v_gqa "rows" is
-                // n_old contiguous elements - resizing the cache changes the row stride to
-                // n_new, so the common cells are no longer a contiguous prefix and have to
+                // n_from contiguous elements - resizing the cache changes the row stride to
+                // n_cells, so the common cells are no longer a contiguous prefix and have to
                 // be copied row by row (v_trans implies a non-quantized type, so plain
                 // per-scalar byte strides are valid here - see llama-context.cpp's
                 // "quantized V cache requires flash_attn" check)
                 const size_t type_size    = ggml_type_size(layer.v->type);
-                const size_t row_old      = (size_t) n_old * type_size;
-                const size_t row_new      = (size_t) n_new * type_size;
+                const size_t row_old      = (size_t) n_from * type_size;
+                const size_t row_new      = (size_t) n_cells * type_size;
                 const size_t n_embd_v_gqa = ggml_nbytes(layer.v) / row_old;
 
-                std::vector<uint8_t> host(n_embd_v_gqa * row_old);
+                host.resize(n_embd_v_gqa * row_old);
                 ggml_backend_tensor_get(layer.v, host.data(), 0, host.size());
-                ggml_backend_tensor_set_2d(v_new[i], host.data(), 0, std::min(row_old, row_new), n_embd_v_gqa, row_new, row_old);
+                ggml_backend_tensor_set_2d(ls.v, host.data(), 0, std::min(row_old, row_new), n_embd_v_gqa, row_new, row_old);
             }
         }
+
+        // everything below this point cannot fail
+        auto old_home = std::move(homes[i]);
+
+        auto home = std::make_shared<layer_home>();
+
+        home->ctx    = std::move(ls.ctx);
+        home->buf    = ggml_backend_buffer_ptr(buf);
+        home->n_live = 1;
+
+        homes[i] = std::move(home);
+
+        layer.k = ls.k;
+        layer.v = ls.v;
+
+        layer.k_stream[0] = ls.k_stream;
+        layer.v_stream[0] = ls.v_stream;
+
+        // the old home can hold layers that have not moved yet
+        if (--old_home->n_live == 0) {
+            old_home->buf.reset();
+            old_home->ctx.reset();
+        }
+
+        return true;
+    };
+
+    size_t n_moved = 0;
+
+    while (n_moved < layers.size() && migrate(n_moved, n_new)) {
+        n_moved++;
+    }
+
+    if (n_moved != layers.size()) {
+        // put the layers that already moved back where they were. Each step hands back at
+        // least what the next one asks for, so this fits whenever the forward pass started
+        // with room for one layer - which is what resize_peak_bytes() reports
+        for (size_t i = 0; i < n_moved; ++i) {
+            if (!migrate(i, n_old)) {
+                LLAMA_LOG_ERROR("%s: rollback failed at layer %zu - the cache is left holding mixed cell counts\n", __func__, i);
+                break;
+            }
+        }
+
+        commit();
+
+        return false;
     }
 
     // resize the cell metadata, keeping the surviving prefix (n_stream == 1, asserted above)
@@ -1428,16 +1558,19 @@ bool llama_kv_cache::resize(uint32_t n_new) {
         }
     }
 
-    // swap in the new tensors/buffers and free the old ones
-    for (size_t i = 0; i < layers.size(); ++i) {
-        layers[i].k = k_new[i];
-        layers[i].v = v_new[i];
+    commit();
 
-        layers[i].k_stream[0] = k_stream_new[i];
-        layers[i].v_stream[0] = v_stream_new[i];
+    {
+        std::map<std::string, size_t> by_name;
+
+        for (const auto & [_, buf] : ctxs_bufs) {
+            by_name[ggml_backend_buffer_name(buf.get())] += ggml_backend_buffer_get_size(buf.get());
+        }
+
+        for (const auto & [name, bytes] : by_name) {
+            LLAMA_LOG_INFO("%s: %10s KV buffer size = %8.2f MiB\n", __func__, name.c_str(), bytes/1024.0/1024.0);
+        }
     }
-
-    ctxs_bufs = std::move(ctxs_bufs_new);
 
     return true;
 }

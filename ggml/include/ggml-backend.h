@@ -35,6 +35,15 @@ extern "C" {
     //
 
     GGML_API const char *          ggml_backend_buft_name          (ggml_backend_buffer_type_t buft);
+    // Refuse a buffer allocation that does not fit in free device memory instead of letting the
+    // driver place it in host memory. A buffer that lands there is crossed over the bus on every
+    // use for its whole life, so a caller that can free device memory and try again wants to
+    // hear about it. Off by default, and it must stay that way anywhere the caller has no
+    // recovery: a refusal there is only a failure the code below was never written to handle.
+    // Turn it on around a specific allocation, then off again (see llama_context::set_n_ctx()).
+    GGML_API void ggml_backend_set_vram_strict(bool strict);
+    GGML_API bool ggml_backend_get_vram_strict(void);
+
     GGML_API ggml_backend_buffer_t ggml_backend_buft_alloc_buffer  (ggml_backend_buffer_type_t buft, size_t size);
     GGML_API size_t                ggml_backend_buft_get_alignment (ggml_backend_buffer_type_t buft);
     GGML_API size_t                ggml_backend_buft_get_max_size  (ggml_backend_buffer_type_t buft);

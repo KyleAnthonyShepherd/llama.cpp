@@ -880,10 +880,35 @@ static bool ggml_backend_buft_is_cuda(ggml_backend_buffer_type_t buft) {
     return buft->iface.get_name == ggml_backend_cuda_buffer_type_get_name;
 }
 
+// On Windows/WDDM the driver lets an oversubscribed cudaMalloc succeed by placing the buffer
+// in host memory instead of failing, so a caller that reads failure as "out of VRAM" never hears
+// about it - and a KV cache that lands there is crossed over PCIe on every token, for the life
+// of the buffer. Ask the device what is free instead of guessing from the return code, but only
+// while a caller that can act on the answer has asked for it (ggml_backend_set_vram_strict).
+// env: GGML_CUDA_SYSMEM_FALLBACK=1 keeps the driver's own behavior even then.
+static bool ggml_cuda_fits_in_vram(int device, size_t size) {
+    static const bool allow_always = getenv("GGML_CUDA_SYSMEM_FALLBACK") != nullptr;
+
+    if (allow_always || !ggml_backend_get_vram_strict()) {
+        return true;
+    }
+
+    size_t free_mem, total_mem;
+    ggml_backend_cuda_get_device_memory(device, &free_mem, &total_mem);
+
+    return size <= free_mem;
+}
+
 static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
     ggml_backend_cuda_buffer_type_context * buft_ctx = (ggml_backend_cuda_buffer_type_context *)buft->context;
 
     ggml_cuda_set_device(buft_ctx->device);
+
+    if (!ggml_cuda_fits_in_vram(buft_ctx->device, size)) {
+        GGML_LOG_DEBUG("%s: %.2f MiB does not fit in the free VRAM of device %d, refusing the sysmem fallback\n",
+                __func__, size / 1024.0 / 1024.0, buft_ctx->device);
+        return nullptr;
+    }
 
     void * dev_ptr;
     cudaError_t err = ggml_cuda_device_malloc(&dev_ptr, size, buft_ctx->device);

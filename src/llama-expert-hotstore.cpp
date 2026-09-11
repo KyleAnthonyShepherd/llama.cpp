@@ -143,6 +143,17 @@ void llama_expert_hotstore::copy_top_s(const llama_expert_heatmap & heatmap) {
         return;
     }
 
+    // Host -> device for every resident slot. resize() frees the old buffer before it
+    // allocates the new one (a shrink happens precisely when VRAM is tight, so an old+new
+    // peak is exactly what cannot be afforded), so the slices that survive a resize go with
+    // it and have to be read again. There is no cheaper source to read them from: under -ehs
+    // the expert weights already live in host RAM, so this IS the mirror.
+    //
+    // Timed because this is what makes grow/shrink thrash expensive, and it was invisible -
+    // the resize log reported slots and MiB but never how long the re-plant took.
+    const int64_t t_plant_us = ggml_time_us();
+    size_t        planted    = 0;
+
     for (int il = 0; il < n_layers; il++) {
         const std::vector<int> top = heatmap.get_top_s(il, hot_s);
         auto & ste = slot_to_expert[il];
@@ -164,6 +175,7 @@ void llama_expert_hotstore::copy_top_s(const llama_expert_heatmap & heatmap) {
                     continue;
                 }
                 ggml_backend_tensor_set(e->dst, src + (size_t) ex * slot, (size_t) p * slot, slot);
+                planted += slot;
             }
         }
     }
@@ -171,7 +183,12 @@ void llama_expert_hotstore::copy_top_s(const llama_expert_heatmap & heatmap) {
     last_sync_tokens = heatmap.tokens_total;
     is_filled = true;
     update_luts();
-    LLAMA_LOG("=== Expert hot store: top-S experts copied to GPU ===\n");
+
+    const double plant_ms = (ggml_time_us() - t_plant_us) / 1e3;
+
+    LLAMA_LOG_INFO("%s: planted %d slots, %zu MiB host->device in %.1f ms (%.2f GiB/s)\n",
+            __func__, hot_s, planted / (1024 * 1024), plant_ms,
+            plant_ms > 0.0 ? (double) planted / (1024.0*1024.0*1024.0) / (plant_ms / 1e3) : 0.0);
 }
 
 size_t llama_expert_hotstore::bytes_per_slot_total() const {
@@ -216,6 +233,7 @@ size_t llama_expert_hotstore::resize(int new_hot_s, const llama_expert_heatmap &
     llama_expert_tier_clear();
     buf.reset();
     ctx.reset();
+
     for (auto & e : entries) {
         e.dst = nullptr;
     }
@@ -249,13 +267,13 @@ size_t llama_expert_hotstore::resize(int new_hot_s, const llama_expert_heatmap &
         if (!ok) {
             ctx.reset();
 
-            size_t free_mem = 0, total_mem = 0;
-            ggml_backend_dev_t dev = ggml_backend_buft_get_device(gpu_buft);
-            if (dev) {
-                ggml_backend_dev_memory(dev, &free_mem, &total_mem);
-            }
-
-            want = std::min(slots_that_fit(free_mem), want - 1);
+            // One slot at a time. Jumping straight to slots_that_fit() of what the device
+            // reports free right now takes that one number as the truth, and anything else on
+            // the card holding memory for a moment - another process, a sibling context between
+            // its own free and its own alloc - then costs several slots that nothing gives back.
+            // A failed attempt is cheap: allocate() weighs the request before it commits
+            // anything, so walking down reaches the same answer without over-reacting to a dip.
+            want = want - 1;
         }
     }
 

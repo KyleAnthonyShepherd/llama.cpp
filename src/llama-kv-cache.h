@@ -149,9 +149,11 @@ public:
     // set the cache capacity to n_new cells (already padded to n_pad by the caller), in
     // either direction. supported only for n_stream == 1 and caches that don't share cells
     // with another cache (see [TAG_KV_CACHE_SHARE_CELLS]). a shrink is refused while any
-    // cell at or above n_new is still in use. on failure the cache remains fully usable at
-    // its old size - no partial state is applied.
+    // cell at or above n_new is still in use. on failure the cache is rolled back to its
+    // old size and stays fully usable.
     bool resize(uint32_t n_new) override;
+
+    size_t resize_peak_bytes(uint32_t n_new) const override;
 
     // state write/load
 
@@ -267,6 +269,20 @@ private:
         std::vector<ggml_tensor *> k_stream;
         std::vector<ggml_tensor *> v_stream;
     };
+
+    // one layer's k/v tensors together with the context holding their metadata
+    struct layer_storage {
+        ggml_context_ptr ctx;
+
+        ggml_tensor * k        = nullptr;
+        ggml_tensor * v        = nullptr;
+        ggml_tensor * k_stream = nullptr;
+        ggml_tensor * v_stream = nullptr;
+    };
+
+    // metadata for layer i's k/v at n_cells, in a no_alloc context - the caller either sizes
+    // the result (resize_peak_bytes()) or allocates it (resize())
+    layer_storage build_layer_storage(size_t i, uint32_t n_cells) const;
 
     bool v_trans = true;  // the value tensor is transposed
 

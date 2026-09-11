@@ -82,6 +82,8 @@ public:
     // its window size, since it doesn't grow with the context length
     bool resize(uint32_t n_new) override;
 
+    size_t resize_peak_bytes(uint32_t n_new) const override;
+
     // state write/load
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
