@@ -11311,6 +11311,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // Ternary-Bonsai-2-27B (qwen35) matmul shapes: {m, k}
+    for (auto mk : std::vector<std::array<int64_t, 2>>{{10240, 5120}, {6144, 5120}, {17408, 5120}, {5120, 17408}, {5120, 6144}, {248320, 5120}}) {
+        for (ggml_type type_a : {GGML_TYPE_PTQ1_0, GGML_TYPE_PQ2_0}) {
+            for (int bs : {1, 2, 4}) {
+                test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, mk[0], bs, mk[1], {1, 1}, {1, 1}));
+            }
+        }
+    }
+
     // Q4_K multi-column mat-vec
     for (int64_t m : {4096, 6144, 6272, 14336}) {
         for (int bs : {1, 2, 3, 4, 8}) {

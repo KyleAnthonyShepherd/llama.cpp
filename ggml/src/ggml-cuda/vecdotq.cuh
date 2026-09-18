@@ -113,7 +113,11 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
 #define VDR_Q2_0_Q8_1_MMQ  2  // Q2_0 group 64: 128 bits (4 ints) per block, 2 32-element chunks
 
 #define VDR_PQ2_0_Q8_1_MMVQ 1  // one 32-element chunk at a time (same per-chunk codec as Q2_0)
+#if defined(GGML_USE_HIP)
 #define VDR_PTQ1_0_Q8_1_MMVQ 4 // whole 128 block per call: keeps the byte walk uniform across lanes
+#else
+#define VDR_PTQ1_0_Q8_1_MMVQ 2 // half a 128 block per call: 2 lanes per block, 64 trits each
+#endif
 #define VDR_PQ2_0_Q8_1_MMQ  2  // Q2_0 group 128: 4 32-element chunks per block
 #define VDR_PTQ1_0_Q8_1_MMQ  2  // expanded to signed bytes in the MMQ tile loader
 
@@ -815,12 +819,17 @@ static __device__ __forceinline__ void vec_dot_ptq1_0_q8_1_multi(const void * __
                                                                  const int &    iqs,
                                                                  const uint32_t stride_col_y,
                                                                  float *        result) {
+    // Two lanes share a block (VDR 2). Lane `part` takes qs ints {2p, 2p+1}, qs int 4+p and
+    // trit pair p of qh: 64 trits each. bq8_1 points at the block's 4 Q8_1 blocks.
     const block_ptq1_0 * bq                 = (const block_ptq1_0 *) vbq + kbx;
+    const int            part               = iqs / VDR_PTQ1_0_Q8_1_MMVQ;
     int                  sumi[ncols_dst][4] = {};
 
+    // Dot the raw digits {0, 1, 2} and take the -1 off once per Q8_1 block through ds.y below.
     // Widen four bytes to 16-bit lanes so multiply-by-three cannot carry between bytes.
 #    pragma unroll
-    for (int g = 0; g < 4; ++g) {
+    for (int gi = 0; gi < 2; ++gi) {
+        const int      g      = 2 * part + gi;
         const uint32_t packed = get_int_b4(bq->qs, g);
         uint32_t       v_lo   = __byte_perm(packed, 0, 0x4140);
         uint32_t       v_hi   = __byte_perm(packed, 0, 0x4342);
@@ -832,19 +841,19 @@ static __device__ __forceinline__ void vec_dot_ptq1_0_q8_1_multi(const void * __
             v_lo                = w_lo & 0x00FF00FF;
             v_hi                = w_hi & 0x00FF00FF;
 
-            const int q = __vsub4(__byte_perm(w_lo, w_hi, 0x7531), 0x01010101);
-            const int e = t * 16 + 4 * g;
+            // element t*16 + 4g: Q8_1 block t/2 does not depend on the lane, keep it static
+            const int q = __byte_perm(w_lo, w_hi, 0x7531);
+            const int k = t >> 1;
 #    pragma unroll
             for (int j = 0; j < ncols_dst; ++j) {
-                const int u     = get_int_b4(bq8_1[j * stride_col_y + iqs + (e >> 5)].qs, (e & 31) >> 2);
-                sumi[j][e >> 5] = ggml_cuda_dp4a(q, u, sumi[j][e >> 5]);
+                const int u = get_int_b4(bq8_1[j * stride_col_y + k].qs, (t & 1) * 4 + g);
+                sumi[j][k]  = ggml_cuda_dp4a(q, u, sumi[j][k]);
             }
         }
     }
 
-#    pragma unroll
-    for (int g = 0; g < 2; ++g) {
-        const uint32_t packed = get_int_b4(bq->qs + 16, g);
+    {
+        const uint32_t packed = get_int_b4(bq->qs + 16, part);
         uint32_t       v_lo   = __byte_perm(packed, 0, 0x4140);
         uint32_t       v_hi   = __byte_perm(packed, 0, 0x4342);
 
@@ -855,39 +864,45 @@ static __device__ __forceinline__ void vec_dot_ptq1_0_q8_1_multi(const void * __
             v_lo                = w_lo & 0x00FF00FF;
             v_hi                = w_hi & 0x00FF00FF;
 
-            const int q = __vsub4(__byte_perm(w_lo, w_hi, 0x7531), 0x01010101);
-            const int e = 80 + t * 8 + 4 * g;
+            // element 80 + 8t + 4p: the lane offset stays inside one Q8_1 block
+            const int q = __byte_perm(w_lo, w_hi, 0x7531);
+            const int k = (80 + t * 8) >> 5;
 #    pragma unroll
             for (int j = 0; j < ncols_dst; ++j) {
-                const int u     = get_int_b4(bq8_1[j * stride_col_y + iqs + (e >> 5)].qs, (e & 31) >> 2);
-                sumi[j][e >> 5] = ggml_cuda_dp4a(q, u, sumi[j][e >> 5]);
+                const int u = get_int_b4(bq8_1[j * stride_col_y + k].qs, (((80 + t * 8) & 31) >> 2) + part);
+                sumi[j][k]  = ggml_cuda_dp4a(q, u, sumi[j][k]);
             }
         }
     }
 
-    uint32_t v = (uint32_t) bq->qh[0] | ((uint32_t) bq->qh[1] << 16);
-#    pragma unroll
-    for (int t = 0; t < 4; t += 2) {
+    {
+        // qh trits t = 2p, 2p+1 of both bytes: elements 120 + 4p .. 123 + 4p
+        uint32_t v = (uint32_t) bq->qh[0] | ((uint32_t) bq->qh[1] << 16);
+        if (part) {
+            v = (v * 3) & 0x00FF00FF;
+            v = (v * 3) & 0x00FF00FF;
+        }
         const uint32_t w0 = v * 3;
         v                 = w0 & 0x00FF00FF;
         const uint32_t w1 = v * 3;
-        v                 = w1 & 0x00FF00FF;
 
-        const int q = __vsub4(__byte_perm(w0, w1, 0x7531), 0x01010101);
+        const int q = __byte_perm(w0, w1, 0x7531);
 #    pragma unroll
         for (int j = 0; j < ncols_dst; ++j) {
-            const int u = get_int_b4(bq8_1[j * stride_col_y + iqs + 3].qs, 6 + t / 2);
+            const int u = get_int_b4(bq8_1[j * stride_col_y + 3].qs, 6 + part);
             sumi[j][3]  = ggml_cuda_dp4a(q, u, sumi[j][3]);
         }
     }
 
+    // sum(q*u) = sum(digit*u) - sum(u); ds.y = d8*sum(u) over the whole Q8_1 block, so lane 0 takes it
     const float d = (float) bq->d;
 #    pragma unroll
     for (int j = 0; j < ncols_dst; ++j) {
         float acc = 0.0f;
 #    pragma unroll
         for (int k = 0; k < 4; ++k) {
-            acc += __low2float(bq8_1[j * stride_col_y + iqs + k].ds) * (float) sumi[j][k];
+            const float2 ds8 = __half22float2(bq8_1[j * stride_col_y + k].ds);
+            acc += ds8.x * (float) sumi[j][k] - (part == 0 ? ds8.y : 0.0f);
         }
         result[j] = d * acc;
     }
