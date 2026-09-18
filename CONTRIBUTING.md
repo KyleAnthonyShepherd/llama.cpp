@@ -32,12 +32,7 @@ For more info, please refer to the [AGENTS.md](AGENTS.md) file.
 
 - Search for existing discussions and PRs first - duplicates will likely be closed without questions.
 - Features must begin with an issue, not a PR - let interest accumulate before writing code; niche features may only land as an example/tool, or on a private fork.
-- Bug-fix PRs must include a reproducible issue and a regression test that fails before your change and passes after. Fixes without a test may be closed without review.
 - New CLI or public API additions carry a **higher bar** than internal changes - justify why an existing mechanism doesn't suffice.
-- Meeting all of the above still doesn't guarantee a merge - see [Pull requests (for maintainers)](#pull-requests-for-maintainers).
-- If you are a new contributor
-    - Limit your open PRs to 1
-    - Do not submit trivial fixes (e.g. typos, formatting changes)
 
 ### Preparing your PR
 

@@ -687,6 +687,11 @@ struct llama_model {
     struct ggml_tensor * dflash_selector_prev   = nullptr;
     struct ggml_tensor * dflash_selector_next   = nullptr;
     struct ggml_tensor * dflash_selector_hidden = nullptr;
+    // dspark GIDD log-SNR conditioning (only when hparams.dspark_log_snr_conditioning)
+    struct ggml_tensor * dspark_log_snr_fc1_w = nullptr; // [128 -> n_embd]
+    struct ggml_tensor * dspark_log_snr_fc1_b = nullptr;
+    struct ggml_tensor * dspark_log_snr_fc2_w = nullptr; // [n_embd -> n_embd]
+    struct ggml_tensor * dspark_log_snr_fc2_b = nullptr;
 
     // unified vector to store target-model extracted layer ids in eagle3, dflash, etc.
     std::vector<int32_t> target_layer_ids;
@@ -702,6 +707,18 @@ struct llama_model {
 
     // gguf metadata
     std::unordered_map<std::string, std::string> gguf_kv;
+
+    // Hadamard-folded GGUF weights are matched with persistent model tensors
+    // containing the activation-side transform.  The string map is populated
+    // from GGUF metadata while loading hparams; the pointer map is populated
+    // after model buffers have been allocated.  In explicit sign mode the
+    // per-width sign vectors come from GGUF metadata as well.
+    std::unordered_map<std::string, uint32_t> hadamard_weight_blocks;
+    std::unordered_map<std::string, uint32_t> hadamard_inverse_blocks;
+    std::map<uint32_t, std::vector<int32_t>> hadamard_sign_data;
+    bool hadamard_gdn_v_grouped = false;
+    llama_hadamard_rotations hadamard_rotations;
+    llama_hadamard_rotations hadamard_inverses;
 
     // list of devices used in this model
     std::vector<llama_device> devices;

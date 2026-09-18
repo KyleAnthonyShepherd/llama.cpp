@@ -12,10 +12,26 @@
 #include <set>
 #include <functional>
 #include <map>
+#include <unordered_map>
 
 struct ggml_cgraph;
 struct ggml_context;
 struct ggml_tensor;
+
+// Maps a folded model weight to the activation-side transform applied
+// immediately before the matmul: optional sign flip, then the normalized
+// blockwise Hadamard rotation.
+struct llama_hadamard_transform {
+    ggml_tensor * rot;
+    ggml_tensor * signs; // nullptr for identity sign mode
+    // when perm_rep > 1 the activation arrives with its feature axis in tiled
+    // head order [hd, nk, rep] and must be permuted to the grouped order
+    // [hd, rep, nk] the fold was computed in, before signs and rotation
+    int64_t perm_hd  = 0;
+    int64_t perm_nk  = 0;
+    int64_t perm_rep = 0;
+};
+using llama_hadamard_rotations = std::unordered_map<const ggml_tensor *, llama_hadamard_transform>;
 
 struct llama_cparams;
 struct llama_layer;
@@ -123,6 +139,26 @@ protected:
 };
 
 using llm_graph_input_ptr = std::unique_ptr<llm_graph_input_i>;
+
+// dspark GIDD log-SNR conditioning (LogSnrEmbed): the sinusoidal feature matrix
+// fed into log_snr_fc1/fc2. Carries no external staged state, because the
+// per-position log-SNR pattern (each block's anchor at max_log_snr, mask
+// positions at min_log_snr) and its featurization are a pure function of
+// n_tokens/block_drafts/min_log_snr/max_log_snr, all known at graph-build time.
+// The caller precomputes the whole [128, n_tokens] matrix and this just stages it.
+class llm_graph_input_dspark_logsnr : public llm_graph_input_i {
+public:
+    llm_graph_input_dspark_logsnr(std::vector<float> feat) : v_feat(std::move(feat)) {}
+    virtual ~llm_graph_input_dspark_logsnr() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    bool can_reuse(const llm_graph_params & params) override;
+
+    ggml_tensor * feat = nullptr; // F32 [128, n_tokens]
+
+    std::vector<float> v_feat;
+};
 
 class llm_graph_input_embd : public llm_graph_input_i {
 public:
@@ -268,12 +304,24 @@ public:
 
     bool can_reuse(const llm_graph_params & params) override;
 
+    // fill the input tensors from the given recurrent context. The hybrid
+    // input wrappers own an inner llm_graph_input_rs but track the current
+    // memory context themselves, so they pass it in explicitly.
+    void set_input_rs(const llama_memory_recurrent_context * mctx_cur, const llama_ubatch * ubatch);
+    bool can_reuse_rs(const llama_memory_recurrent_context * mctx_cur, const llm_graph_params & params);
+
     ggml_tensor * s_copy;  // I32 [n_rs]
 
     // views of s_copy, computed once per graph
     // and shared across layers which use build_rs
     ggml_tensor * s_copy_main;   // I32 [n_seqs]
     ggml_tensor * s_copy_extra;  // I32 [n_rs - n_seqs]
+
+    // GDN rows mode only (see build_rs_write_rows): I64 [n_write*n_seqs]
+    // cache-row indices for the snapshot SET_ROWS scatter; created lazily,
+    // shared across recurrent layers
+    ggml_tensor * s_write_rows = nullptr;
+    int64_t       s_write_K    = 0;
 
     const llama_memory_recurrent_context * mctx;
 
@@ -786,6 +834,8 @@ struct llm_graph_params {
     const llama_adapter_loras    * loras;
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
+    const llama_hadamard_rotations * hadamard_rotations;
+    const llama_hadamard_rotations * hadamard_inverses;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
@@ -1028,6 +1078,12 @@ struct llm_graph_context {
     const llama_adapter_loras    * loras;
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
+    const llama_hadamard_rotations * hadamard_rotations;
+    const llama_hadamard_rotations * hadamard_inverses;
+
+    // Transforms shared by folded weights on the same activation. Key is (input, rotation);
+    // both must match. Valid for one graph build only.
+    mutable std::map<std::pair<const ggml_tensor *, const ggml_tensor *>, ggml_tensor *> hadamard_memo;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
@@ -1342,6 +1398,27 @@ struct llm_graph_context {
                 int32_t   state_size,
                 int32_t   n_seqs,
             const llm_graph_get_rows_fn & get_state_rows = ggml_get_rows) const;
+
+    // like build_rs, but WITHOUT the main per-seq state gather: performs the
+    // rs_zero clear and the extra-states relocation, then returns the 2D
+    // (state_size, n_rows) cache view. For consumers that read per-seq state
+    // rows directly via inp->s_copy_main (e.g. ggml_gated_delta_net_rows),
+    // saving a get_rows per layer per decode.
+    ggml_tensor * build_rs_cache_view(
+            llm_graph_input_rs * inp,
+            ggml_tensor * s,
+                int32_t   state_size,
+                int32_t   n_seqs) const;
+
+    // I64 cache-row indices for the rows-mode snapshot scatter: row of
+    // (slot s, seq i) = s*mem_size + head + i, matching the strided-cpy
+    // destination of the legacy gathered path. Created lazily on the shared
+    // rs input and reused by every recurrent layer of the graph.
+    ggml_tensor * build_rs_write_rows(
+            llm_graph_input_rs * inp,
+                int64_t   K,
+                int64_t   n_seq_tokens,
+                int64_t   n_seqs) const;
 
     ggml_tensor * build_rwkv_token_shift_load(
         llm_graph_input_rs * inp,

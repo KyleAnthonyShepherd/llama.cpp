@@ -429,6 +429,8 @@ private:
     // -1 until the store is filled
     int32_t expert_cold_distinct = -1;
     int32_t expert_cold_n_tokens = 0;
+    // one-time Hadamard transform-coverage check on the first built graph
+    bool hadamard_verified = false;
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;

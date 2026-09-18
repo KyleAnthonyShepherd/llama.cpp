@@ -15420,6 +15420,10 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
             }
         case GGML_OP_GATED_DELTA_NET:
             {
+                // rows-indexed state read (src[6]) and raw gates (src[7], src[8]) not implemented on Vulkan yet
+                if (op->src[6] != nullptr || op->src[7] != nullptr || op->src[8] != nullptr) {
+                    return false;
+                }
                 const uint32_t S_v = op->src[2]->ne[0];
                 if (S_v != 16 && S_v != 32 && S_v != 64 && S_v != 128) {
                     return false;
