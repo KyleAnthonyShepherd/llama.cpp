@@ -2061,24 +2061,38 @@ static void ggml_compute_forward_concat_f32(
     int64_t o[4] = {0, 0, 0, 0};
     o[dim] = src0->ne[dim];
 
-    const float * x;
+    // copy n floats, memcpy when both sides are contiguous
+    auto copy_run = [](float * y, size_t ys, const float * x, size_t xs, int64_t n) {
+        if (ys == sizeof(float) && xs == sizeof(float)) {
+            memcpy(y, x, n*sizeof(float));
+            return;
+        }
+        for (int64_t i = 0; i < n; i++) {
+            *(float *) ((char *) y + i*ys) = *(const float *) ((const char *) x + i*xs);
+        }
+    };
 
-    // TODO: smarter multi-theading
-    for (int i3 = 0; i3 < ne3; i3++) {
-        for (int i2 = ith; i2 < ne2; i2 += nth) {
-            for (int i1 = 0; i1 < ne1; i1++) {
-                for (int i0 = 0; i0 < ne0; i0++) {
-                    if (i0 < ne00 && i1 < ne01 && i2 < ne02 && i3 < ne03) {
-                        x = (const float *) ((const char *)src0->data + (i0       )*nb00 + (i1       )*nb01 + (i2       )*nb02 + (i3       )*nb03);
-                    } else {
-                        x = (const float *) ((const char *)src1->data + (i0 - o[0])*nb10 + (i1 - o[1])*nb11 + (i2 - o[2])*nb12 + (i3 - o[3])*nb13);
-                    }
+    // split over all dst rows, not only dim 2: a decode step often has ne2 == 1
+    const int64_t nr  = ne1*ne2*ne3;
+    const int64_t dr  = (nr + nth - 1)/nth;
+    const int64_t ir0 = dr*ith;
+    const int64_t ir1 = MIN(ir0 + dr, nr);
 
-                    float * y = (float *)((char *)dst->data + i0*nb0 + i1*nb1 + i2*nb2 + i3*nb3);
+    for (int64_t ir = ir0; ir < ir1; ir++) {
+        const int64_t i3 = ir/(ne2*ne1);
+        const int64_t i2 = (ir - i3*ne2*ne1)/ne1;
+        const int64_t i1 = (ir - i3*ne2*ne1 - i2*ne1);
 
-                    *y = *x;
-                }
-            }
+        float * y = (float *) ((char *) dst->data + i1*nb1 + i2*nb2 + i3*nb3);
+
+        if (dim == 0) {
+            copy_run(y, nb0, (const float *) ((const char *) src0->data + i1*nb01 + i2*nb02 + i3*nb03), nb00, ne00);
+            copy_run((float *) ((char *) y + ne00*nb0), nb0,
+                     (const float *) ((const char *) src1->data + i1*nb11 + i2*nb12 + i3*nb13), nb10, ne10);
+        } else if (i1 < ne01 && i2 < ne02 && i3 < ne03) {
+            copy_run(y, nb0, (const float *) ((const char *) src0->data + i1*nb01 + i2*nb02 + i3*nb03), nb00, ne0);
+        } else {
+            copy_run(y, nb0, (const float *) ((const char *) src1->data + (i1 - o[1])*nb11 + (i2 - o[2])*nb12 + (i3 - o[3])*nb13), nb10, ne0);
         }
     }
 }
@@ -5132,14 +5146,22 @@ static void ggml_compute_forward_get_rows_f32(
     const int ith = params->ith;
     const int nth = params->nth;
 
-    // rows per thread
-    const int dr = (nr + nth - 1)/nth;
+    // a few long rows (a recurrent state is one row of S_v*S_v*H floats) are split in column
+    // chunks, so all threads copy
+    const int64_t nck = nr >= nth ? 1 : MAX(1, MIN((nth + nr - 1)/nr, nc/4096));
+    const int64_t nu  = nr*nck;
 
-    // row range for this thread
-    const int ir0 = dr*ith;
-    const int ir1 = MIN(ir0 + dr, nr);
+    // work units per thread
+    const int64_t du = (nu + nth - 1)/nth;
 
-    for (int64_t i = ir0; i < ir1; ++i) {
+    // unit range for this thread
+    const int64_t iu0 = du*ith;
+    const int64_t iu1 = MIN(iu0 + du, nu);
+
+    for (int64_t u = iu0; u < iu1; ++u) {
+        const int64_t i   = u/nck;
+        const int64_t c0  = (u%nck)*nc/nck;
+        const int64_t c1  = (u%nck + 1)*nc/nck;
         const int64_t i12 = i/(ne11*ne10);
         const int64_t i11 = (i - i12*ne11*ne10)/ne10;
         const int64_t i10 = (i - i12*ne11*ne10 - i11*ne10);
@@ -5147,9 +5169,9 @@ static void ggml_compute_forward_get_rows_f32(
 
         GGML_ASSERT(i01 >= 0 && i01 < ne01);
 
-        ggml_vec_cpy_f32(nc,
-                (float *) ((char *)  dst->data + i10*nb1  + i11*nb2  + i12*nb3),
-                (float *) ((char *) src0->data + i01*nb01 + i11*nb02 + i12*nb03));
+        ggml_vec_cpy_f32(c1 - c0,
+                (float *) ((char *)  dst->data + i10*nb1  + i11*nb2  + i12*nb3) + c0,
+                (float *) ((char *) src0->data + i01*nb01 + i11*nb02 + i12*nb03) + c0);
     }
 }
 
