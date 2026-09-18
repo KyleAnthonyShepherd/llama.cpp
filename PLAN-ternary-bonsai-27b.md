@@ -219,7 +219,46 @@ What is left, per token: ~86 ms on the CPU (12 Q4_0 blocks + the op-offload boun
 GPU. The CPU side is now >3/4 of the time, so next: op-offload fix (item 3 above), then the
 AVX-512 ternary CPU kernel, and n>1 PTQ1_0 scaling only if speculative decoding comes back.
 
-## 7. Phase 0 - original checklist
+## 7. CPU side: PQ2_0 blocks, 4-row dot, op-offload fix (2026-09-18)
+
+- CPU-resident blocks as exact PQ2_0 (`llama-ternary-repack ... pq2_0`): 1155 MiB for 12
+  blocks vs 2447 MiB as Q4_0.
+- `ggml_vec_dot_pq2_0_q8_0`: AVX-512 VBMI+VNNI single-row path (vpmultishiftqb decode) - 1.9x
+  over the old VNNI path, but still ~40 cycles per 128 block. Measured with a standalone MSVC
+  harness: every instruction is ~1/cycle, the loop is just too long per row.
+- `ggml_vec_dot_pq2_0_q8_0_x4`: 4 plain-layout rows at once, same math as the
+  `ggml_gemv_pq2_0_4x8_q8_0` repack GEMV (y loads, sum(y), y scale shared by 4 rows), called
+  from `ggml_compute_forward_mul_mat_one_chunk` for PQ2_0. In the model: 967 -> ~570 us per
+  PQ2_0 matmul, ~32 GB/s, near RAM bandwidth.
+- The repack buffer itself (`--no-host`) is as fast for decode but loses op offload: pp512 33
+  t/s instead of ~190. With `_x4` the plain pinned layout gets both.
+- Bug fix: `--no-host` crashed on Hadamard-folded models. The rotation and sign tensors were
+  allocated in the weight's buffer type, which is `CPU_REPACK` for a repacked weight and can not
+  hold plain F32. They now go to the default CPU buffer type.
+- Op offload: host weights under 1 MiB no longer pin an op or trigger an offload, the expand
+  passes place it next to its neighbors. GATED_DELTA_NET keeps the weight rule, and CUDA now
+  counts its batch as tokens (its rows include the state snapshots). Decode graph splits 38 -> 2.
+
+`llama-bench`, `cpu12pq2`, `-ngl 53 -ub 128 -b 512 -fa 1 -ctk q8_0 -ctv q8_0 -t 8`:
+
+| step | pp512 | tg64 |
+|---|---|---|
+| cpu12q4, before this section | 169-189 | 7.8-8.6 |
+| cpu12pq2, `--no-host` (repack) | 33 | 11.4 |
+| cpu12pq2 + `_x4` | 189 | 10.8 |
+| + op-offload fix | **200** | **12.6** |
+
+Current best:
+
+```
+llama-server -m Bonsai-2-27B-PTQ1_0-cpu12pq2.gguf -ngl 53 -fa on -c 4096 -ctk q8_0 -ctv q8_0 -b 512 -ub 128 -t 8
+```
+
+Per token now: ~26 ms GPU + ~38 ms PQ2_0 matmuls on the CPU + ~16 ms of other CPU ops and
+syncs. Next candidates: fewer CPU blocks (every freed 80 MiB of VRAM is ~3 ms), and the ~16 ms
+of non-matmul CPU time.
+
+## 8. Phase 0 - original checklist
 
 1. System prep: NVIDIA Control Panel -> *CUDA - Sysmem Fallback Policy* = *Prefer No Sysmem
    Fallback* (otherwise an overcommit silently pages VRAM over PCIe); move the desktop apps
