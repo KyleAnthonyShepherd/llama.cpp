@@ -2060,6 +2060,11 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             }
 
             ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(weight->buffer);
+            // a repacked weight sits in a CPU extra buffer type, which can not hold plain F32 tensors
+            ggml_backend_dev_t buft_dev = ggml_backend_buft_get_device(buft);
+            if (buft_dev && ggml_backend_dev_type(buft_dev) == GGML_BACKEND_DEVICE_TYPE_CPU && buft != ggml_backend_cpu_buffer_type()) {
+                buft = ggml_backend_cpu_buffer_type();
+            }
             if (target == &hadamard_rotations) {
                 preferred_buft = buft;
             } else if (preferred_buft) {
