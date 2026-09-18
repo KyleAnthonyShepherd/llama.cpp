@@ -1,0 +1,5 @@
+set(TARGET llama-ternary-repack)
+add_executable(${TARGET} ternary-repack.cpp)
+install(TARGETS ${TARGET} RUNTIME)
+target_link_libraries(${TARGET} PRIVATE ggml ${CMAKE_THREAD_LIBS_INIT})
+target_compile_features(${TARGET} PRIVATE cxx_std_17)
