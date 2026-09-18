@@ -5856,6 +5856,9 @@ static int64_t get_op_batch_size(const ggml_tensor * op) {
         case GGML_OP_ROPE:
         case GGML_OP_ROPE_BACK:
             return op->ne[2];
+        case GGML_OP_GATED_DELTA_NET:
+            // the output also carries the state snapshots, count tokens of v [S_v, H_v, n_tokens, n_seqs]
+            return op->src[2]->ne[2] * op->src[2]->ne[3];
         default:
             return ggml_nrows(op);
     }
