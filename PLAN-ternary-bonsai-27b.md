@@ -258,7 +258,37 @@ Per token now: ~26 ms GPU + ~38 ms PQ2_0 matmuls on the CPU + ~16 ms of other CP
 syncs. Next candidates: fewer CPU blocks (every freed 80 MiB of VRAM is ~3 ms), and the ~16 ms
 of non-matmul CPU time.
 
-## 8. Phase 0 - original checklist
+## 8. Non-matmul CPU time, and the power limit (2026-09-18)
+
+Per-op profile over ~340 decode tokens (temporary thread-0 timer in `ggml_graph_compute_thread`,
+not committed): non-matmul CPU work is ~8 ms/token, not ~16. Thread wake-up is negligible.
+
+| op | before | after |
+|---|---|---|
+| CONCAT (conv state + new column, 160 KB) | 133 us | 30 us |
+| GET_ROWS (recurrent state gather, one 3 MB row) | 65 us avg | 32 us avg |
+
+Both were single-threaded at decode: CONCAT split threads over dim 2 only and GET_ROWS over
+rows only, and a decode step has one sequence / one state row. CONCAT now splits over all dst
+rows and copies contiguous runs with memcpy; GET_ROWS splits a long row in column chunks.
+~2 ms/token saved. The rows-indexed GDN state read (no gather) only exists on the ring path
+(needs `n_rs_seq > 0` and Metal), so it does not apply here.
+
+The bigger effect is the CPU power limit: under sustained all-core load the i9-11900H drops
+from ~137% of base clock to ~97% (~2.4 GHz) after ~15 s and stays there. Short benchmarks run at
+boost, long generations do not (77 ms/token right after a pause, ~92 ms/token over 600 tokens).
+At base clock the PQ2_0 matmuls are compute-bound, so threads trade against clock:
+
+| threads | 600-token decode |
+|---|---|
+| 4 | 120.3 ms/token |
+| 6 | **86.0 ms/token** |
+| 8 | 94.0 ms/token |
+
+Use `-t 6`. A higher power mode in the laptop vendor's tool (a system setting, left to the
+user) would lift PL1 and help directly.
+
+## 9. Phase 0 - original checklist
 
 1. System prep: NVIDIA Control Panel -> *CUDA - Sysmem Fallback Policy* = *Prefer No Sysmem
    Fallback* (otherwise an overcommit silently pages VRAM over PCIe); move the desktop apps
