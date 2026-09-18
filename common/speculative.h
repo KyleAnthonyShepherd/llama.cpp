@@ -67,7 +67,7 @@ struct common_speculative_draft_params {
     // See server_spec_width.
     float p_min = -1.0f;
 
-    llama_pos   n_past;
+    llama_pos   pos0;
     llama_token id_last;
 
     // TODO: remove in the future by keeping track of the prompt from the _begin() call and the consecutive accept calls
