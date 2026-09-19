@@ -9251,6 +9251,310 @@ static void ggml_flash_attn_ext_reduce_partials(
 // converted once per row, not once per head). Writes [M, S, VKQ] partials like the split-KV path.
 static constexpr int64_t GQA_TILE = 64;
 
+#if defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512DQ__) && defined(__AVX512VNNI__)
+#define GGML_FA_GQA_Q8_0_AVX512
+
+// lane i of the result is the sum of the 16 lanes of v[i]
+static inline __m512 ggml_fa_hsum_16x16(const float * v) {
+    __m512 a[8];
+    for (int i = 0; i < 8; ++i) {
+        const __m512 x = _mm512_loadu_ps(v + 32*i);
+        const __m512 y = _mm512_loadu_ps(v + 32*i + 16);
+        a[i] = _mm512_add_ps(_mm512_unpacklo_ps(x, y), _mm512_unpackhi_ps(x, y));
+    }
+    __m512 b[4];
+    for (int i = 0; i < 4; ++i) {
+        const __m512d x = _mm512_castps_pd(a[2*i]);
+        const __m512d y = _mm512_castps_pd(a[2*i + 1]);
+        b[i] = _mm512_add_ps(_mm512_castpd_ps(_mm512_unpacklo_pd(x, y)), _mm512_castpd_ps(_mm512_unpackhi_pd(x, y)));
+    }
+    __m512 c[2];
+    for (int i = 0; i < 2; ++i) {
+        c[i] = _mm512_add_ps(_mm512_shuffle_f32x4(b[2*i], b[2*i + 1], _MM_SHUFFLE(2, 0, 2, 0)),
+                             _mm512_shuffle_f32x4(b[2*i], b[2*i + 1], _MM_SHUFFLE(3, 1, 3, 1)));
+    }
+    return _mm512_add_ps(_mm512_shuffle_f32x4(c[0], c[1], _MM_SHUFFLE(2, 0, 2, 0)),
+                         _mm512_shuffle_f32x4(c[0], c[1], _MM_SHUFFLE(3, 1, 3, 1)));
+}
+
+// V part of a tile for NG heads. DV goes in chunks of 64 so the NG x 4 accumulators stay in
+// registers (named, not an array: MSVC keeps arrays of vectors in memory). The weights wv already
+// hold the V block scales: wv[(g*NB + b)*GQA_TILE + t] = softmax weight x d of block b of row t
+#define GQA_V_DECL(g) __m512 a##g##0 = _mm512_setzero_ps(), a##g##1 = a##g##0, a##g##2 = a##g##0, a##g##3 = a##g##0;
+#define GQA_V_LOAD(g) if constexpr (NG > g) { \
+        a##g##0 = _mm512_loadu_ps(VKQ + g*DV + c*64);      a##g##1 = _mm512_loadu_ps(VKQ + g*DV + c*64 + 16); \
+        a##g##2 = _mm512_loadu_ps(VKQ + g*DV + c*64 + 32); a##g##3 = _mm512_loadu_ps(VKQ + g*DV + c*64 + 48); }
+#define GQA_V_FMA(g) if constexpr (NG > g) { \
+        const __m512 w0 = _mm512_set1_ps(wv[(g*NB + 2*c)*GQA_TILE + t]); \
+        const __m512 w1 = _mm512_set1_ps(wv[(g*NB + 2*c + 1)*GQA_TILE + t]); \
+        a##g##0 = _mm512_fmadd_ps(w0, v0, a##g##0); a##g##1 = _mm512_fmadd_ps(w0, v1, a##g##1); \
+        a##g##2 = _mm512_fmadd_ps(w1, v2, a##g##2); a##g##3 = _mm512_fmadd_ps(w1, v3, a##g##3); }
+#define GQA_V_STORE(g) if constexpr (NG > g) { \
+        _mm512_storeu_ps(VKQ + g*DV + c*64,      a##g##0); _mm512_storeu_ps(VKQ + g*DV + c*64 + 16, a##g##1); \
+        _mm512_storeu_ps(VKQ + g*DV + c*64 + 32, a##g##2); _mm512_storeu_ps(VKQ + g*DV + c*64 + 48, a##g##3); }
+
+template <int NG>
+static void ggml_fa_gqa_q8_0_v_tile(const char * v_rows, size_t nbv1, int64_t nt, int64_t DV,
+        const float * wv, const bool * row_on, float * VKQ) {
+    const int64_t NB = DV/32;
+
+    GQA_V_DECL(0) GQA_V_DECL(1) GQA_V_DECL(2) GQA_V_DECL(3) GQA_V_DECL(4) GQA_V_DECL(5)
+
+    for (int64_t c = 0; c < DV/64; ++c) {
+        GQA_V_LOAD(0) GQA_V_LOAD(1) GQA_V_LOAD(2) GQA_V_LOAD(3) GQA_V_LOAD(4) GQA_V_LOAD(5)
+
+        for (int64_t t = 0; t < nt; ++t) {
+            if (!row_on[t]) {
+                continue;
+            }
+            // two q8_0 blocks of 34 bytes: fp16 d, then 32 int8
+            const uint8_t * b0 = (const uint8_t *) v_rows + t*nbv1 + c*68;
+            const __m512 v0 = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(_mm_loadu_si128((const __m128i *) (b0 +  2))));
+            const __m512 v1 = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(_mm_loadu_si128((const __m128i *) (b0 + 18))));
+            const __m512 v2 = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(_mm_loadu_si128((const __m128i *) (b0 + 36))));
+            const __m512 v3 = _mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(_mm_loadu_si128((const __m128i *) (b0 + 52))));
+
+            GQA_V_FMA(0) GQA_V_FMA(1) GQA_V_FMA(2) GQA_V_FMA(3) GQA_V_FMA(4) GQA_V_FMA(5)
+        }
+
+        GQA_V_STORE(0) GQA_V_STORE(1) GQA_V_STORE(2) GQA_V_STORE(3) GQA_V_STORE(4) GQA_V_STORE(5)
+    }
+}
+
+#undef GQA_V_DECL
+#undef GQA_V_LOAD
+#undef GQA_V_FMA
+#undef GQA_V_STORE
+
+// q8_0 K and V, DK and DV multiples of 64, G*DV/32 <= 128: the scores are int8 dot products (VNNI)
+// against Q quantized to q8_0 once per call, the softmax is vectorized, the V rows are converted in
+// registers. Same partials as ggml_compute_forward_flash_attn_ext_gqa_chunk
+static void ggml_compute_forward_flash_attn_ext_gqa_chunk_q8_0(
+        const ggml_compute_params * params,
+        ggml_tensor * dst,
+        int64_t ic_start, int64_t ic_end,
+        float * partials, int64_t partial_stride,
+        float * scratch) {
+
+    const ggml_tensor * q     = dst->src[0];
+    const ggml_tensor * k     = dst->src[1];
+    const ggml_tensor * v     = dst->src[2];
+    const ggml_tensor * mask  = dst->src[3];
+    const ggml_tensor * sinks = dst->src[4];
+
+    GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
+    GGML_TENSOR_LOCALS(size_t,  nbq, q, nb)
+    GGML_TENSOR_LOCALS(int64_t, nek, k, ne)
+    GGML_TENSOR_LOCALS(size_t,  nbk, k, nb)
+    GGML_TENSOR_LOCALS(size_t,  nbv, v, nb)
+
+    const int64_t DK = nek0;
+    const int64_t DV = v->ne[0];
+    const int64_t G  = neq2/nek2;
+    const int64_t NP = DK/64; // pairs of q8_0 blocks per K row
+    const int64_t NB = DV/32; // q8_0 blocks per V row
+
+    float scale         = 1.0f;
+    float logit_softcap = 0.0f;
+    memcpy(&scale,         (float *) dst->op_params + 0, sizeof(float));
+    memcpy(&logit_softcap, (float *) dst->op_params + 2, sizeof(float));
+    if (logit_softcap != 0) {
+        scale /= logit_softcap;
+    }
+
+    ggml_from_float_t const q_to_q8_0 = ggml_get_type_traits_cpu(GGML_TYPE_Q8_0)->from_float;
+
+    // scratch: Q as q8_0 blocks, then Q + 128 as u8 and the per-lane block scales; G VKQ accumulators
+    uint8_t * Q_blk = (uint8_t *) scratch;
+    uint8_t * Q_u8  = Q_blk + G*(DK/32)*34;
+    float   * Q_d   = (float *) (Q_u8 + G*DK);
+    float   * VKQ   = scratch + G*DK;
+
+    float M[16];
+    float S[16];
+
+    float st [16][GQA_TILE];     // scores, then softmax weights
+    float wv [128*GQA_TILE];     // weights x V block scales, [g][b][t]
+    float dvs[8][GQA_TILE];      // V block scales, [b][t]
+    float mvs[GQA_TILE];         // mask
+    bool  row_on[GQA_TILE];
+    float accb[16][16][16];      // score partials of 16 rows, [g][row][lane]
+
+    const ggml_fp16_t * mp = mask ? (const ggml_fp16_t *) mask->data : NULL;
+
+    const __m512i c128 = _mm512_set1_epi8((char) 0x80);
+    const __m512i zero = _mm512_setzero_si512();
+
+    for (int64_t ik2 = 0; ik2 < nek2; ++ik2) {
+        for (int64_t g = 0; g < G; ++g) {
+            const float * pq = (const float *) ((const char *) q->data + (ik2*G + g)*nbq2);
+            uint8_t * qb = Q_blk + g*(DK/32)*34;
+            q_to_q8_0(pq, qb, DK);
+            for (int64_t b = 0; b < DK/32; ++b) {
+                for (int l = 0; l < 32; ++l) {
+                    Q_u8[g*DK + b*32 + l] = (uint8_t) (qb[b*34 + 2 + l] ^ 0x80);
+                }
+                const float d = GGML_CPU_FP16_TO_FP32(*(const ggml_fp16_t *) (qb + b*34));
+                for (int l = 0; l < 8; ++l) {
+                    Q_d[(g*NP + b/2)*16 + (b%2)*8 + l] = d;
+                }
+            }
+            M[g] = -INFINITY;
+            S[g] = 0.0f;
+        }
+        memset(VKQ, 0, G*DV*sizeof(float));
+
+        for (int64_t it = ic_start; it < ic_end; it += GQA_TILE) {
+            const int64_t nt   = std::min<int64_t>(GQA_TILE, ic_end - it);
+            const int64_t nt16 = (nt + 15) & ~15;
+
+            // scores: dpbusd(q + 128, k) - 128*sum(k) = q.k, the correction is shared by all heads
+            for (int64_t t = 0; t < nt16; ++t) {
+                const int64_t ic = it + t;
+                const int     r  = t & 15;
+
+                mvs[t]    = t < nt ? (mp ? GGML_CPU_FP16_TO_FP32(mp[ic]) : 0.0f) : -INFINITY;
+                row_on[t] = mvs[t] != -INFINITY;
+
+                if (row_on[t]) {
+                    const uint8_t * kr = (const uint8_t *) k->data + ic*nbk1 + ik2*nbk2;
+
+                    __m512i kv[8];
+                    __m512i kc[8];
+                    __m512  kd[8];
+                    for (int64_t p = 0; p < NP; ++p) {
+                        const uint8_t * b0 = kr + p*68;
+                        kv[p] = _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_loadu_si256((const __m256i *) (b0 + 2))),
+                                _mm256_loadu_si256((const __m256i *) (b0 + 36)), 1);
+                        kc[p] = _mm512_sub_epi32(zero, _mm512_dpbusd_epi32(zero, c128, kv[p]));
+                        kd[p] = _mm512_insertf32x8(_mm512_set1_ps(GGML_CPU_FP16_TO_FP32(*(const ggml_fp16_t *) b0)),
+                                _mm256_set1_ps(GGML_CPU_FP16_TO_FP32(*(const ggml_fp16_t *) (b0 + 34))), 1);
+                    }
+
+                    for (int64_t g = 0; g < G; ++g) {
+                        __m512 acc = _mm512_setzero_ps();
+                        for (int64_t p = 0; p < NP; ++p) {
+                            const __m512i dp = _mm512_dpbusd_epi32(kc[p], _mm512_loadu_si512((const void *) (Q_u8 + g*DK + p*64)), kv[p]);
+                            acc = _mm512_fmadd_ps(_mm512_cvtepi32_ps(dp), _mm512_mul_ps(kd[p], _mm512_loadu_ps(Q_d + (g*NP + p)*16)), acc);
+                        }
+                        _mm512_storeu_ps(accb[g][r], acc);
+                    }
+                } else {
+                    for (int64_t g = 0; g < G; ++g) {
+                        _mm512_storeu_ps(accb[g][r], _mm512_setzero_ps());
+                    }
+                }
+
+                if (r == 15) {
+                    for (int64_t g = 0; g < G; ++g) {
+                        __m512 s = _mm512_mul_ps(ggml_fa_hsum_16x16(&accb[g][0][0]), _mm512_set1_ps(scale));
+                        if (logit_softcap != 0.0f) {
+                            float tmp[16];
+                            _mm512_storeu_ps(tmp, s);
+                            for (int l = 0; l < 16; ++l) {
+                                tmp[l] = logit_softcap*tanhf(tmp[l]);
+                            }
+                            s = _mm512_loadu_ps(tmp);
+                        }
+                        _mm512_storeu_ps(st[g] + t - 15, _mm512_add_ps(s, _mm512_loadu_ps(mvs + t - 15)));
+                    }
+                }
+            }
+
+            // online softmax, once per tile: st becomes the tile weights exp(s - M)
+            bool any = false;
+            for (int64_t g = 0; g < G; ++g) {
+                __m512 mx = _mm512_set1_ps(-INFINITY);
+                for (int64_t j = 0; j < nt16; j += 16) {
+                    mx = _mm512_max_ps(mx, _mm512_loadu_ps(st[g] + j));
+                }
+                const float mt = _mm512_reduce_max_ps(mx);
+                if (mt == -INFINITY) {
+                    for (int64_t j = 0; j < nt16; j += 16) {
+                        _mm512_storeu_ps(st[g] + j, _mm512_setzero_ps());
+                    }
+                    continue;
+                }
+                any = true;
+                if (mt > M[g]) {
+                    const float ms = expf(M[g] - mt);
+                    ggml_vec_scale_f32(DV, VKQ + g*DV, ms);
+                    S[g] *= ms;
+                    M[g] = mt;
+                }
+                const __m512 mg = _mm512_set1_ps(M[g]);
+                __m512 sum = _mm512_setzero_ps();
+                for (int64_t j = 0; j < nt16; j += 16) {
+                    const __m512 e = ggml_v_expf(_mm512_sub_ps(_mm512_loadu_ps(st[g] + j), mg));
+                    _mm512_storeu_ps(st[g] + j, e);
+                    sum = _mm512_add_ps(sum, e);
+                }
+                S[g] += _mm512_reduce_add_ps(sum);
+            }
+            if (!any) {
+                continue;
+            }
+
+            const char * v_rows = (const char *) v->data + it*nbv1 + ik2*nbv2;
+
+            for (int64_t t = 0; t < nt16; ++t) {
+                for (int64_t b = 0; b < NB; ++b) {
+                    dvs[b][t] = t < nt ? GGML_CPU_FP16_TO_FP32(*(const ggml_fp16_t *) (v_rows + t*nbv1 + b*34)) : 0.0f;
+                }
+            }
+            for (int64_t g = 0; g < G; ++g) {
+                for (int64_t b = 0; b < NB; ++b) {
+                    for (int64_t j = 0; j < nt16; j += 16) {
+                        _mm512_storeu_ps(wv + (g*NB + b)*GQA_TILE + j, _mm512_mul_ps(_mm512_loadu_ps(st[g] + j), _mm512_loadu_ps(dvs[b] + j)));
+                    }
+                }
+            }
+
+            // heads in groups of up to 6: 24 accumulators + 4 V vectors fit the 32 registers
+            for (int64_t g0 = 0; g0 < G; g0 += 6) {
+                const float * w = wv + g0*NB*GQA_TILE;
+                float * acc = VKQ + g0*DV;
+                switch (std::min<int64_t>(6, G - g0)) {
+                    case 1:  ggml_fa_gqa_q8_0_v_tile<1>(v_rows, nbv1, nt, DV, w, row_on, acc); break;
+                    case 2:  ggml_fa_gqa_q8_0_v_tile<2>(v_rows, nbv1, nt, DV, w, row_on, acc); break;
+                    case 3:  ggml_fa_gqa_q8_0_v_tile<3>(v_rows, nbv1, nt, DV, w, row_on, acc); break;
+                    case 4:  ggml_fa_gqa_q8_0_v_tile<4>(v_rows, nbv1, nt, DV, w, row_on, acc); break;
+                    case 5:  ggml_fa_gqa_q8_0_v_tile<5>(v_rows, nbv1, nt, DV, w, row_on, acc); break;
+                    default: ggml_fa_gqa_q8_0_v_tile<6>(v_rows, nbv1, nt, DV, w, row_on, acc); break;
+                }
+            }
+        }
+
+        for (int64_t g = 0; g < G; ++g) {
+            const int64_t iq2 = ik2*G + g;
+            float * acc = VKQ + g*DV;
+
+            // sinks - apply only on the first kv-chunk
+            if (sinks && ic_start == 0) {
+                const float s = ((const float *) sinks->data)[iq2];
+                float ms = 1.0f;
+                float vs = 1.0f;
+                if (s > M[g]) {
+                    ms = expf(M[g] - s);
+                    M[g] = s;
+                    ggml_vec_scale_f32(DV, acc, ms);
+                } else {
+                    vs = expf(s - M[g]);
+                }
+                S[g] = S[g]*ms + vs;
+            }
+
+            float * partial = partials + iq2*partial_stride;
+            partial[0] = M[g];
+            partial[1] = S[g];
+            memcpy(partial + 2, acc, DV*sizeof(float));
+        }
+    }
+
+    GGML_UNUSED(params);
+}
+#endif
+
 static void ggml_compute_forward_flash_attn_ext_gqa_chunk(
         const ggml_compute_params * params,
         ggml_tensor * dst,
@@ -9273,6 +9577,13 @@ static void ggml_compute_forward_flash_attn_ext_gqa_chunk(
     const int64_t DK = nek0;
     const int64_t DV = v->ne[0];
     const int64_t G  = neq2/nek2;
+
+#ifdef GGML_FA_GQA_Q8_0_AVX512
+    if (k->type == GGML_TYPE_Q8_0 && v->type == GGML_TYPE_Q8_0 && DK % 64 == 0 && DK <= 512 && DV % 64 == 0 && DV <= 256) {
+        ggml_compute_forward_flash_attn_ext_gqa_chunk_q8_0(params, dst, ic_start, ic_end, partials, partial_stride, scratch);
+        return;
+    }
+#endif
 
     float scale         = 1.0f;
     float logit_softcap = 0.0f;
