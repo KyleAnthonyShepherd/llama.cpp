@@ -469,7 +469,81 @@ store to take it and give it back around an encode (`PLAN-adaptive-mmproj.md`).
 Open: at cpu5 even the +99 MiB transient spilled, so something else grows on an image turn
 (likely the LLM compute graph for embedding input). Measure `sched_reserve` for an image batch.
 
-## 13. Phase 0 - original checklist
+## 13. KV spill on growth (2026-09-19, `PLAN-kv-host-streaming.md` item A)
+
+With `--ctx-max`, `llama_kv_cache::resize()` now picks a buffer type per layer. Device layers that
+do not fit move to host memory, lowest layer first, until the device keeps `--kv-spill-margin MiB`
+(default 256) free after the move and half of that during it (a shared buffer goes back only after
+its last layer moved). A shrink, `llama_kv_unspill()` (server: when idle and before each prefill)
+bring spilled layers back, highest first, but not within 60 s of a spill and only while 2x the
+margin stays free. After the resize `set_n_ctx()` measures the compute buffers and spills more
+layers if they would eat the margin. A failed move rolls back, to host memory if the device refuses.
+One log line per resize: `kv resize 4096 -> 8704 cells, 11/16 layers in host memory, VRAM free 256 MiB`.
+
+The free figure is `cudaMemGetInfo`, which on WDDM is the budget, not total minus used: it said
+5130 MiB free at start, and cpu6/59 at `-c 4096` asks for ~5230, so it reads **0 MiB free right
+after load** (nvidia-smi: 5.8 GB used). cpu5/60 and cpu6/59 therefore spill all 16 layers on the
+first growth and can never move them back. cpu11/54 has ~270 MiB.
+
+Server session, `-c 4096 --ctx-max 32768`, prompts of 1.9k, 8.6k, 16.5k tokens, then a new chat:
+
+| layout | 2k | 8.6k | 16.5k | static layout at 16.5k |
+|---|---|---|---|---|
+| cpu5/60 | 55.0 | 96.0 (16/16 host) | **215** (compute buffer in sysmem) | - |
+| cpu6/59 | 57.6 | 97.6 (16/16 host) | 131.2 (16/16 host) | 131.1 (`--kv-cpu-layers 16`) |
+| cpu11/54 | 76.7 | 101.4 (11/16) | 142.8 (15/16) | - |
+| cpu11/54, 2k then 16.5k | 77.4 | - | 126.3 (11/16) | 121.1 (`--kv-cpu-layers 10`) |
+| cpu11/54, margin 64 | 76.3 | 90.3 (5/16) | 120.2 (10/16) | 121.1 (`--kv-cpu-layers 10`) |
+
+(gen ms/token.) VRAM stayed below 5.9 GB everywhere. cpu5/60 cannot hold the compute buffer growth
+(+86 MiB at 8.7k, +147 MiB at 16.9k): the strict reserve fails and the relaxed one lands in sysmem.
+Use cpu6/59. With margin 64, the new chat after 65 s moved 8 layers back (10/16 -> 2/16 host) and
+decoded at 75.5 ms (76.3 before).
+
+## 14. Pinned host KV; zero-copy dropped (item B3)
+
+Host KV layers (`--kv-cpu-layers` and spilled) are now allocated in the GPU's pinned host buffer
+type (`CUDA_Host`) instead of plain CPU memory. The scheduler's per-step copy then DMAs from pinned
+memory: **cpu6/59, 16 host layers, 16.5k: 131 -> 112 ms/token** (112.0, 111.8), prefill 185 -> 190 t/s.
+
+Zero-copy was tried and dropped. A scheduler hook let the CUDA flash-attention node read host K/V in
+place (no split input copy):
+- vec kernel (decode): 918 ms/token. It has one block per Q head, so each KV row crosses PCIe 6x
+  (GQA 6), with a read pattern made for VRAM.
+- MMA kernel forced for host K/V (converts to F16 in one coalesced pass): 115.9 / 117.6 ms/token,
+  slower than the pinned copy (112.0).
+- It saves no VRAM. The CUDA compute buffer at `-c 32768` is 235 MiB **with the KV on the GPU too**:
+  it is the F16 K/V conversion space of the flash-attention node (`ggml_cuda_flash_attn_ext_get_alloc_size`,
+  ~4 KiB per cell), not staging. Section 10's note was wrong.
+
+## 15. AVX-512 VNNI CPU decode attention (item C)
+
+New `ggml_compute_forward_flash_attn_ext_gqa_chunk_q8_0` (x86, AVX-512 F/BW/DQ/VNNI; q8_0 K and V,
+head sizes multiple of 64, DV <= 256): Q quantized once per call; scores as `dpbusd(q+128, k) -
+128*sum(k)` with the correction shared by all heads, 16 rows reduced at once by a transposed sum;
+vectorized softmax (`ggml_v_expf`); V block scales folded into the weights; DV in chunks of 64 with
+named accumulators (MSVC keeps arrays of vectors in memory: the first version did a load + FMA +
+store per FMA).
+
+`test-backend-ops perf -b CPU`, head 256, 4 KV heads x 6, one query, 16 threads:
+
+| KV | old gqa path | new |
+|---|---|---|
+| 4k | - | 0.37 ms |
+| 16k | 4.0-4.2 ms (3.6 at boost) | **1.43-1.50 ms** |
+| 32k | - | 2.7-2.9 ms |
+
+Compute bound, not memory bound (4k in L3 has the same per-row cost; prefetch changes nothing).
+Tiger Lake runs 512-bit FP on port 0 only: ~100 port-0 ops per row for scores (dpbusd, cvt, mul, fma
+per head and block pair), ~112 for V. Target was 1.2 ms. Greedy `-ngl 0` output identical to the
+old path.
+
+In-model, decode attention of all 16 host layers pinned to the CPU (6 threads), cpu6/59, 16.5k:
+117.4 / 119.5 ms/token vs 111.8 streamed from pinned memory. Before this kernel it was ~150.
+Not kept (a 6-thread CPU at base clock does 16 layers in ~60 ms; the pinned copy takes ~55 ms).
+Worth it only split with the GPU (item D).
+
+## 16. Phase 0 - original checklist
 
 1. System prep: NVIDIA Control Panel -> *CUDA - Sysmem Fallback Policy* = *Prefer No Sysmem
    Fallback* (otherwise an overcommit silently pages VRAM over PCIe); move the desktop apps
