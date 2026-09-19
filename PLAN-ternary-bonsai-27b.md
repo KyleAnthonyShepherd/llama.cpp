@@ -316,7 +316,121 @@ it is bound by the two 512-bit ports, with the decode shuffles on p5 and dot / f
 The next step would be Q8_K activations (one scale per 256) to drop most per-32 float work, ~1.3x
 on the CPU matmuls, worth ~5 ms/token at 4-5 CPU blocks. Not done.
 
-## 10. Phase 0 - original checklist
+## 10. Per-layer KV placement: `--kv-cpu-layers N` (2026-09-18)
+
+`llama_model_params::kv_cpu_layers` / `--kv-cpu-layers N`: the KV cache of the first N layers
+that have one (the 16 full-attention layers here) is allocated in host memory. Everything else is
+unchanged; the scheduler streams the filled part of those caches to the GPU for attention each
+step (prefill and decode), because attention stays with its query on the GPU.
+
+Server, `-np 1 -c 32768 -ctk q8_0 -ctv q8_0 -ub 128 -t 6`, 128 generated tokens after a prompt:
+
+| layout | filled | gen |
+|---|---|---|
+| cpu6, `-ngl 59`, 16 KV layers in host memory | ~0 | 56.7 ms/token |
+| same | 8.6k | 97.2 ms/token |
+| same | 16.5k | 131.1 ms/token (prefill 185 t/s) |
+| cpu11, `-ngl 54`, 8 KV layers in host memory | 16.5k | 159 ms/token (at the VRAM cliff) |
+| cpu17, `-ngl 48`, all KV on the GPU | 16.5k | 235 ms/token |
+
+So host KV costs **~4.5 ms per 1k filled tokens** (all 16 layers, ~0.28 ms per 1k tokens per
+layer; PCIe ~13 GB/s) - and it follows the *filled* context, not the allocation. At 16.5k it
+beats pushing weights to the CPU by 1.8x.
+
+Tried and not kept: running decode attention on the CPU next to the host KV. Even with a new
+grouped-query CPU decode path (committed: q8_0, head 256, 4x6 heads, 16k KV 9.7 -> 3.6 ms per
+layer, 2.7x) it is ~150 ms/token at 16.5k vs ~81 ms streamed. It would need a CPU attention
+kernel near RAM bandwidth (~1 ms/layer at 16k) to win.
+
+Notes:
+- At `-c 32768` the CUDA compute buffer is 235 MiB (63 MiB at 4k): it reserves room for one
+  layer's streamed K/V in the prefill graph. That is why cpu6, not cpu5, fits with host KV.
+- Upstream's `--no-kv-offload` pins attention to the CPU only on the non-flash-attention path.
+
+## 11. Adaptive context growth (design, not implemented)
+
+Many workloads do not know their context up front. Today the layout (which blocks are on the
+CPU, how big the KV cache is) is fixed at load. Goal: start fast (few CPU blocks, small KV) and
+give ground only as the context actually fills.
+
+### 11.1 Why not swap the whole file
+
+The naive version - reload with the next `cpuNpq2` file when the context outgrows the current
+layout - works in principle but has real costs:
+
+1. **State is lost unless explicitly carried.** The KV cache, the recurrent state (48 GDN
+   layers, 150 MiB) and the context checkpoints all live in the context being torn down. A
+   hybrid model cannot recompute part of its recurrent state: without a save/restore it has to
+   re-prefill the whole conversation (16k tokens = ~90 s). Carrying it means
+   `llama_state_seq_get_data` / `_set_data` (or the fork's RAM slot store) around the reload -
+   ~1.3 GB at 32k, fine, but it is one more path to get right, including checkpoints.
+2. **Reload latency.** 6-8 GB to map and ~5.5 GB to upload to the GPU: a few seconds with a warm
+   page cache, much more cold. It must happen between tokens, so streaming clients stall, and
+   every slot pauses.
+3. **Disk and page cache.** One ~6-8 GB file per layout. Two layouts mapped during the swap
+   double the page cache footprint; with several variants the cache stops holding them.
+4. **VRAM churn on Windows.** Tearing down and re-creating ~5.5 GB of allocations under WDDM,
+   right at the edge of the spill cliff (section 9): free-memory reports lag, and a layout that
+   fit before may spill after.
+5. **Thrashing.** Contexts shrink too (new chat, cleared cache). Without hysteresis it reloads
+   back and forth; with hysteresis it sits in a slow layout after the context is gone.
+6. **Different numbers after the swap.** A layer that moves between GPU (PTQ1_0 kernel) and CPU
+   (PQ2_0) computes the same weights with different rounding. Not wrong, but a run is no longer
+   reproducible across the swap point.
+
+Everything the swap achieves can be done inside one process, without losing state.
+
+### 11.2 In-process levers, cheapest first
+
+**L1 - grow the KV cache on the GPU while VRAM is free.** The fork already has this
+(`--ctx-max`, `--ctx-grow-factor`, `--ctx-grow-headroom`, `llama_kv_cache::resize`). Start with
+a small cache and the best weight layout (cpu4/cpu5).
+
+**L2 - spill KV layers to host memory as the cache grows.** When a resize does not fit in VRAM,
+reallocate some layers' grown K/V in host memory instead of failing (the same placement
+`--kv-cpu-layers` does statically). `resize()` already reallocates per layer and copies the old
+cells; it only needs to pick the buffer type per layer (host for the first k layers, k grown as
+needed), using the fork's VRAM-fit check (`ggml_backend_set_vram_strict`,
+`ggml_cuda_fits_in_vram`) rather than the WDDM report. Graphs are rebuilt after a resize anyway,
+and the scheduler handles the streaming. Cost is known: ~0.28 ms per 1k filled tokens per
+spilled layer.
+
+**L3 - migrate weight blocks (dual residency).** Keep a host PQ2_0 copy of every block (all 64
+blocks = ~6.2 GB RAM) plus PTQ1_0 in VRAM for the resident set. Evicting a block frees ~80 MiB
+at once by switching that layer's graph to its host tensors; re-admitting it uploads ~70 MiB
+from the mapped PTQ1_0 file (~6 ms). Needs per-layer VRAM buffers (today one buffer per buffer
+type) and a loader that holds both variants (two GGUFs, or one GGUF with both tensor sets). No
+state is touched. This is the dense-model version of the expert hot store.
+
+### 11.3 Policy
+
+Price every freed MiB of VRAM:
+
+- a weight block on the CPU: ~4.5-6 ms/token per ~80 MiB, fixed, independent of the context;
+- a KV layer in host memory: ~0.28 ms/token per 1k *filled* tokens, frees 2.2 KiB per
+  *allocated* token (q8_0).
+
+With a sized cache (allocation ~= fill, which is what L1's headroom gives) the two are close per
+MiB at full fill, and KV wins whenever the cache is not full - and the measurement at 16.5k
+favours KV by 1.8x. So: grow KV on the GPU (L1) -> spill KV layers (L2) -> only then move weight
+blocks (L3), and prefer moving whichever is cheaper at the current fill. Shrink in reverse when
+idle (the fork's refit-while-idle pattern), with hysteresis. Before a big prompt, grow once to
+the known size instead of step by step (the server knows the prompt length before prefill).
+
+### 11.4 Work items
+
+| step | what | effort |
+|---|---|---|
+| a | `resize()` places grown layers in host memory when the VRAM-fit check fails (L2) | small |
+| b | spill order and count from the policy above, logged per resize | small |
+| c | move host layers back to the GPU on shrink / idle, with hysteresis | small |
+| d | faster host-KV attention: CPU flash attention near RAM bandwidth, or reading pinned host KV straight from the GPU kernel instead of copying | medium |
+| e | per-layer VRAM buffers + dual-residency loader + graph switch per layer (L3) | large |
+
+With a, b and c, a single `cpu4pq2`/`cpu5pq2` file serves any context length: short chats run at
+~19-20 t/s, long ones degrade by ~4.5 ms/token per 1k tokens instead of needing a reload.
+
+## 12. Phase 0 - original checklist
 
 1. System prep: NVIDIA Control Panel -> *CUDA - Sysmem Fallback Policy* = *Prefer No Sysmem
    Fallback* (otherwise an overcommit silently pages VRAM over PCIe); move the desktop apps
