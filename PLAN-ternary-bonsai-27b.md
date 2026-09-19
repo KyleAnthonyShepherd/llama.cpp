@@ -288,7 +288,35 @@ At base clock the PQ2_0 matmuls are compute-bound, so threads trade against cloc
 Use `-t 6`. A higher power mode in the laptop vendor's tool (a system setting, left to the
 user) would lift PL1 and help directly.
 
-## 9. Phase 0 - original checklist
+## 9. Serving: fewer CPU blocks, and the 4-row kernel limit (2026-09-18)
+
+`llama-server` reserves logits for n_parallel outputs only (compute buffer 63 MiB at `-ub 128`
+vs 133 MiB in llama-completion / llama-bench). But `-np` defaults to auto = 4 slots, and each
+slot gets its own recurrent state: 598 MiB instead of 150. **`-np 1` for a single user.**
+
+400-token generation through the server API, `-np 1 -ub 128 -c 4096 -ctk q8_0 -ctv q8_0 -t 6`:
+
+| file | `-ngl` | VRAM used | gen |
+|---|---|---|---|
+| cpu12pq2 | 53 | 5238 MiB | 10.6 t/s |
+| cpu9pq2 | 56 | 5490 MiB | 14.0 t/s |
+| cpu8pq2 | 57 | 5576 MiB | 15.2 t/s |
+| cpu6pq2 | 59 | 5746 MiB | 17.6 t/s |
+| cpu5pq2 | 60 | 5830 MiB | 19.1 t/s |
+| cpu4pq2 | 61 | 5916 MiB | **20.4 t/s** |
+| cpu3pq2 | 62 | 5880 MiB (!) | 11.5 t/s - WDDM paged VRAM to system memory |
+
+cpu4 is the edge with ~230 MiB spare; cpu5 leaves ~310 MiB for the desktop to grow. `-t 6` and
+`-t 8` are within noise at cpu5 (54.2 vs 52.4 ms/token).
+
+4-row PQ2_0 kernel at base clock: three variants tried in a standalone MSVC harness (whole-row
+loads + vpermt2q + vpmultishiftqb decode; vpmultishiftqb crumb spread; float work per 128 block
+instead of per q8_0 block). None beat the committed kernel (17-19 cycles per 128-weight row-block):
+it is bound by the two 512-bit ports, with the decode shuffles on p5 and dot / float on p0.
+The next step would be Q8_K activations (one scale per 256) to drop most per-32 float work, ~1.3x
+on the CPU matmuls, worth ~5 ms/token at 4-5 CPU blocks. Not done.
+
+## 10. Phase 0 - original checklist
 
 1. System prep: NVIDIA Control Panel -> *CUDA - Sysmem Fallback Policy* = *Prefer No Sysmem
    Fallback* (otherwise an overcommit silently pages VRAM over PCIe); move the desktop apps
