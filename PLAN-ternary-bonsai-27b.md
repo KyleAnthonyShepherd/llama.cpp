@@ -543,7 +543,30 @@ In-model, decode attention of all 16 host layers pinned to the CPU (6 threads), 
 Not kept (a 6-thread CPU at base clock does 16 layers in ~60 ms; the pinned copy takes ~55 ms).
 Worth it only split with the GPU (item D).
 
-## 16. Phase 0 - original checklist
+## 16. Where a 16.5k decode goes (nsys, item B2 groundwork)
+
+cpu6/59, 16 host KV layers (pinned), 16.5k filled, `llama-completion -n 64 --ignore-eos` under
+`nsys profile -t cuda` (121 ms/token profiled, 112 unprofiled). Decode graphs appear in
+`CUPTI_ACTIVITY_KIND_GRAPH_TRACE`, not `..._KERNEL`.
+
+| per token | ms |
+|---|---|
+| GPU compute | 32 |
+| host -> device copies (561 MB, 12.0 GB/s) | 47 |
+| copies overlapped with compute | 0 |
+| GPU idle (CPU weight blocks, per-layer syncs) | 42 |
+
+- Async copies on the compute stream (skip the scheduler's full sync before a host -> device input
+  copy): 111.5 vs 112 ms/token. Not kept.
+- The plan's prefetch cannot overlap as written: layer L's KV store (a CPU split: k_cur/v_cur go to
+  the CPU, set_rows, back) runs right before layer L's attention, and the copy has to follow the store.
+  Nothing computes in between. Overlap needs the old cells prefetched earlier (during layer L-1) on a
+  second stream into a second staging buffer (+36 MiB at 16.5k, +70 MiB at 32k: over the cliff on
+  cpu6/59, so cpu7/58), and the new row written on the GPU into that staging copy as well as into
+  host memory. That is explicit staging in the graph, not the scheduler's implicit input copy.
+  Ceiling ~32 ms/token.
+
+## 17. Phase 0 - original checklist
 
 1. System prep: NVIDIA Control Panel -> *CUDA - Sysmem Fallback Policy* = *Prefer No Sysmem
    Fallback* (otherwise an overcommit silently pages VRAM over PCIe); move the desktop apps
