@@ -3041,6 +3041,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_KV_CPU_LAYERS"));
     add_opt(common_arg(
+        {"--kv-spill-margin"}, "MiB",
+        string_format("VRAM to keep free when the KV cache grows (see --ctx-max). Layers that do not fit move to host memory, "
+            "lowest first, and move back when the cache shrinks (default: %d)", params.kv_spill_margin),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("kv-spill-margin must be non-negative");
+            }
+            params.kv_spill_margin = value;
+        }
+    ).set_env("LLAMA_ARG_KV_SPILL_MARGIN"));
+    add_opt(common_arg(
         {"-sm", "--split-mode"}, "{none,layer,row,tensor}",
         "how to split the model across multiple GPUs, one of:\n"
         "- none: use one GPU only\n"

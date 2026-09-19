@@ -155,6 +155,9 @@ public:
 
     size_t resize_peak_bytes(uint32_t n_new) const override;
 
+    bool spill_layer()    override;
+    bool unspill_layers() override;
+
     // state write/load
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
@@ -285,6 +288,12 @@ private:
 
         std::vector<ggml_tensor *> k_stream;
         std::vector<ggml_tensor *> v_stream;
+
+        // where the layer lives when VRAM allows; null if it never moves (host by request, or no GPU)
+        ggml_backend_buffer_type_t buft_dev = nullptr;
+
+        // where the layer lives in host memory
+        ggml_backend_buffer_type_t buft_host = nullptr;
     };
 
     // one layer's k/v tensors together with the context holding their metadata
@@ -300,6 +309,16 @@ private:
     // metadata for layer i's k/v at n_cells, in a no_alloc context - the caller either sizes
     // the result (resize_peak_bytes()) or allocates it (resize())
     layer_storage build_layer_storage(size_t i, uint32_t n_cells) const;
+
+    // buffer type for each layer at n_cells: spill device layers to host, lowest first, until
+    // the move keeps kv_spill_margin of VRAM free; with allow_back, bring spilled layers back
+    std::vector<ggml_backend_buffer_type_t> plan_placement(uint32_t n_cells, bool allow_back) const;
+
+    // move every layer to n_cells cells in the buffer type bufts[i]; rolls back on failure
+    bool relayout(uint32_t n_cells, const std::vector<ggml_backend_buffer_type_t> & bufts);
+
+    // time of the last move of a layer to host memory
+    int64_t t_spill_us = 0;
 
     bool v_trans = true;  // the value tensor is transposed
 

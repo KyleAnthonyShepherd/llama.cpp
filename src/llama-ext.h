@@ -107,6 +107,11 @@ LLAMA_API bool llama_expert_cold_last(const struct llama_context * ctx, int32_t 
 // Returns the resident slot count, or -1 when the context has no hot store.
 LLAMA_API int32_t llama_expert_hotstore_refit(struct llama_context * ctx);
 
+// Move KV layers that a growing cache spilled to host memory (see llama_model_params::kv_spill_margin)
+// back to the GPU while they fit, at the current size. A shrink does this already; call it when
+// idle to pick up VRAM freed elsewhere. Not within 60 s of a spill. Returns whether any layer moved.
+LLAMA_API bool llama_kv_unspill(struct llama_context * ctx);
+
 // Free device memory a resize of ctx to n_ctx_seq_new cells needs at its peak, on top of what
 // its memory already holds. 0 when nothing has to be found.
 LLAMA_API size_t llama_resize_peak_bytes(const struct llama_context * ctx, uint32_t n_ctx_seq_new);

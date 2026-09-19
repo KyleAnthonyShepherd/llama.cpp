@@ -752,6 +752,7 @@ struct llama_model {
 
     uint32_t n_gpu_layers() const;
     int32_t  kv_cpu_layers() const; // see llama_model_params::kv_cpu_layers
+    size_t   kv_spill_margin() const; // bytes, see llama_model_params::kv_spill_margin
     llama_split_mode split_mode() const;
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const;

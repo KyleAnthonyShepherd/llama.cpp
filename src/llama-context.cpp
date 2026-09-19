@@ -1123,8 +1123,12 @@ int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
     // they can only be measured once the cache is at its new size.
     const size_t kv_need = is_grow ? memory->resize_peak_bytes(n_ctx_seq_new) : 0;
 
-    if (kv_need > 0) {
-        shrink_expert_hotstore(kv_need);
+    // the cache keeps kv_spill_margin free and spills layers to host memory otherwise, so
+    // make room for the margin too
+    const size_t kv_keep = kv_need > 0 ? kv_need + model.kv_spill_margin() : 0;
+
+    if (kv_keep > 0) {
+        shrink_expert_hotstore(kv_keep);
     }
 
     // kv_need is what the cache reports it will want, but the device does not always have
@@ -1154,7 +1158,7 @@ int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
         // called above, so that number has moved. One more measured drop usually lands on the
         // exact remainder. The blind ladder below is for when the number does not explain the
         // failure at all - fragmentation, or a sibling context mid-allocation.
-        if (i == 0 && shrink_expert_hotstore(kv_need)) {
+        if (i == 0 && shrink_expert_hotstore(kv_keep)) {
             LLAMA_LOG_INFO("%s: retrying the resize to %u cells after a second measured drop\n",
                     __func__, n_ctx_seq_new);
             continue;
@@ -1206,10 +1210,16 @@ int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
     // The compute buffers follow the context too, and at a long context they are the larger
     // half of what a growth step costs. Measure what they will want now that the cache is at
     // its new size, and make room before the reserve rather than after it fails.
-    const size_t compute_need = is_grow ? compute_growth_bytes() : 0;
+    size_t compute_need = is_grow ? compute_growth_bytes() : 0;
 
     if (compute_need > 0) {
-        shrink_expert_hotstore(compute_need);
+        shrink_expert_hotstore(compute_need + model.kv_spill_margin());
+    }
+
+    // the compute buffers stage host KV layers for the GPU, so the first spill makes them
+    // grow; spill more layers until the margin also holds after the reserve
+    while (compute_need > 0 && compute_need + model.kv_spill_margin() > vram_free() && memory->spill_layer()) {
+        compute_need = compute_growth_bytes();
     }
 
     if (is_grow) {
@@ -1315,6 +1325,39 @@ bool llama_context::reserve_worst_case_graph() {
         // usable as it stands - set_n_ctx() frees VRAM and retries, then rolls back
         LLAMA_LOG_WARN("%s: failed to reserve compute buffers for n_ctx = %u\n", __func__, cparams.n_ctx);
         return false;
+    }
+
+    return true;
+}
+
+size_t llama_context::vram_free() const {
+    size_t res = SIZE_MAX;
+
+    for (const auto & backend : backends) {
+        ggml_backend_dev_t dev = ggml_backend_get_device(backend.get());
+
+        if (dev && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+            size_t free = 0, total = 0;
+            ggml_backend_dev_memory(dev, &free, &total);
+
+            res = std::min(res, free);
+        }
+    }
+
+    return res;
+}
+
+bool llama_context::unspill_kv() {
+    if (!memory || !memory->unspill_layers()) {
+        return false;
+    }
+
+    // the compute buffers follow the new placement
+    while (!reserve_worst_case_graph()) {
+        if (!memory->spill_layer()) {
+            LLAMA_LOG_ERROR("%s: could not reserve compute buffers after moving KV layers back\n", __func__);
+            break;
+        }
     }
 
     return true;
@@ -5094,6 +5137,10 @@ bool llama_expert_cold_last(const struct llama_context * ctx, int32_t * cold_dis
 
 int32_t llama_expert_hotstore_refit(struct llama_context * ctx) {
     return ctx->refit_expert_hotstore(true);
+}
+
+bool llama_kv_unspill(struct llama_context * ctx) {
+    return ctx->unspill_kv();
 }
 
 size_t llama_resize_peak_bytes(const struct llama_context * ctx, uint32_t n_ctx_seq_new) {

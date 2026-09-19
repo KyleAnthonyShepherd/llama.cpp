@@ -322,6 +322,7 @@ extern "C" {
 
         int32_t n_gpu_layers; // number of layers to store in VRAM, a negative value means all layers
         int32_t kv_cpu_layers; // number of KV cache layers, from the first, kept in host memory (frees VRAM, streamed to the GPU each step)
+        int32_t kv_spill_margin; // MiB of VRAM a growing KV cache keeps free; layers that do not fit move to host memory, lowest first
         enum llama_split_mode split_mode; // how to split the model across multiple GPUs
         enum llama_load_mode  load_mode;  // how to load the model
 

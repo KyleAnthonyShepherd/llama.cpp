@@ -217,16 +217,32 @@ llama_kv_cache::llama_kv_cache(
 
         const char * dev_name = "CPU";
 
-        ggml_backend_buffer_type_t buft = ggml_backend_cpu_buffer_type();
+        ggml_backend_buffer_type_t buft      = ggml_backend_cpu_buffer_type();
+        ggml_backend_buffer_type_t buft_dev  = nullptr;
+        ggml_backend_buffer_type_t buft_host = buft;
 
         const bool kv_host = n_kv_host_left > 0;
         n_kv_host_left -= kv_host ? 1 : 0;
 
-        if (offload && !kv_host) {
+        if (offload) {
             auto * dev = model.dev_layer(il);
-            buft = ggml_backend_dev_buffer_type(dev);
 
-            dev_name = ggml_backend_dev_name(dev);
+            // pinned memory the GPU can read in place (see ggml_backend_dev_caps::host_buffer_read)
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU && ggml_backend_dev_host_buffer_type(dev)) {
+                buft_host = ggml_backend_dev_host_buffer_type(dev);
+            }
+
+            if (kv_host) {
+                buft = buft_host;
+            } else {
+                buft = ggml_backend_dev_buffer_type(dev);
+
+                dev_name = ggml_backend_dev_name(dev);
+
+                if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                    buft_dev = buft;
+                }
+            }
         }
 
         LLAMA_LOG_DEBUG("%s: layer %3d: dev = %s\n", __func__, il, dev_name);
@@ -255,7 +271,7 @@ llama_kv_cache::llama_kv_cache(
 
         map_layer_ids[il] = layers.size();
 
-        layers.push_back({ il, k, v, k_stream, v_stream, });
+        layers.push_back({ il, k, v, k_stream, v_stream, buft_dev, buft_host, });
     }
 
     if (reuse) {
@@ -1379,7 +1395,203 @@ bool llama_kv_cache::resize(uint32_t n_new) {
         return false;
     }
 
-    LLAMA_LOG_INFO("%s: resizing KV cache: %u -> %u cells\n", __func__, n_old, n_new);
+    return relayout(n_new, plan_placement(n_new, n_new < n_old));
+}
+
+std::vector<ggml_backend_buffer_type_t> llama_kv_cache::plan_placement(uint32_t n_cells, bool allow_back) const {
+    const size_t   n     = layers.size();
+    const uint32_t n_old = get_size();
+
+    std::vector<ggml_backend_buffer_type_t> cur(n);
+    for (size_t i = 0; i < n; ++i) {
+        cur[i] = ggml_backend_buffer_get_type(layers[i].k->buffer);
+    }
+
+    // what each movable layer takes on its device at n_cells
+    std::vector<size_t>             bytes(n, 0);
+    std::vector<ggml_backend_dev_t> devs (n, nullptr);
+
+    std::map<ggml_backend_dev_t, int64_t> free_mem;
+
+    for (size_t i = 0; i < n; ++i) {
+        if (!layers[i].buft_dev) {
+            continue;
+        }
+
+        ggml_backend_dev_t dev = ggml_backend_buft_get_device(layers[i].buft_dev);
+
+        const layer_storage ls = build_layer_storage(i, n_cells);
+        if (!dev || !ls.ctx) {
+            continue;
+        }
+
+        devs[i]  = dev;
+        bytes[i] = ggml_backend_alloc_ctx_tensors_from_buft_size(ls.ctx.get(), layers[i].buft_dev);
+
+        if (free_mem.find(dev) == free_mem.end()) {
+            size_t free = 0, total = 0;
+            ggml_backend_dev_memory(dev, &free, &total);
+
+            free_mem[dev] = (int64_t) free;
+        }
+    }
+
+    if (free_mem.empty()) {
+        return cur;
+    }
+
+    // the buffer each layer is in now; a buffer goes back once all its layers moved out
+    std::vector<size_t>             owner(n, 0);
+    std::vector<size_t>             home_size(ctxs_bufs.size(), 0);
+    std::vector<ggml_backend_dev_t> home_dev (ctxs_bufs.size(), nullptr);
+
+    for (size_t j = 0; j < ctxs_bufs.size(); ++j) {
+        ggml_backend_buffer_t buf = ctxs_bufs[j].second.get();
+
+        home_size[j] = ggml_backend_buffer_get_size(buf);
+        home_dev [j] = ggml_backend_buffer_is_host(buf) ? nullptr : ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buf));
+
+        for (size_t i = 0; i < n; ++i) {
+            if (layers[i].k->buffer == buf) {
+                owner[i] = j;
+            }
+        }
+    }
+
+    // replay relayout(): each device must keep `keep` bytes free at the end, and half of that on
+    // the way (a buffer goes back only after its last layer moved; the free figure is not exact)
+    auto fits = [&](const std::vector<ggml_backend_buffer_type_t> & t, int64_t keep) {
+        std::map<ggml_backend_dev_t, int64_t> avail = free_mem;
+
+        std::vector<int> n_live(ctxs_bufs.size(), 0);
+        for (size_t i = 0; i < n; ++i) {
+            n_live[owner[i]]++;
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            if (n_cells == n_old && t[i] == cur[i]) {
+                continue;
+            }
+
+            if (devs[i] && t[i] == layers[i].buft_dev) {
+                avail[devs[i]] -= (int64_t) bytes[i];
+
+                if (avail[devs[i]] < keep/2) {
+                    return false;
+                }
+            }
+
+            const size_t j = owner[i];
+
+            if (--n_live[j] == 0 && home_dev[j] && avail.find(home_dev[j]) != avail.end()) {
+                avail[home_dev[j]] += (int64_t) home_size[j];
+            }
+        }
+
+        for (const auto & [_, a] : avail) {
+            if (a < keep) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+
+    const int64_t margin = (int64_t) model.kv_spill_margin();
+
+    for (const auto & [dev, free] : free_mem) {
+        LLAMA_LOG_DEBUG("%s: %s: %lld MiB free, keeping %lld MiB\n", __func__, ggml_backend_dev_name(dev), (long long) (free >> 20), (long long) (margin >> 20));
+    }
+
+    std::vector<ggml_backend_buffer_type_t> t = cur;
+
+    // spill from the lowest layer up, until the rest fits
+    size_t n_spill = 0;
+
+    for (size_t i = 0; i < n && !fits(t, margin); ++i) {
+        if (devs[i] && t[i] == layers[i].buft_dev) {
+            t[i] = layers[i].buft_host;
+            n_spill++;
+        }
+    }
+
+    // move back in reverse order, not soon after a spill and only with room to spare
+    if (n_spill == 0 && allow_back && ggml_time_us() - t_spill_us >= 60ll*1000*1000) {
+        for (size_t i = n; i-- > 0; ) {
+            if (!devs[i] || t[i] == layers[i].buft_dev) {
+                continue;
+            }
+
+            t[i] = layers[i].buft_dev;
+
+            if (!fits(t, 2*margin)) {
+                t[i] = cur[i];
+                break;
+            }
+        }
+    }
+
+    return t;
+}
+
+bool llama_kv_cache::spill_layer() {
+    if (other || n_stream != 1) {
+        return false;
+    }
+
+    std::vector<ggml_backend_buffer_type_t> t(layers.size());
+    for (size_t i = 0; i < layers.size(); ++i) {
+        t[i] = ggml_backend_buffer_get_type(layers[i].k->buffer);
+    }
+
+    for (size_t i = 0; i < layers.size(); ++i) {
+        if (layers[i].buft_dev && t[i] == layers[i].buft_dev) {
+            t[i] = layers[i].buft_host;
+
+            return relayout(get_size(), t);
+        }
+    }
+
+    return false;
+}
+
+bool llama_kv_cache::unspill_layers() {
+    if (other || n_stream != 1) {
+        return false;
+    }
+
+    const auto t = plan_placement(get_size(), true);
+
+    bool back = false;
+
+    for (size_t i = 0; i < layers.size(); ++i) {
+        const auto buft = ggml_backend_buffer_get_type(layers[i].k->buffer);
+
+        if (t[i] != buft) {
+            if (t[i] != layers[i].buft_dev) {
+                return false; // the device is short - leave it to the next resize
+            }
+
+            back = true;
+        }
+    }
+
+    return back && relayout(get_size(), t);
+}
+
+bool llama_kv_cache::relayout(uint32_t n_new, const std::vector<ggml_backend_buffer_type_t> & bufts) {
+    const uint32_t n_old = get_size();
+
+    GGML_ASSERT(bufts.size() == layers.size());
+
+    std::vector<ggml_backend_buffer_type_t> bufts_old(layers.size());
+    for (size_t i = 0; i < layers.size(); ++i) {
+        bufts_old[i] = ggml_backend_buffer_get_type(layers[i].k->buffer);
+    }
+
+    if (n_new == n_old && bufts == bufts_old) {
+        return true;
+    }
 
     // which of the cache's buffers each layer lives in. Several layers share one buffer (that
     // is how the cache is built), so a buffer can only go back once the last of them moved
@@ -1452,12 +1664,10 @@ bool llama_kv_cache::resize(uint32_t n_new) {
     // move layer i into its own buffer of n_cells, keeping the cells both sizes have in
     // common. Moving a layer at a time is what bounds the peak: rebuilding the whole cache at
     // once has to hold both copies of it, this holds the larger copy plus a single layer.
-    auto migrate = [&](size_t i, uint32_t n_cells) -> bool {
+    auto migrate = [&](size_t i, uint32_t n_cells, ggml_backend_buffer_type_t buft) -> bool {
         auto & layer = layers[i];
 
         const uint32_t n_from = (uint32_t) layer.k->ne[1];
-
-        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(layer.k->buffer);
 
         layer_storage ls = build_layer_storage(i, n_cells);
         if (!ls.ctx) {
@@ -1536,18 +1746,29 @@ bool llama_kv_cache::resize(uint32_t n_new) {
         return true;
     };
 
-    size_t n_moved = 0;
+    std::vector<size_t> moved;
 
-    while (n_moved < layers.size() && migrate(n_moved, n_new)) {
-        n_moved++;
+    bool ok = true;
+
+    for (size_t i = 0; i < layers.size() && ok; ++i) {
+        if (n_new == n_old && bufts[i] == bufts_old[i]) {
+            continue;
+        }
+
+        ok = migrate(i, n_new, bufts[i]);
+
+        if (ok) {
+            moved.push_back(i);
+        }
     }
 
-    if (n_moved != layers.size()) {
+    if (!ok) {
         // put the layers that already moved back where they were. Each step hands back at
         // least what the next one asks for, so this fits whenever the forward pass started
         // with room for one layer - which is what resize_peak_bytes() reports
-        for (size_t i = 0; i < n_moved; ++i) {
-            if (!migrate(i, n_old)) {
+        for (size_t i : moved) {
+            // host memory as the last resort, so the cells stay consistent
+            if (!migrate(i, n_old, bufts_old[i]) && !migrate(i, n_old, layers[i].buft_host)) {
                 LLAMA_LOG_ERROR("%s: rollback failed at layer %zu - the cache is left holding mixed cell counts\n", __func__, i);
                 break;
             }
@@ -1562,12 +1783,37 @@ bool llama_kv_cache::resize(uint32_t n_new) {
     for (uint32_t s = 0; s < n_stream; ++s) {
         if (n_new > n_old) {
             v_cells[s].grow(n_new);
-        } else {
+        } else if (n_new < n_old) {
             v_cells[s].shrink(n_new);
         }
     }
 
     commit();
+
+    int                n_host = 0;
+    ggml_backend_dev_t dev    = nullptr;
+
+    for (size_t i = 0; i < layers.size(); ++i) {
+        const bool is_host = ggml_backend_buffer_is_host(layers[i].k->buffer);
+
+        n_host += is_host ? 1 : 0;
+
+        if (layers[i].buft_dev) {
+            dev = dev ? dev : ggml_backend_buft_get_device(layers[i].buft_dev);
+
+            if (is_host && bufts_old[i] == layers[i].buft_dev) {
+                t_spill_us = ggml_time_us();
+            }
+        }
+    }
+
+    size_t free = 0, total = 0;
+    if (dev) {
+        ggml_backend_dev_memory(dev, &free, &total);
+    }
+
+    LLAMA_LOG_INFO("%s: kv resize %u -> %u cells, %d/%zu layers in host memory, VRAM free %zu MiB\n",
+            __func__, n_old, n_new, n_host, layers.size(), free/1024/1024);
 
     {
         std::map<std::string, size_t> by_name;
@@ -1577,7 +1823,7 @@ bool llama_kv_cache::resize(uint32_t n_new) {
         }
 
         for (const auto & [name, bytes] : by_name) {
-            LLAMA_LOG_INFO("%s: %10s KV buffer size = %8.2f MiB\n", __func__, name.c_str(), bytes/1024.0/1024.0);
+            LLAMA_LOG_DEBUG("%s: %10s KV buffer size = %8.2f MiB\n", __func__, name.c_str(), bytes/1024.0/1024.0);
         }
     }
 

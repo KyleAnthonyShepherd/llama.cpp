@@ -125,6 +125,18 @@ struct llama_memory_i {
         return 0;
     }
 
+    // move one more device layer to host memory (spill_layer), or move spilled layers back to
+    // the device while they fit (unspill_layers), at the current size. Both return whether
+    // any layer moved - the caller must then re-reserve its graphs.
+    // default: nothing can move.
+    virtual bool spill_layer() {
+        return false;
+    }
+
+    virtual bool unspill_layers() {
+        return false;
+    }
+
     // if data == true, the data buffers will also be cleared together with the metadata
     virtual void clear(bool data) = 0;
 

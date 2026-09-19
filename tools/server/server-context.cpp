@@ -3249,6 +3249,10 @@ private:
                     n_hot_idle = n_hot;
                 }
 
+                if (llama_kv_unspill(ctx_tgt)) {
+                    SRV_INF("%s", "moved KV cache layers back to the GPU while idle\n");
+                }
+
                 return; // skip further processing
 
             } else {
@@ -4730,6 +4734,10 @@ private:
         // hysteresis: a resize copies the whole KV cache, so only pay for it when it hands
         // back a real share of what is allocated
         if (n_target > n_ctx_cur / 2) {
+            // a shrink would also bring KV layers back from host memory, so try that alone
+            if (llama_kv_unspill(ctx_tgt)) {
+                SLT_INF(slot, "%s", "moved KV cache layers back to the GPU ahead of prefill\n");
+            }
             return;
         }
 

@@ -158,6 +158,14 @@ size_t llama_kv_cache_iswa::resize_peak_bytes(uint32_t n_new) const {
     return kv_base->resize_peak_bytes(n_new);
 }
 
+bool llama_kv_cache_iswa::spill_layer() {
+    return kv_base->spill_layer();
+}
+
+bool llama_kv_cache_iswa::unspill_layers() {
+    return kv_base->unspill_layers();
+}
+
 std::map<ggml_backend_buffer_type_t, size_t> llama_kv_cache_iswa::memory_breakdown() const {
     std::map<ggml_backend_buffer_type_t, size_t> mb = kv_base->memory_breakdown();
     for (const auto & buft_size : kv_swa->memory_breakdown()) {
