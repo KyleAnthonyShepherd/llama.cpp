@@ -430,7 +430,46 @@ the known size instead of step by step (the server knows the prompt length befor
 With a, b and c, a single `cpu4pq2`/`cpu5pq2` file serves any context length: short chats run at
 ~19-20 t/s, long ones degrade by ~4.5 ms/token per 1k tokens instead of needing a reload.
 
-## 12. Phase 0 - original checklist
+## 12. Vision: `--mmproj-compute-lazy` (2026-09-19)
+
+Bonsai mmproj-Q8_0: weights 600 MiB (kept in RAM with `--mmproj-weights-host`), encoder compute
+buffer 288 MiB reserved by the warmup for the largest image, plus ~80 MiB for the encoder's own
+CUDA backend (pool, cuBLAS). The warmup reserve does not shrink with `--image-max-tokens`.
+
+`--mmproj-compute-lazy` (commit `148f4dd56`, cherry-picked to branch `mmproj-compute-lazy` off
+master) frees the encoder scheduler and GPU backend after the warmup and after every encode and
+re-creates them at the next encode, where a fresh scheduler sizes buffers to the actual image.
+Encode transient above the LLM (llama-mtmd-cli, 1000x1000 image): +368 MiB non-lazy, +186 MiB
+lazy (+99 at `--image-max-tokens 512`, +67 at 256).
+
+The practical VRAM ceiling on this laptop is ~5.95 GB, and a spill does not recover: once an
+encode pushes over it, text generation stays slow for the rest of the session.
+
+Server, 1000x1000 image then text, `-np 1 -c 4096`:
+
+| layout | text before | image turn | text after |
+|---|---|---|---|
+| cpu5/60, host weights | 19.6 t/s | 79 s | 8.7 t/s (spilled) |
+| cpu5/60, host + lazy | 19.5 t/s | 68 s | 11.3 t/s (spilled) |
+| cpu5/60, host + lazy + max 512 tokens | 19.6 t/s | 30 s | 11.3 t/s (spilled) |
+| cpu6/59, host weights | 18.1 t/s | 70 s | 8.6 t/s (spilled) |
+| **cpu6/59, host + lazy** | **18.1 t/s** | **21 s** | **17.7 t/s** |
+
+Vision command (cpu6, lazy):
+
+```
+llama-server -m Bonsai-2-27B-PTQ1_0-cpu6pq2.gguf -ngl 59 --mmproj Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf --mmproj-weights-host --mmproj-compute-lazy -np 1 -fa on -c 4096 -ctk q8_0 -ctv q8_0 -b 512 -ub 128 -t 6
+```
+
+Qwen3.6-35B-A3B MoE on the master branch with the fitter: lazy frees ~273 MiB at idle, no
+spill either way. Under the fitter that VRAM stays unused (it still reserves the projector's
+worst case, which the lazy transient for a maximum-size image equals); using it needs the hot
+store to take it and give it back around an encode (`PLAN-adaptive-mmproj.md`).
+
+Open: at cpu5 even the +99 MiB transient spilled, so something else grows on an image turn
+(likely the LLM compute graph for embedding input). Measure `sched_reserve` for an image batch.
+
+## 13. Phase 0 - original checklist
 
 1. System prep: NVIDIA Control Panel -> *CUDA - Sysmem Fallback Policy* = *Prefer No Sysmem
    Fallback* (otherwise an overcommit silently pages VRAM over PCIe); move the desktop apps
