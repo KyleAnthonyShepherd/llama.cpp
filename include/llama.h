@@ -321,6 +321,7 @@ extern "C" {
         const struct llama_model_tensor_buft_override * tensor_buft_overrides;
 
         int32_t n_gpu_layers; // number of layers to store in VRAM, a negative value means all layers
+        int32_t kv_cpu_layers; // number of KV cache layers, from the first, kept in host memory (frees VRAM, streamed to the GPU each step)
         enum llama_split_mode split_mode; // how to split the model across multiple GPUs
         enum llama_load_mode  load_mode;  // how to load the model
 

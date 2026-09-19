@@ -165,6 +165,9 @@ llama_kv_cache::llama_kv_cache(
 
     const bool is_mla = hparams.is_mla();
 
+    // the first kv_cpu_layers cached layers stay in host memory, see llama_model_params
+    int32_t n_kv_host_left = std::max(0, model.kv_cpu_layers());
+
     for (uint32_t il = 0; il < n_layer; il++) {
         if (!hparams.has_kv(il)) {
             LLAMA_LOG_DEBUG("%s: layer %3d: does not have KV cache\n", __func__, il);
@@ -216,7 +219,10 @@ llama_kv_cache::llama_kv_cache(
 
         ggml_backend_buffer_type_t buft = ggml_backend_cpu_buffer_type();
 
-        if (offload) {
+        const bool kv_host = n_kv_host_left > 0;
+        n_kv_host_left -= kv_host ? 1 : 0;
+
+        if (offload && !kv_host) {
             auto * dev = model.dev_layer(il);
             buft = ggml_backend_dev_buffer_type(dev);
 
@@ -1871,7 +1877,8 @@ bool llama_kv_cache::load_kv_mean_center(const char * path, bool require_q4_0) {
             break;
         }
 
-        ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(model.dev_layer(il));
+        // follow the layer's K cache, which may be in host memory (kv_cpu_layers)
+        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(layers[ikv].k->buffer);
 
         ggml_context * ctx = ctx_for_buft(buft);
         if (!ctx) {

@@ -3020,6 +3020,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_N_GPU_LAYERS"));
     add_opt(common_arg(
+        {"--kv-cpu-layers"}, "N",
+        string_format("keep the KV cache of the first N layers that have one in host memory, to free VRAM for weights. "
+            "Each step then streams the filled part of those caches to the GPU (default: %d)", params.kv_cpu_layers),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("kv-cpu-layers must be non-negative");
+            }
+            params.kv_cpu_layers = value;
+        }
+    ).set_env("LLAMA_ARG_KV_CPU_LAYERS"));
+    add_opt(common_arg(
         {"-sm", "--split-mode"}, "{none,layer,row,tensor}",
         "how to split the model across multiple GPUs, one of:\n"
         "- none: use one GPU only\n"

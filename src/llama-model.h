@@ -751,6 +751,7 @@ struct llama_model {
     const float * tensor_split() const;
 
     uint32_t n_gpu_layers() const;
+    int32_t  kv_cpu_layers() const; // see llama_model_params::kv_cpu_layers
     llama_split_mode split_mode() const;
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const;
