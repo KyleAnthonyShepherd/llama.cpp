@@ -174,6 +174,13 @@ struct clip_ctx {
     // offloads the encode matmuls back to it (op_offload, see ggml_backend_sched_new below)
     bool weights_host = false;
 
+    // compute buffers and the GPU backend exist only while an encode runs (compute_acquire /
+    // compute_release), so an idle projector holds no VRAM beyond its weights
+    bool compute_lazy = false;
+    ggml_backend_dev_t gpu_dev = nullptr;
+    ggml_backend_sched_eval_callback cb_eval = nullptr;
+    void * cb_eval_user_data = nullptr;
+
     // backend whose buffer type holds the weights. both the allocation and the memory
     // accounting go through this, so they cannot disagree about where the weights are
     ggml_backend_t weights_backend() const {
@@ -192,6 +199,9 @@ struct clip_ctx {
         flash_attn_type = ctx_params.flash_attn_type;
         no_alloc = ctx_params.no_alloc;
         weights_host = ctx_params.weights_host;
+        compute_lazy = ctx_params.compute_lazy;
+        cb_eval = ctx_params.cb_eval;
+        cb_eval_user_data = ctx_params.cb_eval_user_data;
         backend_cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
         if (!backend_cpu) {
             throw std::runtime_error("failed to initialize CPU backend");
@@ -211,6 +221,7 @@ struct clip_ctx {
 
         if (backend) {
             LOG_INF("%s: CLIP using %s backend\n", __func__, ggml_backend_name(backend));
+            gpu_dev = ggml_backend_get_device(backend);
             backend_ptrs.push_back(backend);
             backend_buft.push_back(ggml_backend_get_default_buffer_type(backend));
         } else {
@@ -228,22 +239,55 @@ struct clip_ctx {
         backend_ptrs.push_back(backend_cpu);
         backend_buft.push_back(ggml_backend_get_default_buffer_type(backend_cpu));
 
-        sched.reset(
-            ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), 8192, false, true)
-        );
-
-        if (ctx_params.cb_eval != nullptr) {
-            ggml_backend_sched_set_eval_callback(sched.get(), ctx_params.cb_eval, ctx_params.cb_eval_user_data);
-        }
+        sched_create();
 
         debug_output_embeddings = std::getenv("MTMD_DEBUG_EMBEDDINGS") != nullptr;
     }
 
-    ~clip_ctx() {
-        ggml_backend_free(backend);
-        if (backend != backend_cpu) {
-            ggml_backend_free(backend_cpu);
+    void sched_create() {
+        sched.reset(
+            ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), 8192, false, true)
+        );
+
+        if (cb_eval != nullptr) {
+            ggml_backend_sched_set_eval_callback(sched.get(), cb_eval, cb_eval_user_data);
         }
+    }
+
+    // lazy mode: bring back the GPU backend and a scheduler before an encode
+    void compute_acquire() {
+        if (sched) {
+            return;
+        }
+        if (gpu_dev && backend == nullptr) {
+            backend = ggml_backend_dev_init(gpu_dev, nullptr);
+            if (!backend) {
+                throw std::runtime_error(string_format("%s: failed to re-initialize \"%s\" backend", __func__, ggml_backend_dev_name(gpu_dev)));
+            }
+            backend_ptrs[0] = backend;
+        }
+        sched_create();
+    }
+
+    // lazy mode: free the compute buffers and the GPU backend (its memory pool, cuBLAS workspace)
+    // after an encode. The weights are in their own buffer and stay.
+    void compute_release() {
+        if (!compute_lazy || !sched) {
+            return;
+        }
+        sched.reset();
+        if (gpu_dev && backend != nullptr && backend != backend_cpu) {
+            ggml_backend_free(backend);
+            backend = nullptr;
+        }
+    }
+
+    ~clip_ctx() {
+        sched.reset();
+        if (backend != nullptr && backend != backend_cpu) {
+            ggml_backend_free(backend);
+        }
+        ggml_backend_free(backend_cpu);
     }
 
     // this function is added so that we don't change too much of the existing code
@@ -3989,6 +4033,7 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
             if (ctx_params.warmup) {
                 loader.warmup(*ctx_vision);
             }
+            ctx_vision->compute_release();
 
             // TODO: we don't support audio for Gemma 3N, but GGUF contains audio tensors
             // we can remove this check when we implement audio support for Gemma 3N
@@ -4003,6 +4048,7 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
             if (ctx_params.warmup) {
                 loader.warmup(*ctx_audio);
             }
+            ctx_audio->compute_release();
         }
 
         if (loader.has_gen_audio) {
@@ -4437,6 +4483,13 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
         LOG_ERR("%s: batch size %d exceeds maximum supported batch/temporal-merge size %d\n", __func__, n_batch_cur, clip_model_n_temporal_merge(ctx));
         return false;
     }
+
+    // lazy mode: the backend and compute buffers live only for this call
+    ctx->compute_acquire();
+    struct compute_release_guard {
+        clip_ctx * ctx;
+        ~compute_release_guard() { ctx->compute_release(); }
+    } release_guard { ctx };
 
     // if buffers are not allocated, we need to do a warmup run to allocate them
     if (!ctx->is_allocated) {

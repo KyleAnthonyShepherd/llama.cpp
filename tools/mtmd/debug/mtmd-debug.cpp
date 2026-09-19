@@ -86,6 +86,7 @@ int main(int argc, char ** argv) {
         mparams.use_gpu          = params.mmproj_use_gpu;
         mparams.device           = params.mmproj_device;
         mparams.weights_host     = params.mmproj_weights_host;
+        mparams.compute_lazy     = params.mmproj_compute_lazy;
         mparams.print_timings    = true;
         mparams.n_threads        = params.cpuparams.n_threads;
         mparams.flash_attn_type  = params.flash_attn_type;

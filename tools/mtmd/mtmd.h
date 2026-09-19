@@ -100,6 +100,8 @@ struct mtmd_context_params {
     // keep the vision weights in host RAM and let the scheduler offload the encode to the GPU.
     // trades a small constant cost per encode for the VRAM the weights would hold
     bool weights_host;
+    // allocate the encoder compute buffers and GPU backend only for the duration of an encode
+    bool compute_lazy;
     bool print_timings;
     int n_threads;
     const char * image_marker; // deprecated, use media_marker instead
