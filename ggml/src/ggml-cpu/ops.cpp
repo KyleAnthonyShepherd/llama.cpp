@@ -9245,6 +9245,169 @@ static void ggml_flash_attn_ext_reduce_partials(
     }
 }
 
+// Decode with grouped-query attention: one query token, G query heads per KV head. Each thread walks
+// a slice [ic_start, ic_end) of the KV rows once and updates all G heads of a group from the same K
+// and V row, instead of one full pass over the cache per query head (G x fewer K/V reads, and V is
+// converted once per row, not once per head). Writes [M, S, VKQ] partials like the split-KV path.
+static constexpr int64_t GQA_TILE = 64;
+
+static void ggml_compute_forward_flash_attn_ext_gqa_chunk(
+        const ggml_compute_params * params,
+        ggml_tensor * dst,
+        int64_t ic_start, int64_t ic_end,
+        float * partials, int64_t partial_stride,
+        float * scratch) {
+
+    const ggml_tensor * q     = dst->src[0];
+    const ggml_tensor * k     = dst->src[1];
+    const ggml_tensor * v     = dst->src[2];
+    const ggml_tensor * mask  = dst->src[3];
+    const ggml_tensor * sinks = dst->src[4];
+
+    GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
+    GGML_TENSOR_LOCALS(size_t,  nbq, q, nb)
+    GGML_TENSOR_LOCALS(int64_t, nek, k, ne)
+    GGML_TENSOR_LOCALS(size_t,  nbk, k, nb)
+    GGML_TENSOR_LOCALS(size_t,  nbv, v, nb)
+
+    const int64_t DK = nek0;
+    const int64_t DV = v->ne[0];
+    const int64_t G  = neq2/nek2;
+
+    float scale         = 1.0f;
+    float logit_softcap = 0.0f;
+    memcpy(&scale,         (float *) dst->op_params + 0, sizeof(float));
+    memcpy(&logit_softcap, (float *) dst->op_params + 2, sizeof(float));
+    if (logit_softcap != 0) {
+        scale /= logit_softcap;
+    }
+
+    ggml_type         const k_vec_dot_type = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
+    ggml_from_float_t const q_to_vec_dot   = ggml_get_type_traits_cpu(k_vec_dot_type)->from_float;
+    ggml_vec_dot_t    const kq_vec_dot     = ggml_get_type_traits_cpu(k->type)->vec_dot;
+    ggml_to_float_t   const v_to_float     = v->type == GGML_TYPE_F32 ? nullptr : ggml_get_type_traits(v->type)->to_float;
+
+    // scratch: Q in the K dot type (G rows of DK floats of room), G VKQ accumulators, one V row
+    float * Q_q = scratch;
+    float * VKQ = Q_q + G*DK;
+    float * V32 = VKQ + G*DV;
+
+    float M[16];
+    float S[16];
+
+    // the mask is shared by all heads (checked by the caller)
+    const ggml_fp16_t * mp = mask ? (const ggml_fp16_t *) mask->data : NULL;
+
+    for (int64_t ik2 = 0; ik2 < nek2; ++ik2) {
+        for (int64_t g = 0; g < G; ++g) {
+            const float * pq = (const float *) ((const char *) q->data + (ik2*G + g)*nbq2);
+            q_to_vec_dot(pq, Q_q + g*DK, DK);
+            M[g] = -INFINITY;
+            S[g] = 0.0f;
+        }
+        memset(VKQ, 0, G*DV*sizeof(float));
+
+        // tiles of rows: all G scores of a tile first, then one rescale per head per tile, then V once per row
+        for (int64_t it = ic_start; it < ic_end; it += GQA_TILE) {
+            const int64_t nt = std::min<int64_t>(GQA_TILE, ic_end - it);
+
+            float st[16][GQA_TILE];
+            for (int64_t t = 0; t < nt; ++t) {
+                const int64_t ic = it + t;
+                const float mv = mp ? GGML_CPU_FP16_TO_FP32(mp[ic]) : 0.0f;
+                const char * k_data = (const char *) k->data + ic*nbk1 + ik2*nbk2;
+                for (int64_t g = 0; g < G; ++g) {
+                    if (mv == -INFINITY) {
+                        st[g][t] = -INFINITY;
+                        continue;
+                    }
+                    float sv;
+                    kq_vec_dot(DK, &sv, 0, k_data, 0, Q_q + g*DK, 0, 1);
+                    sv = sv*scale;
+                    if (logit_softcap != 0.0f) {
+                        sv = logit_softcap*tanhf(sv);
+                    }
+                    st[g][t] = sv + mv;
+                }
+            }
+
+            // online softmax, once per tile: st becomes the tile weights exp(s - M)
+            bool any = false;
+            for (int64_t g = 0; g < G; ++g) {
+                float mt = -INFINITY;
+                for (int64_t t = 0; t < nt; ++t) {
+                    mt = std::max(mt, st[g][t]);
+                }
+                if (mt == -INFINITY) {
+                    for (int64_t t = 0; t < nt; ++t) {
+                        st[g][t] = 0.0f;
+                    }
+                    continue;
+                }
+                any = true;
+                if (mt > M[g]) {
+                    const float ms = expf(M[g] - mt);
+                    ggml_vec_scale_f32(DV, VKQ + g*DV, ms);
+                    S[g] *= ms;
+                    M[g] = mt;
+                }
+                float sum = 0.0f;
+                for (int64_t t = 0; t < nt; ++t) {
+                    st[g][t] = expf(st[g][t] - M[g]);
+                    sum += st[g][t];
+                }
+                S[g] += sum;
+            }
+            if (!any) {
+                continue;
+            }
+
+            for (int64_t t = 0; t < nt; ++t) {
+                const int64_t ic = it + t;
+                const char * v_data = (const char *) v->data + ic*nbv1 + ik2*nbv2;
+
+                const float * vrow = (const float *) v_data;
+                if (v_to_float) {
+                    v_to_float(v_data, V32, DV);
+                    vrow = V32;
+                }
+                for (int64_t g = 0; g < G; ++g) {
+                    if (st[g][t] != 0.0f) {
+                        ggml_vec_mad_f32(DV, VKQ + g*DV, vrow, st[g][t]);
+                    }
+                }
+            }
+        }
+
+        for (int64_t g = 0; g < G; ++g) {
+            const int64_t iq2 = ik2*G + g;
+            float * acc = VKQ + g*DV;
+
+            // sinks - apply only on the first kv-chunk
+            if (sinks && ic_start == 0) {
+                const float s = ((const float *) sinks->data)[iq2];
+                float ms = 1.0f;
+                float vs = 1.0f;
+                if (s > M[g]) {
+                    ms = expf(M[g] - s);
+                    M[g] = s;
+                    ggml_vec_scale_f32(DV, acc, ms);
+                } else {
+                    vs = expf(s - M[g]);
+                }
+                S[g] = S[g]*ms + vs;
+            }
+
+            float * partial = partials + iq2*partial_stride;
+            partial[0] = M[g];
+            partial[1] = S[g];
+            memcpy(partial + 2, acc, DV*sizeof(float));
+        }
+    }
+
+    GGML_UNUSED(params);
+}
+
 static void ggml_compute_forward_flash_attn_ext_f16(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -9296,7 +9459,44 @@ static void ggml_compute_forward_flash_attn_ext_f16(
     const bool kv_is_f32_or_f16 = (k->type == GGML_TYPE_F32 || k->type == GGML_TYPE_F16);
     const bool use_split_kv_path = !use_ref && (neq1 == 1 && neq3 == 1) && kv_is_f32_or_f16 && (k->type == v->type) && q->type == GGML_TYPE_F32 && nek1 >= 512;
 
-    if (use_split_kv_path) {
+    // grouped-query decode: every head of a group shares one pass over the KV rows
+    float max_bias = 0.0f;
+    memcpy(&max_bias, (float *) dst->op_params + 1, sizeof(float));
+    const ggml_tensor * mask = dst->src[3];
+    const int64_t n_group = nek2 > 0 ? neq2/nek2 : 0;
+    const bool use_gqa_path = !use_ref && neq1 == 1 && neq3 == 1 && q->type == GGML_TYPE_F32 &&
+        n_group > 1 && n_group <= 16 && nek2*n_group == neq2 && nev2 == nek2 && nek3 == 1 && nev3 == 1 &&
+        max_bias == 0.0f && (mask == nullptr || (mask->ne[2] == 1 && mask->ne[3] == 1)) && nek1 >= 256 &&
+        !kv_is_f32_or_f16; // F16 / F32 caches are faster on the split-KV path below
+
+    if (use_gqa_path) {
+        const int64_t chunk_size = (nek1 + nth - 1) / nth;
+
+        // same partials layout as the split-KV path, so ggml_flash_attn_ext_reduce_partials can merge them
+        const int64_t partial_size   = 2 + DV;
+        float *       partials_base  = (float *) params->wdata + nth * (DK + 2*DV + CACHE_LINE_SIZE_F32);
+        const int64_t partial_stride = nth * partial_size;
+        float *       chunk_partials = partials_base + ith * partial_size;
+
+        // per-thread scratch after all partials, sized in ggml_graph_plan
+        float * scratch = partials_base + neq2*nth*partial_size + ith*(n_group*(DK + DV) + DV + CACHE_LINE_SIZE_F32);
+
+        const int64_t ic_start = ith * chunk_size;
+        const int64_t ic_end   = std::min(ic_start + chunk_size, nek1);
+
+        if (ic_start < nek1) {
+            ggml_compute_forward_flash_attn_ext_gqa_chunk(params, dst, ic_start, ic_end, chunk_partials, partial_stride, scratch);
+        } else {
+            for (int64_t q_head = 0; q_head < neq2; q_head++) {
+                float * q_partials = chunk_partials + q_head * partial_stride;
+                q_partials[0] = -INFINITY;  // M
+                q_partials[1] = 0.0f;       // S
+            }
+        }
+
+        ggml_barrier(params->threadpool);
+        ggml_flash_attn_ext_reduce_partials(params, dst, nth, chunk_size);
+    } else if (use_split_kv_path) {
         const int64_t chunk_size = (nek1 + nth - 1) / nth;
 
         // Partials buffer layout: [q_head][kv_chunk][M, S, VKQ]

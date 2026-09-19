@@ -11311,6 +11311,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // Ternary-Bonsai-2-27B (qwen35) decode attention: head 256, 4 KV heads x 6, one query
+    for (int64_t kv : {4096, 16384}) {
+        for (ggml_type t : {GGML_TYPE_Q8_0, GGML_TYPE_F16}) {
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, 1, true, false, 0.0f, 0.0f, GGML_PREC_F32, t, t));
+        }
+    }
+
     // Ternary-Bonsai-2-27B (qwen35) matmul shapes: {m, k}
     for (auto mk : std::vector<std::array<int64_t, 2>>{{10240, 5120}, {6144, 5120}, {17408, 5120}, {5120, 17408}, {5120, 6144}, {248320, 5120}}) {
         for (ggml_type type_a : {GGML_TYPE_PTQ1_0, GGML_TYPE_PQ2_0}) {

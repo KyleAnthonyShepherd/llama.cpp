@@ -3027,7 +3027,12 @@ struct ggml_cplan ggml_graph_plan(
                         // Decode path: n_kv_chunks = n_tasks (one chunk per thread)
                         // Per-thread: VKQ accmulator (DV), partial M, partial S + intra-thread scratch for V, Q and VKQ
                         size_t n_chunks = n_tasks;
-                        size_t decode   = sizeof(float)*(neq2*n_chunks*(2+DV) + n_tasks*(DK + 2*DV));
+                        size_t decode   = sizeof(float)*(neq2*n_chunks*(2+DV) + n_tasks*(DK + 2*DV + CACHE_LINE_SIZE_F32));
+
+                        // grouped-query decode: per-thread scratch after the partials, G heads of Q and VKQ plus one V row
+                        const int64_t nek2 = node->src[1]->ne[2];
+                        const int64_t n_group = nek2 > 0 ? neq2/nek2 : 1;
+                        decode += sizeof(float)*n_tasks*(n_group*(DK + DV) + DV + CACHE_LINE_SIZE_F32);
 
                         cur += MAX(prefill, decode);
                     } break;
