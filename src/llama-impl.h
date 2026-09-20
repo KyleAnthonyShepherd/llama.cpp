@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ggml.h" // for ggml_log_level
+#include "ggml-backend.h" // for ggml_backend_dev_t
 
 #include <string>
 #include <type_traits>
@@ -94,6 +95,9 @@ struct buffer_view {
 };
 
 void replace_all(std::string & s, const std::string & search, const std::string & replace);
+
+// free memory of a device, see llama-impl.cpp
+size_t llama_dev_free_vram(ggml_backend_dev_t dev);
 
 // TODO: rename to llama_format ?
 LLAMA_ATTRIBUTE_FORMAT(1, 2)

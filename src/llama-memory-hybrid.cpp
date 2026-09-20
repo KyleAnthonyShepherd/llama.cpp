@@ -211,8 +211,8 @@ size_t llama_memory_hybrid::resize_peak_bytes(uint32_t n_new) const {
     return mem_attn->resize_peak_bytes(n_new);
 }
 
-bool llama_memory_hybrid::spill_layer() {
-    return mem_attn->spill_layer();
+bool llama_memory_hybrid::spill_layers() {
+    return mem_attn->spill_layers();
 }
 
 bool llama_memory_hybrid::unspill_layers() {

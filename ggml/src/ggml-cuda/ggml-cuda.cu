@@ -91,6 +91,12 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
 #define GGML_LOG_WARN_ONCE(str) \
@@ -113,6 +119,104 @@ static int ggml_cuda_get_physical_device(int device) {
     const ggml_cuda_device_info & info = ggml_cuda_info();
     GGML_ASSERT(device >= 0 && device < info.device_count);
     return info.devices[device].physical_device;
+}
+
+// cudaMemGetInfo returns what is left of this process' WDDM budget, which reads 0 once the process
+// is at its budget even while the card still has memory free - every VRAM check below would then
+// refuse. NVML reports what nvidia-smi reports: memory really resident on the card, over all
+// processes. 0 when NVML is not there (then the callers fall back to cudaMemGetInfo).
+static size_t ggml_cuda_nvml_free_vram(int device) {
+    struct nvml {
+        typedef int   (*init_t)     (void);
+        typedef int   (*handle_t)   (const char *, void **);
+        typedef int   (*mem_t)      (void *, unsigned long long *);
+
+        handle_t get_handle = nullptr;
+        mem_t    get_memory = nullptr;
+
+        std::mutex                          mutex;
+        std::map<int, void *>               handles;
+
+        nvml() {
+            static const bool disable = getenv("GGML_CUDA_NO_NVML") != nullptr;
+            if (disable) {
+                return;
+            }
+#if defined(_WIN32)
+            HMODULE lib = LoadLibraryA("nvml.dll");
+            if (!lib) {
+                lib = LoadLibraryA("C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvml.dll");
+            }
+            if (!lib) {
+                return;
+            }
+            auto sym = [lib](const char * name) { return (void *) GetProcAddress(lib, name); };
+#else
+            void * lib = dlopen("libnvidia-ml.so.1", RTLD_LAZY);
+            if (!lib) {
+                return;
+            }
+            auto sym = [lib](const char * name) { return dlsym(lib, name); };
+#endif
+            auto init = (init_t) sym("nvmlInit_v2");
+            if (!init || init() != 0) {
+                return;
+            }
+
+            get_handle = (handle_t) sym("nvmlDeviceGetHandleByPciBusId_v2");
+            get_memory = (mem_t)    sym("nvmlDeviceGetMemoryInfo");
+        }
+    };
+
+    static nvml nvml_lib;
+
+    if (!nvml_lib.get_handle || !nvml_lib.get_memory) {
+        return 0;
+    }
+
+    std::lock_guard<std::mutex> lock(nvml_lib.mutex);
+
+    auto it = nvml_lib.handles.find(device);
+    if (it == nvml_lib.handles.end()) {
+        char pci_bus_id[64] = {};
+        if (cudaDeviceGetPCIBusId(pci_bus_id, sizeof(pci_bus_id), ggml_cuda_get_physical_device(device)) != cudaSuccess) {
+            (void) cudaGetLastError();
+            return 0;
+        }
+
+        void * handle = nullptr;
+        if (nvml_lib.get_handle(pci_bus_id, &handle) != 0) {
+            handle = nullptr;
+        }
+
+        it = nvml_lib.handles.emplace(device, handle).first;
+    }
+
+    if (!it->second) {
+        return 0;
+    }
+
+    // nvmlMemory_t: total, free, used
+    unsigned long long mem[3] = {};
+    if (nvml_lib.get_memory(it->second, mem) != 0) {
+        return 0;
+    }
+
+    // virtual devices share the physical GPU's memory (see ggml_backend_cuda_get_device_memory)
+    return (size_t) mem[1] / ggml_cuda_info().devices[device].physical_share_count;
+}
+
+// free VRAM as the card reports it, falling back to the driver's budget figure
+size_t ggml_cuda_free_vram(int device) {
+    const size_t nvml_free = ggml_cuda_nvml_free_vram(device);
+    if (nvml_free > 0) {
+        return nvml_free;
+    }
+
+    size_t free_mem = 0, total_mem = 0;
+    ggml_backend_cuda_get_device_memory(device, &free_mem, &total_mem);
+
+    return free_mem;
 }
 
 // this is faster on Windows
@@ -893,10 +997,7 @@ static bool ggml_cuda_fits_in_vram(int device, size_t size) {
         return true;
     }
 
-    size_t free_mem, total_mem;
-    ggml_backend_cuda_get_device_memory(device, &free_mem, &total_mem);
-
-    return size <= free_mem;
+    return size <= ggml_cuda_free_vram(device);
 }
 
 static ggml_backend_buffer_t ggml_backend_cuda_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
@@ -5998,8 +6099,18 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
     GGML_UNUSED(reg);
 }
 
+// free VRAM of a device as the card reports it - see ggml_cuda_nvml_free_vram()
+static size_t ggml_backend_cuda_device_free_vram(ggml_backend_dev_t dev) {
+    ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *) dev->context;
+
+    return ggml_cuda_free_vram(ctx->device);
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
+    if (strcmp(name, "ggml_backend_dev_free_vram") == 0) {
+        return (void *)ggml_backend_cuda_device_free_vram;
+    }
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
         return (void *)ggml_backend_cuda_comm_init;
     }

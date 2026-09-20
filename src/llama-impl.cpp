@@ -169,3 +169,23 @@ std::string gguf_kv_to_str(const struct gguf_context * ctx_gguf, int i) {
             return gguf_data_to_str(type, gguf_get_val_data(ctx_gguf, i), 0);
     }
 }
+
+// what the device reports free. A backend can offer a figure of its own: on Windows the CUDA
+// driver reports the process' remaining memory budget, which reads 0 while the card still has
+// memory free, and every layer would look like it does not fit.
+size_t llama_dev_free_vram(ggml_backend_dev_t dev) {
+    typedef size_t (*free_vram_t)(ggml_backend_dev_t dev);
+
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+
+    auto free_vram = reg ? (free_vram_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_dev_free_vram") : nullptr;
+
+    if (free_vram) {
+        return free_vram(dev);
+    }
+
+    size_t free = 0, total = 0;
+    ggml_backend_dev_memory(dev, &free, &total);
+
+    return free;
+}

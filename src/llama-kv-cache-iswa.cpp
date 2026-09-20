@@ -158,8 +158,8 @@ size_t llama_kv_cache_iswa::resize_peak_bytes(uint32_t n_new) const {
     return kv_base->resize_peak_bytes(n_new);
 }
 
-bool llama_kv_cache_iswa::spill_layer() {
-    return kv_base->spill_layer();
+bool llama_kv_cache_iswa::spill_layers() {
+    return kv_base->spill_layers();
 }
 
 bool llama_kv_cache_iswa::unspill_layers() {

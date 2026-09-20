@@ -155,7 +155,7 @@ public:
 
     size_t resize_peak_bytes(uint32_t n_new) const override;
 
-    bool spill_layer()    override;
+    bool spill_layers()    override;
     bool unspill_layers() override;
 
     // state write/load
@@ -310,8 +310,8 @@ private:
     // the result (resize_peak_bytes()) or allocates it (resize())
     layer_storage build_layer_storage(size_t i, uint32_t n_cells) const;
 
-    // buffer type for each layer at n_cells: spill device layers to host, lowest first, until
-    // the move keeps kv_spill_margin of VRAM free; with allow_back, bring spilled layers back
+    // buffer type for each layer at n_cells: a device keeps all of its layers or none of them,
+    // see the comment on the definition
     std::vector<ggml_backend_buffer_type_t> plan_placement(uint32_t n_cells, bool allow_back) const;
 
     // move every layer to n_cells cells in the buffer type bufts[i]; rolls back on failure

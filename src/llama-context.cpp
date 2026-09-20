@@ -1218,7 +1218,7 @@ int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
 
     // the compute buffers stage host KV layers for the GPU, so the first spill makes them
     // grow; spill more layers until the margin also holds after the reserve
-    while (compute_need > 0 && compute_need + model.kv_spill_margin() > vram_free() && memory->spill_layer()) {
+    while (compute_need > 0 && compute_need + model.kv_spill_margin() > vram_free() && memory->spill_layers()) {
         compute_need = compute_growth_bytes();
     }
 
@@ -1244,6 +1244,15 @@ int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
 
         if (i < 4 && drop_expert_hotstore_slots(give)) {
             dropped_blind += give;
+            continue;
+        }
+
+        // the KV cache is the larger and the more movable of the two, so hand its VRAM over to
+        // the compute buffers before letting those fall back to host memory: a compute buffer
+        // there is crossed on every graph node, a KV cache there only by the attention
+        if (memory->spill_layers()) {
+            LLAMA_LOG_INFO("%s: moved the KV cache to host memory to fit the compute buffers at n_ctx = %u\n",
+                    __func__, n_ctx_new);
             continue;
         }
 
@@ -1337,10 +1346,7 @@ size_t llama_context::vram_free() const {
         ggml_backend_dev_t dev = ggml_backend_get_device(backend.get());
 
         if (dev && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
-            size_t free = 0, total = 0;
-            ggml_backend_dev_memory(dev, &free, &total);
-
-            res = std::min(res, free);
+            res = std::min(res, llama_dev_free_vram(dev));
         }
     }
 
@@ -1354,7 +1360,7 @@ bool llama_context::unspill_kv() {
 
     // the compute buffers follow the new placement
     while (!reserve_worst_case_graph()) {
-        if (!memory->spill_layer()) {
+        if (!memory->spill_layers()) {
             LLAMA_LOG_ERROR("%s: could not reserve compute buffers after moving KV layers back\n", __func__);
             break;
         }
