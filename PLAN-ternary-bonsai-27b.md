@@ -524,6 +524,30 @@ at a fraction of the rate (prefill 37 t/s against 206, decode 128 ms against 58)
 has taken the old process' VRAM back. Wait for `nvidia-smi` to drop to idle between runs, and
 repeat anything that looks like a cliff.
 
+## 13b. Vision: the encode borrows the cache's VRAM (2026-09-20)
+
+An image encode wants a few hundred MiB of VRAM while it runs (+186 MiB for 1000x1000 with
+`--mmproj-compute-lazy`, section 12). Holding that open permanently is what the spill margin did:
+with an mmproj loaded the cache moved to host memory one growth step earlier than without it, and
+stayed there for the session. Now `llama_kv_spill()` moves the cache to host memory just before
+`mtmd_batch_encode()` when the device has less than 384 MiB free, and `llama_kv_unspill(force)`
+moves it straight back after - force skips the 60 s hold-off and the room-to-spare rule, since
+this is the other half of a spill the server made itself.
+
+The margin is 96 MiB, which is what separates the two outcomes on this card. Keeping a 4864-cell
+cache on the GPU leaves 125 MiB free and runs; a 6656-cell one leaves 91 MiB and pages.
+
+cpu6/59 with the mmproj, `-c 4096 --ctx-max 32768`, image first then growing text turns:
+
+| turn | cache | placement | result |
+|---|---|---|---|
+| image (cold) | 4096 | spilled for the encode, back after | 8.7 s (27.5 s before) |
+| text 4.7k | 4864 | GPU | 17.0 t/s (13.5 with margin 128) |
+| image (same) | 4864 | spilled, back after | 2.2 s |
+| text 6k | 6656 | host | 12.6 t/s (8.0 on the GPU - the cliff) |
+
+Text without the mmproj at the same margin: 16.9 / 11.5 / 8.7 t/s at 4.7k / 8.6k / 16.5k.
+
 ## 14. Pinned host KV; zero-copy dropped (item B3)
 
 Host KV layers (`--kv-cpu-layers` and spilled) are now allocated in the GPU's pinned host buffer
