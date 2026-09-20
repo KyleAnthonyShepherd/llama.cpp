@@ -932,7 +932,17 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
     // TODO @ngxson : move this log line to debug when it become more stable
     SLT_TRC(slot, "encoding mtmd batch from idx = %zu, n_chunks = %d\n", idx, n_added);
 
+    // the encoder wants a few hundred MiB of VRAM for the length of the encode (and frees it again
+    // under --mmproj-compute-lazy). The KV cache is the tenant that can step aside and come back,
+    // so it does, instead of the encode spilling into host memory where it stays for the session
+    const bool kv_spilled = llama_kv_spill(slot.ctx_tgt, 384ull*1024*1024);
+
     res = mtmd_batch_encode(mbatch.get());
+
+    if (kv_spilled && llama_kv_unspill(slot.ctx_tgt, true)) {
+        SLT_DBG(slot, "%s", "moved the KV cache back to the GPU after the encode\n");
+    }
+
     if (res != 0) {
         SLT_ERR(slot, "failed to encode mtmd batch for chunk idx = %zu, res = %d\n", idx, res);
         return -1;
@@ -3249,7 +3259,7 @@ private:
                     n_hot_idle = n_hot;
                 }
 
-                if (llama_kv_unspill(ctx_tgt)) {
+                if (llama_kv_unspill(ctx_tgt, false)) {
                     SRV_INF("%s", "moved KV cache layers back to the GPU while idle\n");
                 }
 
@@ -4735,7 +4745,7 @@ private:
         // back a real share of what is allocated
         if (n_target > n_ctx_cur / 2) {
             // a shrink would also bring KV layers back from host memory, so try that alone
-            if (llama_kv_unspill(ctx_tgt)) {
+            if (llama_kv_unspill(ctx_tgt, false)) {
                 SLT_INF(slot, "%s", "moved KV cache layers back to the GPU ahead of prefill\n");
             }
             return;

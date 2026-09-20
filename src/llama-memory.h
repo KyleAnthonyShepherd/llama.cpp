@@ -133,7 +133,9 @@ struct llama_memory_i {
         return false;
     }
 
-    virtual bool unspill_layers() {
+    virtual bool unspill_layers(bool force) {
+        GGML_UNUSED(force);
+
         return false;
     }
 

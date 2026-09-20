@@ -162,8 +162,8 @@ bool llama_kv_cache_iswa::spill_layers() {
     return kv_base->spill_layers();
 }
 
-bool llama_kv_cache_iswa::unspill_layers() {
-    return kv_base->unspill_layers();
+bool llama_kv_cache_iswa::unspill_layers(bool force) {
+    return kv_base->unspill_layers(force);
 }
 
 std::map<ggml_backend_buffer_type_t, size_t> llama_kv_cache_iswa::memory_breakdown() const {

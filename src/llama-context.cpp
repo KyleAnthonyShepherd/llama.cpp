@@ -1353,8 +1353,24 @@ size_t llama_context::vram_free() const {
     return res;
 }
 
-bool llama_context::unspill_kv() {
-    if (!memory || !memory->unspill_layers()) {
+// hand the KV cache's VRAM to something that needs it for a while - an image encode - and take it
+// back afterwards with unspill_kv(true). Nothing moves while the device has need_bytes to spare.
+bool llama_context::spill_kv(size_t need_bytes) {
+    if (!memory || vram_free() >= need_bytes) {
+        return false;
+    }
+
+    if (!memory->spill_layers()) {
+        return false;
+    }
+
+    reserve_worst_case_graph();
+
+    return true;
+}
+
+bool llama_context::unspill_kv(bool force) {
+    if (!memory || !memory->unspill_layers(force)) {
         return false;
     }
 
@@ -5145,8 +5161,12 @@ int32_t llama_expert_hotstore_refit(struct llama_context * ctx) {
     return ctx->refit_expert_hotstore(true);
 }
 
-bool llama_kv_unspill(struct llama_context * ctx) {
-    return ctx->unspill_kv();
+bool llama_kv_spill(struct llama_context * ctx, size_t need_bytes) {
+    return ctx->spill_kv(need_bytes);
+}
+
+bool llama_kv_unspill(struct llama_context * ctx, bool force) {
+    return ctx->unspill_kv(force);
 }
 
 size_t llama_resize_peak_bytes(const struct llama_context * ctx, uint32_t n_ctx_seq_new) {

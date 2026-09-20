@@ -109,8 +109,15 @@ LLAMA_API int32_t llama_expert_hotstore_refit(struct llama_context * ctx);
 
 // Move KV layers that a growing cache spilled to host memory (see llama_model_params::kv_spill_margin)
 // back to the GPU while they fit, at the current size. A shrink does this already; call it when
-// idle to pick up VRAM freed elsewhere. Not within 60 s of a spill. Returns whether any layer moved.
-LLAMA_API bool llama_kv_unspill(struct llama_context * ctx);
+// idle to pick up VRAM freed elsewhere. Not within 60 s of a spill, and only with room to spare,
+// unless force is set - which is what the other half of llama_kv_spill() passes.
+// Returns whether any layer moved.
+LLAMA_API bool llama_kv_unspill(struct llama_context * ctx, bool force);
+
+// Move the KV cache to host memory when the device has less than need_bytes free, so that something
+// else can have the VRAM for a while (an image encode). Pair it with llama_kv_unspill(ctx, true).
+// Returns whether any layer moved.
+LLAMA_API bool llama_kv_spill(struct llama_context * ctx, size_t need_bytes);
 
 // Free device memory a resize of ctx to n_ctx_seq_new cells needs at its peak, on top of what
 // its memory already holds. 0 when nothing has to be found.

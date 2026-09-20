@@ -78,7 +78,7 @@ public:
     size_t resize_peak_bytes(uint32_t n_new) const override;
 
     bool spill_layers()    override;
-    bool unspill_layers() override;
+    bool unspill_layers(bool force) override;
 
     // state write/load
 

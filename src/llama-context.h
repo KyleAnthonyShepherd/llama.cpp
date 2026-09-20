@@ -92,8 +92,11 @@ struct llama_context {
     // smallest free memory of the GPUs this context uses, SIZE_MAX without a GPU
     size_t vram_free() const;
 
+    // move the KV cache to host memory when the device has less than need_bytes free; see llama_kv_spill()
+    bool spill_kv(size_t need_bytes);
+
     // move KV layers spilled to host memory back to the GPU while they fit; see llama_kv_unspill()
-    bool unspill_kv();
+    bool unspill_kv(bool force);
 
     // re-slot the expert hot store to the VRAM free right now, up to hot_s_max.
     // `reserve` re-reserves the compute graph when the store changed - a reserved graph

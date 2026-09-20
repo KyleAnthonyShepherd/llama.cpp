@@ -215,8 +215,8 @@ bool llama_memory_hybrid::spill_layers() {
     return mem_attn->spill_layers();
 }
 
-bool llama_memory_hybrid::unspill_layers() {
-    return mem_attn->unspill_layers();
+bool llama_memory_hybrid::unspill_layers(bool force) {
+    return mem_attn->unspill_layers(force);
 }
 
 llama_kv_cache * llama_memory_hybrid::get_mem_attn() const {

@@ -1404,7 +1404,7 @@ bool llama_kv_cache::resize(uint32_t n_new) {
 // frees (measured on a 6 GB card: 7 of 16 layers in host memory was 2x slower than either end).
 // A device that reports 0 free tells us nothing, so its layers stay where they are and the
 // allocator decides - relayout() puts in host memory what the device refuses.
-std::vector<ggml_backend_buffer_type_t> llama_kv_cache::plan_placement(uint32_t n_cells, bool allow_back) const {
+std::vector<ggml_backend_buffer_type_t> llama_kv_cache::plan_placement(uint32_t n_cells, bool allow_back, bool force_back) const {
     const size_t n = layers.size();
 
     std::vector<ggml_backend_buffer_type_t> cur(n);
@@ -1459,9 +1459,10 @@ std::vector<ggml_backend_buffer_type_t> llama_kv_cache::plan_placement(uint32_t 
 
         const bool spill = have < want.at(dev) + margin;
 
-        // a move back has to survive the next growth too, and never comes right after a spill
-        const bool back = allow_back && have >= want.at(dev) + 2*margin &&
-            ggml_time_us() - t_spill_us >= 60ll*1000*1000;
+        // a move back has to survive the next growth too, and never comes right after a spill -
+        // unless the caller asked for it, which is the other half of a spill it made itself
+        const bool back = allow_back && have >= want.at(dev) + (force_back ? margin : 2*margin) &&
+            (force_back || ggml_time_us() - t_spill_us >= 60ll*1000*1000);
 
         LLAMA_LOG_DEBUG("%s: %s: %lld MiB free + %lld MiB held, layers want %lld MiB, keeping %lld MiB -> %s\n",
                 __func__, ggml_backend_dev_name(dev), (long long) (free >> 20), (long long) (held.at(dev) >> 20),
@@ -1504,12 +1505,12 @@ bool llama_kv_cache::spill_layers() {
     return spill && relayout(get_size(), t);
 }
 
-bool llama_kv_cache::unspill_layers() {
+bool llama_kv_cache::unspill_layers(bool force) {
     if (other || n_stream != 1) {
         return false;
     }
 
-    const auto t = plan_placement(get_size(), true);
+    const auto t = plan_placement(get_size(), true, force);
 
     bool back = false;
 

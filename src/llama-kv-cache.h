@@ -156,7 +156,7 @@ public:
     size_t resize_peak_bytes(uint32_t n_new) const override;
 
     bool spill_layers()    override;
-    bool unspill_layers() override;
+    bool unspill_layers(bool force) override;
 
     // state write/load
 
@@ -312,7 +312,7 @@ private:
 
     // buffer type for each layer at n_cells: a device keeps all of its layers or none of them,
     // see the comment on the definition
-    std::vector<ggml_backend_buffer_type_t> plan_placement(uint32_t n_cells, bool allow_back) const;
+    std::vector<ggml_backend_buffer_type_t> plan_placement(uint32_t n_cells, bool allow_back, bool force_back = false) const;
 
     // move every layer to n_cells cells in the buffer type bufts[i]; rolls back on failure
     bool relayout(uint32_t n_cells, const std::vector<ggml_backend_buffer_type_t> & bufts);
