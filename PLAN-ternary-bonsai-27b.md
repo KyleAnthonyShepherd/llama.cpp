@@ -471,34 +471,58 @@ Open: at cpu5 even the +99 MiB transient spilled, so something else grows on an 
 
 ## 13. KV spill on growth (2026-09-19, `PLAN-kv-host-streaming.md` item A)
 
-With `--ctx-max`, `llama_kv_cache::resize()` now picks a buffer type per layer. Device layers that
-do not fit move to host memory, lowest layer first, until the device keeps `--kv-spill-margin MiB`
-(default 256) free after the move and half of that during it (a shared buffer goes back only after
-its last layer moved). A shrink, `llama_kv_unspill()` (server: when idle and before each prefill)
-bring spilled layers back, highest first, but not within 60 s of a spill and only while 2x the
-margin stays free. After the resize `set_n_ctx()` measures the compute buffers and spills more
-layers if they would eat the margin. A failed move rolls back, to host memory if the device refuses.
-One log line per resize: `kv resize 4096 -> 8704 cells, 11/16 layers in host memory, VRAM free 256 MiB`.
+With `--ctx-max`, `llama_kv_cache::resize()` places the cache before it moves it: a device keeps
+all of its layers or none of them, and it keeps them while the free VRAM after the move is at
+least `--kv-spill-margin MiB` (default 128). A shrink, or `llama_kv_unspill()` (the server calls
+it when idle and before each prefill), moves them back, not within 60 s of a spill and only with
+2x the margin free. resize() reads the cells both sizes share into host memory first, so the old
+buffers go back before the new ones are taken - the device holds one copy of the cache, not two -
+and a layer the device still refuses is placed in host memory. If the compute buffers cannot be
+reserved after the move, the cache goes to host memory before they fall back there themselves.
+One log line per resize: `kv resize 4096 -> 4864 cells, 1/16 layers in host memory, VRAM free 155 MiB`.
 
-The free figure is `cudaMemGetInfo`, which on WDDM is the budget, not total minus used: it said
-5130 MiB free at start, and cpu6/59 at `-c 4096` asks for ~5230, so it reads **0 MiB free right
-after load** (nvidia-smi: 5.8 GB used). cpu5/60 and cpu6/59 therefore spill all 16 layers on the
-first growth and can never move them back. cpu11/54 has ~270 MiB.
+**The free figure has to be NVML, not `cudaMemGetInfo`.** On WDDM the CUDA figure is what is left
+of the process' memory budget: it reads 0 as soon as the process is at its budget even while the
+card has memory free (5130 MiB free at start, cpu6/59 at `-c 4096` asks for ~5230, so it reads 0
+right after load while nvidia-smi shows 5.8 of 6.1 GB used). Every layer then looks like it does
+not fit, and the first growth moved the whole cache to host memory - `--ctx-max` cost ~20% of the
+decode rate at a context that used to stay on the GPU. `ggml_cuda_free_vram()` asks NVML (what
+nvidia-smi reports, over all processes) and falls back to the driver figure; the strict VRAM check
+and the placement both use it.
 
-Server session, `-c 4096 --ctx-max 32768`, prompts of 1.9k, 8.6k, 16.5k tokens, then a new chat:
+**All or nothing per device.** A mixed layout keeps the device layers *and* makes the scheduler
+stage the host ones in a VRAM buffer of its own, so on a nearly full card it costs more than it
+frees. At 8960 cells, 8.6k filled: 7 of 16 layers in host memory 123 ms/token, all 16 on the
+device 62, all 16 in host memory 61.
+
+Server, cpu6/59, `-c 4096 --ctx-max 32768`, one session, gen ms/token:
+
+| prompt | cache | placement | gen |
+|---|---|---|---|
+| 4.7k | 4864 | GPU (1 layer refused) | 57.8 |
+| 3.4k | 4096 (no growth) | GPU | 58.2 |
+| 8.6k | 8960 | host | 85.9 |
+| 16.5k | 16896 | host | 128.4 |
+
+VRAM stayed at 5.87 GB or below. A fresh load at `-c 8960` with the cache on the GPU decodes at
+70.9 at 8.6k filled, but *growing* into that state and keeping it there does not hold: the cache
+takes the last VRAM and the compute buffers land in system memory (310 ms/token), which is what
+the margin and the reserve guard are for.
+
+Measured before the placement was rewritten (per-layer spill, `cudaMemGetInfo`, margin 256), kept
+because it shows what a roomier card does - cpu11/54 has ~270 MiB free at load:
 
 | layout | 2k | 8.6k | 16.5k | static layout at 16.5k |
 |---|---|---|---|---|
 | cpu5/60 | 55.0 | 96.0 (16/16 host) | **215** (compute buffer in sysmem) | - |
-| cpu6/59 | 57.6 | 97.6 (16/16 host) | 131.2 (16/16 host) | 131.1 (`--kv-cpu-layers 16`) |
+| cpu6/59 | 57.6 | 97.6 (16/16) | 131.2 (16/16) | 131.1 (`--kv-cpu-layers 16`) |
 | cpu11/54 | 76.7 | 101.4 (11/16) | 142.8 (15/16) | - |
-| cpu11/54, 2k then 16.5k | 77.4 | - | 126.3 (11/16) | 121.1 (`--kv-cpu-layers 10`) |
 | cpu11/54, margin 64 | 76.3 | 90.3 (5/16) | 120.2 (10/16) | 121.1 (`--kv-cpu-layers 10`) |
 
-(gen ms/token.) VRAM stayed below 5.9 GB everywhere. cpu5/60 cannot hold the compute buffer growth
-(+86 MiB at 8.7k, +147 MiB at 16.9k): the strict reserve fails and the relaxed one lands in sysmem.
-Use cpu6/59. With margin 64, the new chat after 65 s moved 8 layers back (10/16 -> 2/16 host) and
-decoded at 75.5 ms (76.3 before).
+Measuring this needs care: a server started within a few seconds of the previous one exiting runs
+at a fraction of the rate (prefill 37 t/s against 206, decode 128 ms against 58) until the driver
+has taken the old process' VRAM back. Wait for `nvidia-smi` to drop to idle between runs, and
+repeat anything that looks like a cliff.
 
 ## 14. Pinned host KV; zero-copy dropped (item B3)
 
