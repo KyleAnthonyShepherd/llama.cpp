@@ -2090,19 +2090,8 @@ int32_t mtmd_batch_add_chunk(mtmd_batch * batch, const mtmd_input_chunk * chunk)
     return 3; // "cannot batch" error code
 }
 
-static int32_t mtmd_batch_encode_impl(mtmd_batch * batch) {
-    if (batch->entries.empty()) {
-        LOG_ERR("%s: batch is empty\n", __func__);
-        return 1;
-    }
-    for (const auto * chunk : batch->entries) {
-        if (chunk->is_placeholder()) {
-            LOG_ERR("%s: chunk is placeholder\n", __func__);
-            return 1;
-        }
-    }
-
-    // represent the whole batch as one single chunk
+// represent the whole batch as one single chunk
+static mtmd::input_chunk_ptr mtmd_batch_merge(const mtmd_batch * batch) {
     mtmd::input_chunk_ptr batch_chunk(mtmd_input_chunk_copy(batch->entries[0]));
     if (batch_chunk->tokens_image) {
         auto & b0_f32 = batch_chunk->tokens_image->batch_f32;
@@ -2129,6 +2118,25 @@ static int32_t mtmd_batch_encode_impl(mtmd_batch * batch) {
             }
         }
     } else {
+        return nullptr;
+    }
+    return batch_chunk;
+}
+
+static int32_t mtmd_batch_encode_impl(mtmd_batch * batch) {
+    if (batch->entries.empty()) {
+        LOG_ERR("%s: batch is empty\n", __func__);
+        return 1;
+    }
+    for (const auto * chunk : batch->entries) {
+        if (chunk->is_placeholder()) {
+            LOG_ERR("%s: chunk is placeholder\n", __func__);
+            return 1;
+        }
+    }
+
+    mtmd::input_chunk_ptr batch_chunk = mtmd_batch_merge(batch);
+    if (!batch_chunk) {
         LOG_ERR("%s: unsupported chunk type\n", __func__);
         return 1;
     }
@@ -2148,6 +2156,28 @@ int32_t mtmd_batch_encode(mtmd_batch * batch) {
     } catch (const std::exception & e) {
         LOG_ERR("%s: error: %s\n", __func__, e.what());
         return 1;
+    }
+}
+
+size_t mtmd_batch_encode_vram_need(mtmd_batch * batch) {
+    try {
+        if (batch->entries.empty()) {
+            return 0;
+        }
+        mtmd::input_chunk_ptr batch_chunk = mtmd_batch_merge(batch);
+        if (!batch_chunk) {
+            return 0;
+        }
+        if (batch_chunk->tokens_image && batch->ctx->ctx_v) {
+            return clip_encode_vram_need(batch->ctx->ctx_v, &batch_chunk->tokens_image->batch_f32);
+        }
+        if (batch_chunk->tokens_audio && batch->ctx->ctx_a) {
+            return clip_encode_vram_need(batch->ctx->ctx_a, &batch_chunk->tokens_audio->batch_f32);
+        }
+        return 0;
+    } catch (const std::exception & e) {
+        LOG_ERR("%s: error: %s\n", __func__, e.what());
+        return 0;
     }
 }
 

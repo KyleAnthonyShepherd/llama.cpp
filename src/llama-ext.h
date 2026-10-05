@@ -119,6 +119,9 @@ LLAMA_API bool llama_kv_unspill(struct llama_context * ctx, bool force);
 // Returns whether any layer moved.
 LLAMA_API bool llama_kv_spill(struct llama_context * ctx, size_t need_bytes);
 
+// Free VRAM as llama_kv_spill() counts it: the least any GPU of ctx has.
+LLAMA_API size_t llama_vram_free(const struct llama_context * ctx);
+
 // Free device memory a resize of ctx to n_ctx_seq_new cells needs at its peak, on top of what
 // its memory already holds. 0 when nothing has to be found.
 LLAMA_API size_t llama_resize_peak_bytes(const struct llama_context * ctx, uint32_t n_ctx_seq_new);

@@ -4465,6 +4465,48 @@ bool clip_image_batch_encode(clip_ctx * ctx, int n_threads, const clip_image_f32
     return clip_encode(ctx, &params);
 }
 
+size_t clip_encode_vram_need(struct clip_ctx * ctx, const clip_image_f32_batch * imgs) {
+    if (imgs->entries.empty() || ctx->gpu_dev == nullptr) {
+        return 0;
+    }
+
+    ctx->compute_acquire();
+    struct compute_release_guard {
+        clip_ctx * ctx;
+        ~compute_release_guard() { ctx->compute_release(); }
+    } release_guard { ctx };
+
+    // before the warmup the FA type is not decided yet, and the graph without FA is far larger
+    const clip_flash_attn_type fa_type = ctx->flash_attn_type;
+    if (fa_type == CLIP_FLASH_ATTN_TYPE_AUTO) {
+        ctx->flash_attn_type = CLIP_FLASH_ATTN_TYPE_ENABLED;
+    }
+    ggml_cgraph * gf = clip_get_graph_builder(ctx, *imgs)->build();
+    ctx->flash_attn_type = fa_type;
+
+    // measure on a scratch scheduler, so that the encode's own one keeps its buffers and its plan
+    ggml_backend_sched_ptr sched(
+        ggml_backend_sched_new(ctx->backend_ptrs.data(), ctx->backend_buft.data(), ctx->backend_ptrs.size(), 8192, false, true)
+    );
+    std::vector<size_t> sizes(ctx->backend_ptrs.size(), 0);
+    ggml_backend_sched_reserve_size(sched.get(), gf, sizes.data());
+
+    // the GPU backend is first in backend_ptrs. A bigger graph frees the old buffer before it allocates the new one
+    const size_t held = ggml_backend_sched_get_buffer_size(ctx->sched.get(), ctx->backend);
+    const size_t grow = sizes[0] > held ? sizes[0] - held : 0;
+
+    // the backend also takes scratch outside the graph buffers, sized by the op: matmuls convert
+    // their inputs, and CUDA FA keeps a few partial results of its output in F32
+    size_t scratch = 0;
+    for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
+        const ggml_tensor * node = ggml_graph_node(gf, i);
+        const size_t n = node->op == GGML_OP_FLASH_ATTN_EXT ? 4 * ggml_nelements(node) * sizeof(float) : ggml_nbytes(node);
+        scratch = std::max(scratch, n);
+    }
+
+    return grow + scratch;
+}
+
 // persisted state slots of the gen-audio decoder, per pipeline
 static std::vector<c2w_state_slot> list_gen_state_slots(const clip_hparams & hparams, const clip_model & model) {
     switch (model.proj_type) {

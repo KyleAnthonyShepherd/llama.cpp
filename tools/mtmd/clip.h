@@ -121,6 +121,10 @@ struct clip_encode_params {
 };
 bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params);
 
+// device memory an encode of imgs needs free when it starts, on top of what ctx already holds:
+// the growth of its compute buffers, and the backend scratch for the largest op. 0 on the CPU.
+size_t clip_encode_vram_need(struct clip_ctx * ctx, const struct clip_image_f32_batch * imgs);
+
 bool clip_is_llava(const struct clip_ctx * ctx);
 // note for contributor: this clip_is_(model) pattern is deprecated
 //                       do NOT add new functions like this

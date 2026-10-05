@@ -5169,6 +5169,10 @@ bool llama_kv_unspill(struct llama_context * ctx, bool force) {
     return ctx->unspill_kv(force);
 }
 
+size_t llama_vram_free(const struct llama_context * ctx) {
+    return ctx->vram_free();
+}
+
 size_t llama_resize_peak_bytes(const struct llama_context * ctx, uint32_t n_ctx_seq_new) {
     const auto * mem = ctx->get_memory();
 

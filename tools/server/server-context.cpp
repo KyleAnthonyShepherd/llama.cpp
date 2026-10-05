@@ -957,15 +957,29 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
     // TODO @ngxson : move this log line to debug when it become more stable
     SLT_TRC(slot, "encoding mtmd batch from idx = %zu, n_chunks = %d\n", idx, n_added);
 
-    // the encoder wants a few hundred MiB of VRAM for the length of the encode (and frees it again
-    // under --mmproj-compute-lazy). The KV cache is the tenant that can step aside and come back,
-    // so it does, instead of the encode spilling into host memory where it stays for the session
-    const bool kv_spilled = llama_kv_spill(slot.ctx_tgt, 384ull*1024*1024);
+    // the encoder wants VRAM for the length of the encode, and a big image wants a lot more than
+    // the warmup reserved (and frees it again under --mmproj-compute-lazy). The KV cache and the
+    // expert hot store are the tenants that can step aside and come back, so they do. If that is
+    // still not enough, fail the request - a CUDA OOM inside the encode aborts the server
+    const size_t need = mtmd_batch_encode_vram_need(mbatch.get());
 
-    res = mtmd_batch_encode(mbatch.get());
+    const bool kv_spilled = need > 0 && llama_kv_spill(slot.ctx_tgt, need);
+    const bool hot_shrunk = need > 0 && llama_vram_free(slot.ctx_tgt) < need && llama_expert_hotstore_free_bytes(slot.ctx_tgt, need) >= 0;
+
+    const size_t vram_free = need > 0 ? llama_vram_free(slot.ctx_tgt) : 0;
+    if (vram_free < need) {
+        SLT_ERR(slot, "the encode needs %zu MiB of VRAM, only %zu MiB are free; use --image-max-tokens or a smaller image\n",
+                need / (1024*1024), vram_free / (1024*1024));
+        res = 1;
+    } else {
+        res = mtmd_batch_encode(mbatch.get());
+    }
 
     if (kv_spilled && llama_kv_unspill(slot.ctx_tgt, true)) {
         SLT_DBG(slot, "%s", "moved the KV cache back to the GPU after the encode\n");
+    }
+    if (hot_shrunk) {
+        SLT_DBG(slot, "expert hot store holds %d slots after the encode\n", llama_expert_hotstore_refit(slot.ctx_tgt));
     }
 
     if (res != 0) {

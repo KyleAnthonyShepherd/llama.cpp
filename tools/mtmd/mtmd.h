@@ -355,6 +355,10 @@ MTMD_API int32_t mtmd_batch_add_chunk(mtmd_batch * batch, const mtmd_input_chunk
 MTMD_API int32_t mtmd_batch_encode(mtmd_batch * batch);
 MTMD_API float * mtmd_batch_get_output_embd(mtmd_batch * batch, const mtmd_input_chunk * chunk);
 
+// free device memory mtmd_batch_encode() will need when it starts, on top of what the encoder
+// already holds - so a caller can make room first. 0 when the encoder runs on the CPU.
+MTMD_API size_t mtmd_batch_encode_vram_need(mtmd_batch * batch);
+
 
 // Set callback for all future logging events.
 // If this is not called, or NULL is supplied, everything is output on stderr.
