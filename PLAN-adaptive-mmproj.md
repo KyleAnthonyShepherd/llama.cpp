@@ -224,3 +224,25 @@ nothing. Host weights need it to reserve 288, not 1109.
    third lever for the >130k case.
 5. Does the +120 ms hold on the headless Linux devbox, where there is no WDDM and no desktop
    using 620 MiB? PCIe link width there may differ.
+
+---
+
+## 7. Correction (2026-10-05): the compute buffer is not a ceiling
+
+Section 1 says the 248 MiB buffer is a ceiling. It is not. `reserve_compute_meta` sizes it for
+the warmup image (46 x 46 = 2116 tokens for Qwen-VL), but the encode allocates its own graph, and
+gallocr grows the buffer when the graph is bigger. Qwen-VL allows 4096 tokens (`image_max_pixels`
+= 4194304), so a big photo needs about twice the buffer. The CUDA backend also takes scratch from
+its pool outside that buffer, which nothing reserved: FA keeps `parallel_blocks` partial outputs
+in F32 (2 x 75 MiB at 4096 tokens), and the cuBLAS matmuls convert inputs (~180 MiB at 4096).
+
+Crash seen on the GTX 1660 Ti box: 4284x5712 photo -> 4096 tokens, KV spilled (370 MiB free),
+1502 MiB hot store still resident, `cuMemCreate` OOM in `launch_fattn`, server aborted.
+
+Fix: `mtmd_batch_encode_vram_need()` measures the real graph on a scratch scheduler (growth over
+the buffer the encoder holds) plus the largest op's scratch (4 x the FA output). The server frees
+that much: KV cache first, then hot store slots, and refits the store after. If it still does not
+fit, the request fails instead of the server. The UI now caps images at 1 MP by default.
+
+Not measured yet on a GPU: how close the estimate is. Check the `dropping N hot expert slots` line
+and `nvidia-smi` peak against it with a 4096-token image.
