@@ -197,8 +197,8 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 				type: SettingsFieldType.CHECKBOX
 			},
 			{
-				defaultValue: 1,
-				help: 'Images larger than this will be resized before sending to server, keeping the aspect ratio. 1 is about 1000 x 1000 pixels. Set to 0 to disable.',
+				defaultValue: 0,
+				help: 'Images larger than this will be resized before sending to server. Set to 0 to disable.',
 				key: SETTINGS_KEYS.MAX_IMAGE_RESOLUTION,
 				label: 'Maximum image resolution (megapixels)',
 				type: SettingsFieldType.INPUT

@@ -242,7 +242,7 @@ Crash seen on the GTX 1660 Ti box: 4284x5712 photo -> 4096 tokens, KV spilled (3
 Fix: `mtmd_batch_encode_vram_need()` measures the real graph on a scratch scheduler (growth over
 the buffer the encoder holds) plus the largest op's scratch (4 x the FA output). The server frees
 that much: KV cache first, then hot store slots, and refits the store after. If it still does not
-fit, the request fails instead of the server. The UI now caps images at 1 MP by default.
+fit, the request fails instead of the server.
 
 Not measured yet on a GPU: how close the estimate is. Check the `dropping N hot expert slots` line
 and `nvidia-smi` peak against it with a 4096-token image.
