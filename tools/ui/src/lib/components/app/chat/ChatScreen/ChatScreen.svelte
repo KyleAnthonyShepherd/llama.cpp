@@ -102,7 +102,11 @@
 		showDeleteDialog = false;
 	}
 
-	async function handleSendMessage(message: string, files?: ChatUploadedFile[]): Promise<boolean> {
+	async function handleSendMessage(
+		message: string,
+		files?: ChatUploadedFile[],
+		prefill?: { reasoning: string; response: string }
+	): Promise<boolean> {
 		const plainFiles = files ? $state.snapshot(files) : undefined;
 		const result = plainFiles
 			? await parseFilesToMessageExtras(plainFiles, activeModel.activeModelId ?? undefined)
@@ -125,7 +129,7 @@
 
 		handleSendLikeScroll();
 
-		await chatStore.sendMessage(message, result?.extras);
+		await chatStore.sendMessage(message, result?.extras, prefill);
 
 		return true;
 	}

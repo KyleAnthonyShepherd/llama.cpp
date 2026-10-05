@@ -79,9 +79,10 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 		{ content: string; extras?: DatabaseMessageExtra[] }
 	>();
 	private preEncodeAbortController: AbortController | null = null;
-
 	// server-side stream sessions: discovery, attach/replay, resume retry, remote sync
 	private streams = new ChatStreamManager(this);
+
+	private turnPrefill: { reasoning: string; response: string } | null = null;
 
 	/** Conv activity (local pipe / remote session), composed here. */
 	get activity() {
@@ -383,6 +384,14 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 
 		if (currentConfig.excludeReasoningFromContext) apiOptions.excludeReasoningFromContext = true;
 
+		// a chat bar left empty falls back to the configured prefill
+		const reasoningPrefill = this.turnPrefill?.reasoning || currentConfig.reasoningPrefill;
+		const responsePrefill = this.turnPrefill?.response || currentConfig.responsePrefill;
+
+		if (reasoningPrefill) apiOptions.reasoningPrefill = reasoningPrefill;
+
+		if (responsePrefill) apiOptions.responsePrefill = responsePrefill;
+
 		// an explicit reasoning choice overrides the server default, DEFAULT sends nothing
 		const effort = conversationsStore.preferences.getReasoningEffort();
 
@@ -605,7 +614,11 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 		this.pendingDraftMessage = message;
 		this.pendingDraftFiles = [...files];
 	}
-	async sendMessage(content: string, extras?: DatabaseMessageExtra[]): Promise<void> {
+	async sendMessage(
+		content: string,
+		extras?: DatabaseMessageExtra[],
+		prefill?: { reasoning: string; response: string }
+	): Promise<void> {
 		if (!content.trim() && (!extras || extras.length === 0)) return;
 
 		const activeConv = conversationsStore.activeConversation;
@@ -700,14 +713,21 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 			const assistantMessage = await this.createAssistantMessage(userMessage.id);
 
 			conversationsStore.addMessageToActive(assistantMessage);
-			await this.streamChatCompletion(
-				conversationsStore.activeMessages.slice(0, -1),
-				assistantMessage,
-				undefined,
-				undefined,
-				undefined,
-				settingsStore.config.titleGenerationUseLLM && isNewConversation ? content : undefined
-			);
+			// this turn's prefill only, read by getApiOptions while the request is built
+			this.turnPrefill = prefill ?? null;
+
+			try {
+				await this.streamChatCompletion(
+					conversationsStore.activeMessages.slice(0, -1),
+					assistantMessage,
+					undefined,
+					undefined,
+					undefined,
+					settingsStore.config.titleGenerationUseLLM && isNewConversation ? content : undefined
+				);
+			} finally {
+				this.turnPrefill = null;
+			}
 		} catch (error) {
 			if (isAbortError(error)) {
 				this.setChatLoading(currentConv.id, false);

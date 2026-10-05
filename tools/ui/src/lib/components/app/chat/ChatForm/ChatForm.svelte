@@ -66,8 +66,13 @@
 	interface Props {
 		// Data
 		attachments?: DatabaseMessageExtra[];
+		reasoningPrefill?: string;
+		responsePrefill?: string;
 		uploadedFiles?: ChatUploadedFile[];
 		value?: string;
+
+		// Prefill inputs, off in the message edit form
+		showPrefillBars?: boolean;
 
 		// UI State
 		class?: string;
@@ -102,8 +107,11 @@
 		onUploadedFilesChange,
 		onValueChange,
 		placeholder = 'Type a message...',
+		reasoningPrefill = $bindable(''),
+		responsePrefill = $bindable(''),
 		showAddButton = true,
 		showModelSelector = true,
+		showPrefillBars = false,
 		uploadedFiles = $bindable([]),
 		value = $bindable('')
 	}: Props = $props();
@@ -291,6 +299,21 @@
 		} else {
 			onUploadedFileRemove?.(fileId);
 		}
+	}
+
+	// Enter writes a newline here, so the prefill bars keep Ctrl/Cmd + Enter to send
+	function handlePrefillKeydown(event: KeyboardEvent) {
+		if (
+			event.key !== KeyboardKey.ENTER ||
+			!(event.ctrlKey || event.metaKey) ||
+			isIMEComposing(event)
+		) {
+			return;
+		}
+
+		event.preventDefault();
+
+		if (canSubmit && !disabled && !hasLoadingAttachments) onSubmit?.();
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
@@ -608,6 +631,36 @@
 				{placeholder}
 				{useRichInput}
 			/>
+
+			{#if showPrefillBars}
+				<div class="mt-1 mb-1 grid gap-1 px-5">
+					<div class="flex items-start gap-2">
+						<span class="mt-1.5 w-16 shrink-0 text-xs text-muted-foreground">Thinking</span>
+
+						<textarea
+							bind:value={reasoningPrefill}
+							class="field-sizing-content max-h-32 min-h-7 w-full resize-none rounded-md bg-transparent px-2 py-1 text-sm outline-none placeholder:text-muted-foreground/60 focus-visible:bg-muted/40"
+							{disabled}
+							onkeydown={handlePrefillKeydown}
+							placeholder="Prefill the thinking block..."
+							rows="1"
+						></textarea>
+					</div>
+
+					<div class="flex items-start gap-2">
+						<span class="mt-1.5 w-16 shrink-0 text-xs text-muted-foreground">Response</span>
+
+						<textarea
+							bind:value={responsePrefill}
+							class="field-sizing-content max-h-32 min-h-7 w-full resize-none rounded-md bg-transparent px-2 py-1 text-sm outline-none placeholder:text-muted-foreground/60 focus-visible:bg-muted/40"
+							{disabled}
+							onkeydown={handlePrefillKeydown}
+							placeholder="Prefill the response..."
+							rows="1"
+						></textarea>
+					</div>
+				</div>
+			{/if}
 
 			{#if mcpStore.resources.hasAttachments}
 				<ChatFormMcpResourcesList

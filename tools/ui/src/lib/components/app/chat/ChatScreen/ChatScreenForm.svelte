@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { ChatForm } from '$lib/components/app';
 	import { useDraftMessages } from '$lib/hooks/use-draft-messages.svelte';
-	import { deviceStore } from '$lib/stores';
+	import { deviceStore, settingsStore } from '$lib/stores';
 	import { onMount } from 'svelte';
 
 	interface Props {
@@ -13,7 +13,11 @@
 		isLoading?: boolean;
 		onFileRemove?: (fileId: string) => void;
 		onFileUpload?: (files: File[]) => void;
-		onSend?: (message: string, files?: ChatUploadedFile[]) => Promise<boolean>;
+		onSend?: (
+			message: string,
+			files?: ChatUploadedFile[],
+			prefill?: { reasoning: string; response: string }
+		) => Promise<boolean>;
 		onStop?: () => void;
 		onSystemPromptAdd?: (draft: { message: string; files: ChatUploadedFile[] }) => void;
 		uploadedFiles?: ChatUploadedFile[];
@@ -61,6 +65,9 @@
 		};
 	});
 	let hasLoadingAttachments = $derived(uploadedFiles.some((f) => f.isLoading));
+	let reasoningPrefill = $state('');
+	let responsePrefill = $state('');
+	let showPrefillBars = $derived(settingsStore.config.showPrefillBars !== false);
 	let message = $derived(initialMessage);
 	let previousIsLoading = $derived(isLoading);
 	let previousInitialMessage = $derived(initialMessage);
@@ -86,18 +93,23 @@
 
 		const messageToSend = message.trim();
 		const filesToSend = [...uploadedFiles];
+		const prefillToSend = { reasoning: reasoningPrefill, response: responsePrefill };
 
 		message = '';
 		uploadedFiles = [];
+		reasoningPrefill = '';
+		responsePrefill = '';
 		clearDraft();
 
 		chatFormRef?.resetTextareaHeight();
 
-		const success = await onSend?.(messageToSend, filesToSend);
+		const success = await onSend?.(messageToSend, filesToSend, prefillToSend);
 
 		if (!success) {
 			message = messageToSend;
 			uploadedFiles = filesToSend;
+			reasoningPrefill = prefillToSend.reasoning;
+			responsePrefill = prefillToSend.response;
 		}
 	}
 
@@ -149,6 +161,8 @@
 
 <div bind:this={formWrapperEl} class="chat-screen-form-wrapper">
 	<ChatForm
+		bind:reasoningPrefill
+		bind:responsePrefill
 		bind:this={chatFormRef}
 		bind:uploadedFiles
 		bind:value={message}
@@ -160,5 +174,6 @@
 		onSubmit={handleSubmit}
 		onSystemPromptClick={handleSystemPromptClick}
 		onUploadedFileRemove={handleUploadedFileRemove}
+		{showPrefillBars}
 	/>
 </div>

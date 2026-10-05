@@ -42,11 +42,13 @@ export const SETTINGS_KEYS = {
 	// Performance
 	PRE_ENCODE_CONVERSATION: 'preEncodeConversation',
 	PRESENCE_PENALTY: 'presence_penalty',
+	REASONING_PREFILL: 'reasoningPrefill',
 	RENDER_THINKING_AS_MARKDOWN: 'renderThinkingAsMarkdown',
 	RENDER_USER_CONTENT_AS_MARKDOWN: 'renderUserContentAsMarkdown',
 	// Penalties
 	REPEAT_LAST_N: 'repeat_last_n',
 	REPEAT_PENALTY: 'repeat_penalty',
+	RESPONSE_PREFILL: 'responsePrefill',
 	SAMPLERS: 'samplers',
 	SEND_ON_ENTER: 'sendOnEnter',
 	SHOW_AGENTIC_TURN_STATS: 'showAgenticTurnStats',
@@ -57,6 +59,7 @@ export const SETTINGS_KEYS = {
 	SHOW_MODEL_ORG_NAME_IN_TRIGGER: 'showModelOrgNameInTrigger',
 	SHOW_MODEL_QUANTIZATION: 'showModelQuantization',
 	SHOW_MODEL_TAGS: 'showModelTags',
+	SHOW_PREFILL_BARS: 'showPrefillBars',
 	SHOW_RAW_MODEL_NAMES: 'showRawModelNames',
 	SHOW_RAW_OUTPUT_SWITCH: 'showRawOutputSwitch',
 	SHOW_SYSTEM_MESSAGE: 'showSystemMessage',

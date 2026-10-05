@@ -91,6 +91,9 @@ export interface SettingsChatServiceOptions {
 	enableThinking?: boolean;
 	// Reasoning effort level (low/medium/high/max) for thinking models
 	reasoningEffort?: ReasoningEffort;
+	// Text the reply starts with, in the thinking block and in the response
+	reasoningPrefill?: string;
+	responsePrefill?: string;
 	tools?: OpenAIToolDefinition[];
 	// Generation parameters
 	temperature?: number;

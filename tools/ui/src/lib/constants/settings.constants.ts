@@ -97,6 +97,27 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 				type: SettingsFieldType.CHECKBOX
 			},
 			{
+				defaultValue: true,
+				help: 'Show a thinking prefill and a response prefill input under the message box, so each turn can set its own. They fall back to the prefills below when left empty.',
+				key: SETTINGS_KEYS.SHOW_PREFILL_BARS,
+				label: 'Show prefill inputs in chat',
+				type: SettingsFieldType.CHECKBOX
+			},
+			{
+				defaultValue: '',
+				help: 'Start every new reply with this text in the thinking block. The model continues thinking from it. Not used when thinking is off.',
+				key: SETTINGS_KEYS.REASONING_PREFILL,
+				label: 'Thinking prefill',
+				type: SettingsFieldType.TEXTAREA
+			},
+			{
+				defaultValue: '',
+				help: 'Start every new reply with this text in the response. When set, thinking ends before the response starts (after the thinking prefill, if any).',
+				key: SETTINGS_KEYS.RESPONSE_PREFILL,
+				label: 'Response prefill',
+				type: SettingsFieldType.TEXTAREA
+			},
+			{
 				defaultValue: 2500,
 				help: 'On pasting long text, it will be converted to a file. You can control the file length by setting the value of this parameter. Value 0 means disable.',
 				key: SETTINGS_KEYS.PASTE_LONG_TEXT_TO_FILE_LEN,

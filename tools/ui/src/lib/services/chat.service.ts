@@ -1054,9 +1054,11 @@ export class ChatService {
 			onToolCallChunk,
 			presence_penalty,
 			reasoningEffort,
+			reasoningPrefill,
 			// Penalty parameters
 			repeat_last_n,
 			repeat_penalty,
+			responsePrefill,
 			// Other parameters
 			samplers,
 			stream,
@@ -1157,6 +1159,45 @@ export class ChatService {
 			requestBody.add_generation_prompt = false;
 		}
 
+		// prefill only the first completion of a turn, not the ones after tool results
+		const prefillReasoning =
+			enableThinking === false || disableReasoningParsing ? '' : reasoningPrefill || '';
+		const prefillContent = responsePrefill || '';
+		const hasPrefill =
+			!continueFinalMessage &&
+			(prefillReasoning !== '' || prefillContent !== '') &&
+			normalizedMessages[normalizedMessages.length - 1]?.role === MessageRole.USER;
+		// both prefills in one request would close the thinking block right after the
+		// thinking prefill, so the model never thinks. it takes two requests: think
+		// first, then answer from the response prefill
+		const twoPhasePrefill =
+			hasPrefill && !!stream && prefillReasoning !== '' && prefillContent !== '';
+
+		// grows with what the model thinks in the first phase
+		let reasoningSoFar = prefillReasoning;
+
+		if (hasPrefill) {
+			requestBody.messages.push({
+				content: twoPhasePrefill ? '' : prefillContent,
+				reasoning_content: prefillReasoning || undefined,
+				role: MessageRole.ASSISTANT
+			});
+			requestBody.continue_final_message = true;
+			requestBody.add_generation_prompt = false;
+		}
+
+		// the server streams only new tokens, so the prefill is shown and stored here
+		const completeWithPrefill: typeof onComplete =
+			hasPrefill && onComplete
+				? (content: string, reasoning?: string, timings?: ChatMessageTimings, toolCalls?: string) =>
+						onComplete(
+							prefillContent + content,
+							reasoningSoFar + (reasoning ?? '') || undefined,
+							timings,
+							toolCalls
+						)
+				: onComplete;
+
 		if (temperature !== undefined) requestBody.temperature = temperature;
 
 		if (max_tokens !== undefined) {
@@ -1220,6 +1261,43 @@ export class ChatService {
 		try {
 			const headers: Record<string, string> = { ...getJsonHeaders() };
 
+			if (twoPhasePrefill) {
+				if (prefillReasoning) onReasoningChunk?.(prefillReasoning);
+
+				const thinking = await ChatService.runThinkingPhase(requestBody, headers, {
+					model: options.model,
+					onCompletionId,
+					onModel,
+					onReasoningChunk,
+					onTimings,
+					onToolCallChunk,
+					signal
+				});
+
+				if (signal?.aborted) return;
+
+				reasoningSoFar = prefillReasoning + thinking.reasoning;
+
+				// the model stopped without starting an answer (tool call, or it ran out of
+				// tokens while thinking), so there is nothing for the response prefill to lead
+				if (thinking.finished) {
+					onComplete?.(
+						thinking.finished.content,
+						reasoningSoFar || undefined,
+						thinking.finished.timings,
+						thinking.finished.toolCalls
+					);
+
+					return;
+				}
+
+				requestBody.messages[requestBody.messages.length - 1] = {
+					content: prefillContent,
+					reasoning_content: reasoningSoFar,
+					role: MessageRole.ASSISTANT
+				};
+			}
+
 			// tag streaming requests with the conversation id, this single header is the opt in for the
 			// server side replay buffer and powers discoverActiveStream on tab reopen. with an explicit
 			// model the ::model suffix keeps the per model session distinct
@@ -1254,10 +1332,17 @@ export class ChatService {
 			}
 
 			if (stream) {
+				if (hasPrefill) {
+					// the thinking phase already showed the reasoning prefill
+					if (prefillReasoning && !twoPhasePrefill) onReasoningChunk?.(prefillReasoning);
+
+					if (prefillContent) onChunk?.(prefillContent);
+				}
+
 				await ChatService.handleStreamResponse(
 					response,
 					onChunk,
-					onComplete,
+					completeWithPrefill,
 					onError,
 					onReasoningChunk,
 					onToolCallChunk,
@@ -1274,7 +1359,7 @@ export class ChatService {
 			} else {
 				return ChatService.handleNonStreamResponse(
 					response,
-					onComplete,
+					completeWithPrefill,
 					onError,
 					onToolCallChunk,
 					onModel
@@ -1619,6 +1704,93 @@ export class ChatService {
 
 			return fallback;
 		}
+	}
+
+	/**
+	 * Runs the thinking half of a two-prefill turn: the model continues the
+	 * thinking prefill, and the stream is cut the moment the first answer token
+	 * arrives, because the answer of this request is thrown away - the caller
+	 * regenerates it from the response prefill. The thinking is returned so the
+	 * second request can carry it, which also keeps the prompt prefix cached.
+	 *
+	 * `finished` is set only when the stream ended on its own, which means no
+	 * answer ever started: a tool call, or the token budget ran out mid-thought.
+	 * The caller then has nothing to continue and reports that result as the turn.
+	 */
+	private static async runThinkingPhase(
+		body: ApiChatCompletionRequest,
+		headers: Record<string, string>,
+		callbacks: {
+			model?: string;
+			onCompletionId?: (id: string) => void;
+			onModel?: (model: string) => void;
+			onReasoningChunk?: (chunk: string) => void;
+			onTimings?: (
+				timings?: ChatMessageTimings,
+				promptProgress?: ChatMessagePromptProgress
+			) => void;
+			onToolCallChunk?: (serialized: string) => void;
+			signal?: AbortSignal;
+		}
+	): Promise<{
+		finished?: { content: string; timings?: ChatMessageTimings; toolCalls?: string };
+		reasoning: string;
+	}> {
+		// the request is on this signal too: cutting the stream must close the connection,
+		// or the server keeps the slot busy with the answer that is thrown away
+		const stopThinking = new AbortController();
+		const relayAbort = () => stopThinking.abort();
+
+		if (callbacks.signal?.aborted) stopThinking.abort();
+
+		callbacks.signal?.addEventListener('abort', relayAbort);
+
+		let reasoning = '';
+		let finished: { content: string; timings?: ChatMessageTimings; toolCalls?: string } | undefined;
+
+		try {
+			const response = await fetch(API_CHAT.COMPLETIONS, {
+				body: JSON.stringify(body),
+				headers,
+				method: 'POST',
+				signal: stopThinking.signal
+			});
+
+			if (!response.ok) {
+				throw await ChatService.parseErrorResponse(response);
+			}
+
+			await ChatService.handleStreamResponse(
+				response,
+				() => stopThinking.abort(),
+				(
+					content: string,
+					_reasoning?: string,
+					timings?: ChatMessageTimings,
+					toolCalls?: string
+				) => {
+					finished = { content, timings, toolCalls };
+				},
+				undefined,
+				(chunk: string) => {
+					reasoning += chunk;
+					callbacks.onReasoningChunk?.(chunk);
+				},
+				callbacks.onToolCallChunk,
+				callbacks.onModel,
+				callbacks.onCompletionId,
+				callbacks.onTimings,
+				// no conversation id: the resume buffer belongs to the answer, not to this
+				undefined,
+				stopThinking.signal,
+				undefined,
+				callbacks.model
+			);
+		} finally {
+			callbacks.signal?.removeEventListener('abort', relayAbort);
+		}
+
+		return { finished, reasoning };
 	}
 
 	/**
