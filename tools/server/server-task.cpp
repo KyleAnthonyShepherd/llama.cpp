@@ -60,6 +60,9 @@ json task_params::to_json(bool only_metrics) const {
             {"dry_base",                  sampling.dry_base},
             {"dry_allowed_length",        sampling.dry_allowed_length},
             {"dry_penalty_last_n",        sampling.dry_penalty_last_n},
+            {"rep_skip_prompt",           sampling.rep_skip_prompt},
+            {"rep_skip_tool_calls",       sampling.rep_skip_tool_calls},
+            {"repetition_stop",           repetition_stop},
             {"mirostat",                  sampling.mirostat},
             {"mirostat_tau",              sampling.mirostat_tau},
             {"mirostat_eta",              sampling.mirostat_eta},
@@ -114,6 +117,9 @@ json task_params::to_json(bool only_metrics) const {
         {"dry_allowed_length",        sampling.dry_allowed_length},
         {"dry_penalty_last_n",        sampling.dry_penalty_last_n},
         {"dry_sequence_breakers",     sampling.dry_sequence_breakers},
+        {"rep_skip_prompt",           sampling.rep_skip_prompt},
+        {"rep_skip_tool_calls",       sampling.rep_skip_tool_calls},
+        {"repetition_stop",           repetition_stop},
         {"mirostat",                  sampling.mirostat},
         {"mirostat_tau",              sampling.mirostat_tau},
         {"mirostat_eta",              sampling.mirostat_eta},
@@ -256,6 +262,7 @@ static inline std::string stop_type_to_str(stop_type type) {
         case STOP_TYPE_WORD:  return "word";
         case STOP_TYPE_LIMIT: return "limit";
         case STOP_TYPE_CTX_LIMIT: return "ctx_limit";
+        case STOP_TYPE_REPETITION: return "repetition";
         default:              return "none";
     }
 }

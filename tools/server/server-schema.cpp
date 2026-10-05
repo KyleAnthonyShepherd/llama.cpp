@@ -158,6 +158,16 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
         ->set_hard_limits(0, INT32_MAX)
         ->set_desc("How many tokens to scan for repetitions (0 = disabled)"));
 
+    add((new field_bool("rep_skip_prompt", params.sampling.rep_skip_prompt))
+        ->set_desc("Repetition penalties and DRY see only the generated tokens, not the prompt"));
+
+    add((new field_bool("rep_skip_tool_calls", params.sampling.rep_skip_tool_calls))
+        ->set_desc("Pause repetition penalties and DRY once a tool call starts, so that paths and code copy exactly"));
+
+    add((new field_num("repetition_stop", params.repetition_stop))
+        ->set_hard_limits(0, INT32_MAX)
+        ->set_desc("Stop once the last N generated tokens are one sequence repeated 3 or more times (0 = disabled). See --repetition-stop"));
+
     add((new field_num("mirostat", params.sampling.mirostat))
         ->set_limits(0, 2)
         ->set_desc("Enable Mirostat sampling, controlling perplexity during text generation (0 = disabled, 1 = Mirostat, 2 = Mirostat 2.0)"));
@@ -534,6 +544,7 @@ task_params eval_llama_cmpl_schema(
     params.n_predict     = params_base.n_predict;
     params.n_cache_reuse = params_base.n_cache_reuse;
     params.n_ctx_limit   = params_base.n_ctx_limit;
+    params.repetition_stop = params_base.repetition_stop;
     params.cache_prompt  = params_base.cache_prompt;
     params.antiprompt    = params_base.antiprompt;
     params.sse_ping_interval = params_base.sse_ping_interval;

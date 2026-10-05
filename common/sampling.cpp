@@ -464,6 +464,36 @@ static bool grammar_should_apply(struct common_sampler * gsmpl) {
     return true;
 }
 
+static bool is_rep_sampler(const struct llama_sampler * smpl) {
+    const char * name = llama_sampler_name(smpl);
+    // a sampler in a backend chain has "+" or "-" before its name
+    if (*name == '+' || *name == '-') {
+        name++;
+    }
+    return strcmp(name, "penalties") == 0 || strcmp(name, "dry") == 0;
+}
+
+// penalties and DRY push the model away from exact copies, which breaks paths and code copied into a tool call
+static bool rep_paused(struct common_sampler * gsmpl) {
+    return gsmpl->params.rep_skip_tool_calls && gsmpl->params.grammar_lazy &&
+        grammar_should_apply(gsmpl) && llama_sampler_grammar_is_triggered(gsmpl->grmr);
+}
+
+static void apply_chain(struct common_sampler * gsmpl, llama_token_data_array * cur_p) {
+    if (!rep_paused(gsmpl)) {
+        llama_sampler_apply(gsmpl->chain, cur_p);
+        return;
+    }
+
+    const int n = llama_sampler_chain_n(gsmpl->chain);
+    for (int i = 0; i < n; ++i) {
+        llama_sampler * smpl = llama_sampler_chain_get(gsmpl->chain, i);
+        if (!is_rep_sampler(smpl)) {
+            llama_sampler_apply(smpl, cur_p);
+        }
+    }
+}
+
 void common_sampler_accept(struct common_sampler * gsmpl, llama_token token, bool is_generated) {
     if (!gsmpl) {
         return;
@@ -504,6 +534,20 @@ void common_sampler_reset(struct common_sampler * gsmpl) {
     }
 
     gsmpl->reset();
+}
+
+void common_sampler_reset_rep(struct common_sampler * gsmpl) {
+    if (!gsmpl) {
+        return;
+    }
+
+    const int n = llama_sampler_chain_n(gsmpl->chain);
+    for (int i = 0; i < n; ++i) {
+        llama_sampler * smpl = llama_sampler_chain_get(gsmpl->chain, i);
+        if (is_rep_sampler(smpl)) {
+            llama_sampler_reset(smpl);
+        }
+    }
 }
 
 struct common_sampler * common_sampler_clone(common_sampler * gsmpl) {
@@ -601,7 +645,6 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
 
     auto & grmr  = gsmpl->grmr;
     auto & rbudget = gsmpl->rbudget;
-    auto & chain = gsmpl->chain;
     auto & cur_p = gsmpl->cur_p; // initialized by set_logits
 
     gsmpl->set_logits(ctx, idx);
@@ -635,7 +678,7 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
         llama_sampler_apply(grmr, &cur_p);
     }
 
-    llama_sampler_apply(chain, &cur_p);
+    apply_chain(gsmpl, &cur_p);
 
     id = cur_p.data[cur_p.selected].id;
 
@@ -666,7 +709,7 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
         llama_sampler_apply(grmr,  &cur_p);
     }
 
-    llama_sampler_apply(chain, &cur_p);
+    apply_chain(gsmpl, &cur_p);
 
     GGML_ASSERT(cur_p.selected != -1 && "no selected token during sampling - check your sampling configuration");
 

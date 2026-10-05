@@ -54,6 +54,27 @@ static common_speculative_output_limits server_output_limits(const common_params
     return result;
 }
 
+// true if the last n tokens are one sequence of period p <= n/3 repeated, so at least 3 times
+static bool is_repeating(const llama_tokens & tokens, int32_t n) {
+    const int32_t n_tokens = (int32_t) tokens.size();
+    if (n <= 0 || n_tokens < n) {
+        return false;
+    }
+
+    const llama_token * end = tokens.data() + n_tokens;
+    for (int32_t p = 1; p <= n / 3; ++p) {
+        int32_t i = 1;
+        while (i <= n - p && end[-i] == end[-i - p]) {
+            ++i;
+        }
+        if (i > n - p) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // synthetic draft verification for benchmarking - accept draft tokens at random instead of by match with the target
 // on replay the draft was already accepted before a context checkpoint restore, so repeat the same decisions
 static std::vector<llama_token> server_sample_and_accept_synth(
@@ -531,6 +552,10 @@ struct server_slot {
                 common_sampler_accept(smpl.get(), id, false);
                 n_text++;
             }
+        }
+
+        if (task->params.sampling.rep_skip_prompt) {
+            common_sampler_reset_rep(smpl.get());
         }
 
         SLT_TRC(*this, "init sampler, took %0.2f ms, tokens: text = %d, total = %d\n",
@@ -2005,7 +2030,7 @@ private:
         slot.sampled = result.tok;
 
         slot.generated_text += token_str;
-        if (slot.task->params.return_tokens) {
+        if (slot.task->params.return_tokens || slot.task->params.repetition_stop > 0) {
             slot.generated_tokens.push_back(result.tok);
         }
         slot.has_next_token = true;
@@ -2137,6 +2162,13 @@ private:
 
                 SLT_DBG(slot, "stopped by time limit, n_gen = %d, t_max_predict_ms = %d ms\n", (int) slot.stats.n_gen, (int) slot.task->params.t_max_predict_ms);
             }
+        }
+
+        if (slot.has_next_token && is_repeating(slot.generated_tokens, slot.task->params.repetition_stop)) {
+            slot.stop           = STOP_TYPE_REPETITION;
+            slot.has_next_token = false;
+
+            SLT_WRN(slot, "stopped by repetition, n_gen = %d, repetition_stop = %d\n", (int) slot.stats.n_gen, slot.task->params.repetition_stop);
         }
 
         if (llama_vocab_is_eog(vocab, result.tok)) {
@@ -2295,7 +2327,7 @@ private:
             res->tokens      = llama_tokens{};
         } else {
             res->content     = std::move(slot.generated_text);
-            res->tokens      = std::move(slot.generated_tokens);
+            res->tokens      = slot.task->params.return_tokens ? std::move(slot.generated_tokens) : llama_tokens{};
         }
         res->stats           = slot.stats;
         res->prompt          = slot.task->tokens.detokenize(ctx_tgt, true);

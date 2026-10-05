@@ -47,6 +47,7 @@ enum stop_type {
     STOP_TYPE_WORD,
     STOP_TYPE_LIMIT,
     STOP_TYPE_CTX_LIMIT,
+    STOP_TYPE_REPETITION,
 };
 
 struct task_params {
@@ -65,6 +66,7 @@ struct task_params {
     int32_t n_cmpl    =  1; // number of completions to generate from this prompt
 
     int32_t n_ctx_limit = 0; // stop once the slot holds this many tokens, 0 = no limit
+    int32_t repetition_stop = 0; // stop once the last N generated tokens repeat one sequence 3+ times, 0 = disabled
 
     int32_t n_cache_reuse = 0; // min chunk size to attempt reusing from the cache via KV shifting (0 = disabled)
 

@@ -252,6 +252,8 @@ struct common_params_sampling {
     float   mirostat_tau       = 5.00f;  // target entropy
     float   mirostat_eta       = 0.10f;  // learning rate
     bool    ignore_eos         = false;
+    bool    rep_skip_prompt    = false;  // penalties and DRY see only the generated tokens, not the prompt
+    bool    rep_skip_tool_calls = false; // penalties and DRY pause once a lazy grammar (tool call) triggers
     bool    no_perf            = false;  // disable performance metrics
     bool    timing_per_token   = false;
 
@@ -790,6 +792,8 @@ struct common_params {
     int32_t n_ctx_grow_headroom = 2048; // spare cells the server keeps ahead of generation; 0 = step by ctx_grow_factor
 
     int32_t n_ctx_limit     =     0; // stop generation once the context holds this many tokens; 0 = disabled
+
+    int32_t repetition_stop =     0; // stop once the last N generated tokens are one sequence repeated 3+ times; 0 = disabled
 };
 
 // call once at the start of a program if it uses libcommon

@@ -1782,6 +1782,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CTX_LIMIT").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--repetition-stop"}, "N",
+        string_format(
+            "stop generation once the last N generated tokens are one sequence repeated 3 or more times "
+            "(default: %d, 0 = disabled); requests may override it with repetition_stop",
+            params.repetition_stop),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::runtime_error(string_format("error: invalid repetition-stop = %d\n", value));
+            }
+            params.repetition_stop = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         { "--kv-unified-per-slot" }, "N",
         "context limit per parallel slot (default: unset, behavior unchanged).\n"
         "when set without -c/--ctx-size, the shared KV pool is sized to n_parallel*N",
@@ -2316,6 +2329,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             } else {
                 params.sampling.dry_sequence_breakers.emplace_back(value);
             }
+        }
+    ).set_sampling());
+    add_opt(common_arg(
+        {"--rep-skip-prompt"},
+        "repetition penalties and DRY see only the generated tokens, not the prompt (default: disabled)",
+        [](common_params & params) {
+            params.sampling.rep_skip_prompt = true;
+        }
+    ).set_sampling().set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--rep-skip-tool-calls"},
+        "pause repetition penalties and DRY once a tool call starts, so that paths and code copy exactly (default: disabled)",
+        [](common_params & params) {
+            params.sampling.rep_skip_tool_calls = true;
         }
     ).set_sampling());
     add_opt(common_arg(
