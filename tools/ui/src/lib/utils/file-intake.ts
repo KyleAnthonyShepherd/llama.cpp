@@ -152,6 +152,18 @@ export function getSavedFilePath(note: string | undefined): string | null {
 	return note.slice(FILE_INTAKE_NOTE_PREFIX.length).split('\n')[0].trim() || null;
 }
 
+/** Path named by the last "saved: <path>" line of a tool result: the tool changed that file. */
+export function getResultSavedPath(result: string | undefined): string | null {
+	if (!result?.includes(FILE_INTAKE_SAVED_PREFIX)) return null;
+
+	const line = result
+		.split('\n')
+		.reverse()
+		.find((l) => l.startsWith(FILE_INTAKE_SAVED_PREFIX));
+
+	return line?.slice(FILE_INTAKE_SAVED_PREFIX.length).trim() || null;
+}
+
 /** Download the file as it is on the server now, with any edits the model made. */
 export async function downloadSavedFile(path: string): Promise<void> {
 	try {

@@ -4,8 +4,9 @@
 	// shared chrome shell.
 
 	import ToolCallBlock from './ToolCallBlock.svelte';
-	import { Loader2 } from '@lucide/svelte';
+	import { Download, Loader2 } from '@lucide/svelte';
 	import { MarkdownContent, SyntaxHighlightedCode } from '$lib/components/app';
+	import { Button } from '$lib/components/ui/button';
 	import { MAX_HEIGHT_CODE_BLOCK } from '$lib/constants';
 	import { AttachmentType, FileTypeText, MimeTypeAudio, ToolResultKind } from '$lib/enums';
 	import type { AgenticSection, DatabaseMessageExtra, ToolResultLine } from '$lib/types';
@@ -16,6 +17,7 @@
 		parseToolResultWithMedia
 	} from '$lib/utils';
 	import { createBase64DataUrl } from '$lib/utils/data-url';
+	import { downloadSavedFile, getResultSavedPath } from '$lib/utils/file-intake';
 
 	interface Props {
 		section: AgenticSection;
@@ -32,6 +34,8 @@
 	const parsedLines: ToolResultLine[] = $derived(
 		section.toolResult ? parseToolResultWithMedia(section.toolResult, attachments) : []
 	);
+	// a tool that changed a file on the server names it, so it can be fetched right here
+	const savedPath = $derived(getResultSavedPath(section.toolResult));
 </script>
 
 <ToolCallBlock {isStreaming} meta={null} {onToggle} {open} {section} {title}>
@@ -140,3 +144,15 @@
 		{/if}
 	{/snippet}
 </ToolCallBlock>
+
+{#if savedPath}
+	<Button
+		class="mb-2 h-7 w-fit gap-1.5 text-xs"
+		onclick={() => downloadSavedFile(savedPath)}
+		size="sm"
+		variant="outline"
+	>
+		<Download class="h-3.5 w-3.5" />
+		Download {savedPath.split('/').pop()}
+	</Button>
+{/if}
