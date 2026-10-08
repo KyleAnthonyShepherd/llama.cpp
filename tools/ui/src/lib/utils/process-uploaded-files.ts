@@ -1,9 +1,10 @@
+import { isFileIntakeCandidate, saveFileThroughIntake } from './file-intake';
 import { heicFileToJpegDataURL, isHeicMimeType } from './heic-to-jpeg';
 import { convertPDFToText } from './pdf-processing';
 import { isSvgMimeType, svgBase64UrlToPngDataURL } from './svg-to-png';
 import { isWebpMimeType, webpBase64UrlToPngDataURL } from './webp-to-png';
 import { SETTINGS_KEYS } from '$lib/constants';
-import { FileTypeCategory } from '$lib/enums';
+import { FileTypeCategory, MimeTypeText } from '$lib/enums';
 import { modelsStore } from '$lib/stores/models/index.svelte';
 import { settingsStore } from '$lib/stores/settings/index.svelte';
 import { getFileTypeCategory } from '$lib/utils';
@@ -68,6 +69,26 @@ export async function processFilesToChatUploaded(
 		};
 
 		try {
+			if (isFileIntakeCandidate(file.name)) {
+				try {
+					const textContent = await saveFileThroughIntake(file);
+
+					// from here on the attachment is a text note that carries the saved path
+					results.push({
+						...base,
+						file: new File([textContent], file.name, { type: MimeTypeText.PLAIN }),
+						textContent,
+						type: MimeTypeText.PLAIN
+					});
+				} catch (err) {
+					const reason = err instanceof Error ? err.message : String(err);
+
+					toast.error(`Could not attach "${file.name}": ${reason}`, { duration: 8000 });
+				}
+
+				continue;
+			}
+
 			if (getFileTypeCategory(file.type) === FileTypeCategory.IMAGE) {
 				let preview = await readFileAsDataURL(file);
 

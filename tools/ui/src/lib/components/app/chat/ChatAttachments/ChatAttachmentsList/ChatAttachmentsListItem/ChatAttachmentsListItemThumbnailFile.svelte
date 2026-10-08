@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Music, Video, X } from '@lucide/svelte';
+	import { Download, Music, Video, X } from '@lucide/svelte';
 	import { ActionIcon } from '$lib/components/app';
 	import { ICON_CLASS_DEFAULT } from '$lib/constants';
 	import { AttachmentType } from '$lib/enums';
@@ -12,6 +12,7 @@
 		isTextFile,
 		isVideoFile
 	} from '$lib/utils';
+	import { downloadSavedFile, getSavedFilePath } from '$lib/utils/file-intake';
 
 	interface Props {
 		attachment?: DatabaseMessageExtra;
@@ -47,6 +48,9 @@
 
 	let isText = $derived(isTextFile(attachment, uploadedFile));
 	let isTextWithContent = $derived(isText && !!textContent);
+
+	// set when this attachment is a note for a file the server saved: the file can be fetched back
+	let savedPath = $derived(readonly ? getSavedFilePath(textContent) : null);
 
 	let fileTypeLabel = $derived.by(() => {
 		if (uploadedFile?.type) {
@@ -105,6 +109,17 @@
 	</div>
 {/snippet}
 
+{#snippet downloadButton(path: string)}
+	<div class="absolute top-2 right-2">
+		<ActionIcon
+			icon={Download}
+			onclick={() => downloadSavedFile(path)}
+			stopPropagationOnClick
+			tooltip="Download the file as it is now"
+		/>
+	</div>
+{/snippet}
+
 {#snippet fileIcon()}
 	<div
 		class="flex h-8 w-8 items-center justify-center rounded bg-primary/10 text-xs font-medium text-primary"
@@ -129,16 +144,18 @@
 	<button
 		aria-label={readonly ? `Preview ${name}` : undefined}
 		class="rounded-lg border border-border bg-muted p-3 {className} cursor-pointer {readonly
-			? 'w-full max-w-2xl transition-shadow hover:shadow-md'
+			? 'relative w-full max-w-2xl transition-shadow hover:shadow-md'
 			: `group relative text-left ${textContent ? 'max-h-24 max-w-72' : 'max-w-36'}`} overflow-hidden"
 		{onclick}
 		type="button"
 	>
 		{#if !readonly}
 			{@render removeButton()}
+		{:else if savedPath}
+			{@render downloadButton(savedPath)}
 		{/if}
 
-		<div class={[!readonly && 'pr-8', 'overflow-hidden']}>
+		<div class={[(!readonly || savedPath) && 'pr-8', 'overflow-hidden']}>
 			{#if readonly}
 				<div class="flex items-start gap-3">
 					<div class="flex min-w-0 flex-1 flex-col items-start text-left">

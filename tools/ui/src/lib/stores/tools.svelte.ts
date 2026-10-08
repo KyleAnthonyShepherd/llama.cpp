@@ -14,6 +14,8 @@ import {
 	buildReadMediaToolDefinition,
 	DISABLED_TOOL_CATEGORIES_LOCALSTORAGE_KEY,
 	DISABLED_TOOL_KEYS_LOCALSTORAGE_KEY,
+	FILE_INTAKE_TOOL_SUFFIX,
+	FONT_INTAKE_TOOL_SUFFIX,
 	HOME_TILDE,
 	TOOL_GROUP_LABELS,
 	TOOL_SERVER_LABELS
@@ -43,6 +45,9 @@ class ToolsStore {
 	private _disabledToolCategories = $state(new SvelteSet<ToolSource>());
 	private _disabledTools = $state(new SvelteSet<string>());
 	private _error = $state<string | null>(null);
+	// kept out of _serverTools: the UI calls them on attach, the model never sees them
+	private _fileIntakeTool = $state<string | null>(null);
+	private _fontIntakeTool = $state<string | null>(null);
 	private _loading = $state(false);
 	private _serverHome = $state<string | null | undefined>(undefined);
 	private _serverTools = $state<OpenAIToolDefinition[]>([]);
@@ -166,6 +171,14 @@ class ToolsStore {
 		return this._error;
 	}
 
+	get fileIntakeTool(): string | null {
+		return this._fileIntakeTool;
+	}
+
+	get fontIntakeTool(): string | null {
+		return this._fontIntakeTool;
+	}
+
 	get isToolsEndpointUnreachable(): boolean {
 		return this._toolsEndpointUnreachable;
 	}
@@ -239,8 +252,13 @@ class ToolsStore {
 		this._toolsEndpointUnreachable = false;
 
 		try {
-			const toolInfos = await ToolsService.list();
+			const listed = await ToolsService.list();
+			const intake = listed.find((info) => info.tool.endsWith(FILE_INTAKE_TOOL_SUFFIX));
+			const fontIntake = listed.find((info) => info.tool.endsWith(FONT_INTAKE_TOOL_SUFFIX));
+			const toolInfos = listed.filter((info) => info !== intake && info !== fontIntake);
 
+			this._fileIntakeTool = intake?.tool ?? null;
+			this._fontIntakeTool = fontIntake?.tool ?? null;
 			this._serverTools = toolInfos.map((info) => info.definition);
 			this.cwdAwareTools = new SvelteSet(
 				toolInfos.filter((info) => info.uses_cwd).map((info) => info.tool)
