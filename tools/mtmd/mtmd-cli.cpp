@@ -159,6 +159,7 @@ struct mtmd_cli_context {
         mparams.device           = params.mmproj_device;
         mparams.weights_host     = params.mmproj_weights_host;
         mparams.compute_lazy     = params.mmproj_compute_lazy;
+        mparams.cpu_fallback     = params.mmproj_cpu_fallback;
         mparams.print_timings    = true;
         mparams.n_threads        = params.cpuparams.n_threads;
         mparams.flash_attn_type  = params.flash_attn_type;

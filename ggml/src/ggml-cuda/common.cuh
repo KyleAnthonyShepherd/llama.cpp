@@ -1250,6 +1250,15 @@ struct ggml_cuda_pool {
 
     virtual void * alloc(size_t size, size_t * actual_size) = 0;
     virtual void free(void * ptr, size_t size) = 0;
+
+    // device memory the pool holds, how much of it is handed out, and the most that ever was
+    virtual void stats(size_t * mapped, size_t * used, size_t * peak) const = 0;
+
+    // hold at least size bytes. Returns false when the device refuses, alloc() aborts on that
+    virtual bool reserve(size_t size) = 0;
+
+    // give the device memory back and reset the peak. Does nothing while buffers are handed out
+    virtual void trim() = 0;
 };
 
 template<typename T>

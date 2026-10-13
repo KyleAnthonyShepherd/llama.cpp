@@ -2231,7 +2231,7 @@ int32_t llama_model::kv_cpu_layers() const {
 }
 
 size_t llama_model::kv_spill_margin() const {
-    return (size_t) std::max(0, params.kv_spill_margin) * 1024 * 1024;
+    return (size_t) std::max(0, params.kv_spill_margin) * 1024 * 1024 + vram_reserve;
 }
 
 uint32_t llama_model::n_gpu_layers() const {

@@ -100,8 +100,10 @@ struct mtmd_context_params {
     // keep the vision weights in host RAM and let the scheduler offload the encode to the GPU.
     // trades a small constant cost per encode for the VRAM the weights would hold
     bool weights_host;
-    // allocate the encoder compute buffers and GPU backend only for the duration of an encode
+    // allocate the encoder compute buffers and backend scratch only for the duration of an encode
     bool compute_lazy;
+    // run an encode on the CPU when the device has no VRAM for it. Needs weights_host
+    bool cpu_fallback;
     bool print_timings;
     int n_threads;
     const char * image_marker; // deprecated, use media_marker instead
@@ -355,9 +357,17 @@ MTMD_API int32_t mtmd_batch_add_chunk(mtmd_batch * batch, const mtmd_input_chunk
 MTMD_API int32_t mtmd_batch_encode(mtmd_batch * batch);
 MTMD_API float * mtmd_batch_get_output_embd(mtmd_batch * batch, const mtmd_input_chunk * chunk);
 
-// free device memory mtmd_batch_encode() will need when it starts, on top of what the encoder
+// free device memory mtmd_batch_encode() wants when it starts, on top of what the encoder
 // already holds - so a caller can make room first. 0 when the encoder runs on the CPU.
+// With less than that the encode can fall back to the CPU (mtmd_context_params::cpu_fallback) or fail.
 MTMD_API size_t mtmd_batch_encode_vram_need(mtmd_batch * batch);
+
+// device memory the last mtmd_batch_encode() took at its peak, over what the encoder held before.
+// on_cpu (optional) is set when the encode fell back to the CPU.
+MTMD_API size_t mtmd_batch_encode_vram_used(mtmd_batch * batch, bool * on_cpu);
+
+// mtmd_batch_encode_vram_need() of the largest image, or audio clip, the encoder accepts
+MTMD_API size_t mtmd_encode_vram_need_max(mtmd_context * ctx);
 
 
 // Set callback for all future logging events.

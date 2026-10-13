@@ -15,6 +15,7 @@ import type {
 	DatabaseMessageExtraAudioFile,
 	DatabaseMessageExtraImageFile
 } from './database';
+import type { OpenAIToolDefinition } from './mcp';
 import type { MessageRole, ToolSource } from '$lib/enums';
 import { AgenticSectionType, ContinueIntentKind, ToolCallType } from '$lib/enums';
 
@@ -177,6 +178,8 @@ export interface AgenticFlowParams {
 	callbacks: AgenticFlowCallbacks;
 	signal?: AbortSignal;
 	toolPolicy?: AgenticToolPolicy;
+	/** Exact tool list to send, in place of the policy's (a chat that wears a hat) */
+	tools?: OpenAIToolDefinition[];
 }
 
 /**

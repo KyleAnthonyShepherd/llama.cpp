@@ -11,7 +11,10 @@
  * rows these options persist onto.
  */
 
-import { REASONING_EFFORT_DEFAULT_LOCALSTORAGE_KEY } from '$lib/constants';
+import {
+	HAT_DEFAULT_LOCALSTORAGE_KEY,
+	REASONING_EFFORT_DEFAULT_LOCALSTORAGE_KEY
+} from '$lib/constants';
 import { ReasoningEffort, ToolSource } from '$lib/enums';
 import { DatabaseService } from '$lib/services/database.service';
 // direct imports between stores, not via the barrel, to avoid circular deps
@@ -37,6 +40,25 @@ function saveReasoningEffortDefault(effort: ReasoningEffort): void {
 	if (typeof globalThis.localStorage === 'undefined') return;
 
 	localStorage.setItem(REASONING_EFFORT_DEFAULT_LOCALSTORAGE_KEY, effort);
+}
+
+/** Load the hat new chats start with, null for none */
+function loadHatDefault(): string | null {
+	if (typeof globalThis.localStorage === 'undefined') return null;
+
+	try {
+		return localStorage.getItem(HAT_DEFAULT_LOCALSTORAGE_KEY) || null;
+	} catch {
+		return null;
+	}
+}
+
+/** Persist the hat new chats start with */
+function saveHatDefault(name: string | null): void {
+	if (typeof globalThis.localStorage === 'undefined') return;
+
+	if (name) localStorage.setItem(HAT_DEFAULT_LOCALSTORAGE_KEY, name);
+	else localStorage.removeItem(HAT_DEFAULT_LOCALSTORAGE_KEY);
 }
 
 /**
@@ -80,6 +102,12 @@ export class ConversationPreferences {
 	 */
 	pendingCwd = $state<string | null>(null);
 
+	/**
+	 * Hat for the next created conversation. Unlike `pendingCwd` it is a
+	 * default: it stays picked for the chats after that one.
+	 */
+	pendingHat = $state<string | null>(loadHatDefault());
+
 	/** Global (non-conversation-specific) reasoning effort default */
 	pendingReasoningEffort = $state<ReasoningEffort>(loadReasoningEffortDefault());
 
@@ -106,6 +134,13 @@ export class ConversationPreferences {
 	/** Effective disabled tool keys for the current context, captured at flow start. */
 	getDisabledTools(): string[] {
 		return [...this._disabledTools];
+	}
+
+	/** Hat of the active conversation, or the one the next new chat will get. */
+	getHat(): string | null {
+		return this.host.activeConversation
+			? (this.host.activeConversation.hat ?? null)
+			: this.pendingHat;
 	}
 
 	/**
@@ -235,6 +270,30 @@ export class ConversationPreferences {
 		});
 
 		this.pendingCwd = null;
+	}
+
+	// Hat
+
+	/**
+	 * Sets the hat of the active conversation, or the default for new chats
+	 * when there is none. Changing it on a chat with messages makes the
+	 * server read that chat again from the start.
+	 */
+	async setHat(name: string | null): Promise<void> {
+		const hat = name || undefined;
+
+		if (!this.host.activeConversation) {
+			this.pendingHat = hat ?? null;
+			saveHatDefault(this.pendingHat);
+
+			return;
+		}
+
+		const id = this.host.activeConversation.id;
+
+		this.host.applyConversationUpdate(id, { hat });
+
+		await DatabaseService.updateConversation(id, { hat });
 	}
 
 	// Reasoning Effort

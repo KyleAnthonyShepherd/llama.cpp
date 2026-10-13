@@ -205,6 +205,19 @@ export type {
 	ContinueIntent
 } from './agentic';
 
+// Hats types
+export type {
+	HatBuildJob,
+	HatDetail,
+	HatDocument,
+	HatList,
+	HatSaveFields,
+	HatServerInfo,
+	HatState,
+	HatSummary,
+	HatWear
+} from './hats';
+
 // Navigation types
 export type { DesktopIconStripItem } from './navigation';
 

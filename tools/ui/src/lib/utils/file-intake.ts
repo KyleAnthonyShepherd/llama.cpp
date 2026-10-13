@@ -15,6 +15,12 @@ import { toolsStore } from '$lib/stores/tools.svelte';
 import { toast } from 'svelte-sonner';
 
 export function isFileIntakeCandidate(filename: string): boolean {
+	// the intake tool says which files it takes, so a new format needs no change here
+	const accepted = toolsStore.fileIntakeTool ? toolsStore.fileIntakePattern : null;
+
+	if (accepted) return accepted.test(filename);
+
+	// no tool, or one that does not say: these still cannot be read as text, so they must not pass as text
 	const lower = filename.toLowerCase();
 
 	return FILE_INTAKE_EXTENSIONS.some((ext) => lower.endsWith(ext));

@@ -879,7 +879,7 @@ struct server_slot {
 // note: this is not a member of server_slot because we want to run it inside yield_to_queue
 //       slot is passed as const to avoid accidental modification of the slot state
 //       some pointers are allowed to be used, they are not used by to_json()
-static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch, size_t idx, size_t & n_tokens_out) {
+static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch, size_t idx, size_t & n_tokens_out, size_t vram_keep) {
     GGML_ASSERT(slot.mctx);
     const auto & mctx = slot.mctx;
     const auto & input_tokens = slot.task->tokens;
@@ -960,26 +960,38 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
     // the encoder wants VRAM for the length of the encode, and a big image wants a lot more than
     // the warmup reserved (and frees it again under --mmproj-compute-lazy). The KV cache and the
     // expert hot store are the tenants that can step aside and come back, so they do. If that is
-    // still not enough, fail the request - a CUDA OOM inside the encode aborts the server
+    // still not enough, the encode runs on the CPU or fails the request by itself
+    const int64_t t_room = ggml_time_us();
     const size_t need = mtmd_batch_encode_vram_need(mbatch.get());
+    const size_t vram_free_0 = need > 0 ? llama_vram_free(slot.ctx_tgt) : 0;
 
-    const bool kv_spilled = need > 0 && llama_kv_spill(slot.ctx_tgt, need);
-    const bool hot_shrunk = need > 0 && llama_vram_free(slot.ctx_tgt) < need && llama_expert_hotstore_free_bytes(slot.ctx_tgt, need) >= 0;
+    // vram_keep stays free during the encode, as it does when the KV cache grows
+    const size_t room = need + vram_keep;
+
+    // the hot store goes first: its slots are back in a fraction of a second, a long KV cache takes seconds.
+    // It is asked every time, because it also counts on the driver's budget and that can be used up
+    // while the device still reports free memory
+    const int  n_hot_room = need > 0 ? llama_expert_hotstore_free_bytes(slot.ctx_tgt, room) : -1;
+    const bool kv_spilled = need > 0 && llama_kv_spill(slot.ctx_tgt, room);
 
     const size_t vram_free = need > 0 ? llama_vram_free(slot.ctx_tgt) : 0;
-    if (vram_free < need) {
-        SLT_ERR(slot, "the encode needs %zu MiB of VRAM, only %zu MiB are free; use --image-max-tokens or a smaller image\n",
-                need / (1024*1024), vram_free / (1024*1024));
-        res = 1;
-    } else {
-        res = mtmd_batch_encode(mbatch.get());
-    }
 
-    if (kv_spilled && llama_kv_unspill(slot.ctx_tgt, true)) {
-        SLT_DBG(slot, "%s", "moved the KV cache back to the GPU after the encode\n");
-    }
-    if (hot_shrunk) {
-        SLT_DBG(slot, "expert hot store holds %d slots after the encode\n", llama_expert_hotstore_refit(slot.ctx_tgt));
+    const int64_t t_encode = ggml_time_us();
+    res = mtmd_batch_encode(mbatch.get());
+    bool on_cpu = false;
+    const size_t used = mtmd_batch_encode_vram_used(mbatch.get(), &on_cpu);
+
+    const int64_t t_restore = ggml_time_us();
+    const bool kv_back = kv_spilled && llama_kv_unspill(slot.ctx_tgt, true);
+    const int  n_hot   = n_hot_room >= 0 ? llama_expert_hotstore_refit(slot.ctx_tgt) : -1;
+
+    if (need > 0) {
+        SLT_INF(slot, "media encode took %zu MiB of VRAM, %zu MiB asked for, free %zu -> %zu MiB%s%s%s, room %.1f ms, encode %.1f ms, restore %.1f ms\n",
+                used / (1024*1024), need / (1024*1024), vram_free_0 / (1024*1024), vram_free / (1024*1024),
+                on_cpu ? ", on the CPU" : "",
+                !kv_spilled ? "" : kv_back ? ", KV cache moved out and back" : ", KV cache moved out and NOT back",
+                n_hot == n_hot_room ? "" : ", hot store refit",
+                (t_encode - t_room) / 1000.0, (t_restore - t_encode) / 1000.0, (ggml_time_us() - t_restore) / 1000.0);
     }
 
     if (res != 0) {
@@ -1225,6 +1237,7 @@ private:
             mparams.device           = params_base.mmproj_device;
             mparams.weights_host     = params_base.mmproj_weights_host;
             mparams.compute_lazy     = params_base.mmproj_compute_lazy;
+            mparams.cpu_fallback     = params_base.mmproj_cpu_fallback;
             mparams.print_timings    = false;
             mparams.n_threads        = params_base.cpuparams.n_threads;
             mparams.flash_attn_type  = params_base.flash_attn_type;
@@ -1268,6 +1281,16 @@ private:
                 }
             } else {
                 SRV_ERR("%s", "[mtmd] failed to get memory usage of mmproj\n");
+            }
+
+            // the fit must leave the encode reserve alone too. auto is only known after the load
+            if (params_base.mmproj_vram_reserve > 0 && params_base.mmproj_use_gpu) {
+                ggml_backend_dev_t dev = params_base.mmproj_device ? params_base.mmproj_device : ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+                for (size_t i = 0; i < ggml_backend_dev_count() && i < params_base.fit_params_target.size(); i++) {
+                    if (ggml_backend_dev_get(i) == dev) {
+                        params_base.fit_params_target[i] += (size_t) params_base.mmproj_vram_reserve * 1024 * 1024;
+                    }
+                }
             }
         }
 
@@ -1349,6 +1372,17 @@ private:
             }
             SRV_INF("loaded multimodal model, '%s'\n", mmproj_path.c_str());
 
+            if (params_base.mmproj_vram_reserve != 0) {
+                const size_t reserve = params_base.mmproj_vram_reserve < 0
+                    ? mtmd_encode_vram_need_max(mctx)
+                    : (size_t) params_base.mmproj_vram_reserve * 1024 * 1024;
+
+                // the hot store was sized before the reserve was known
+                llama_model_set_vram_reserve(model_tgt, reserve);
+                llama_expert_hotstore_free_bytes(ctx_tgt, reserve);
+                SRV_INF("keeping %zu MiB of VRAM free for the media encode\n", reserve / (1024*1024));
+            }
+
             init_opt.video_params.fps_target = params_base.video_fps;
             init_opt.video_params.timestamp_interval_ms = params_base.video_timestamp_interval_ms;
             init_opt.video_params.ffmpeg_bin_dir = params_base.video_ffmpeg_bin_dir.empty()
@@ -1363,6 +1397,14 @@ private:
                 params_base.n_cache_reuse = 0;
                 SRV_WRN("%s\n", "cache_reuse is not supported by multimodal, it will be disabled");
             }
+        }
+
+        // debug: hold VRAM after the load, to test what runs close to the limit
+        static ggml_backend_buffer_t vram_hog = nullptr;
+        if (const char * hog_mib = getenv("LLAMA_DEBUG_VRAM_HOG_MIB"); hog_mib && !vram_hog) {
+            ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+            vram_hog = dev ? ggml_backend_buft_alloc_buffer(ggml_backend_dev_buffer_type(dev), (size_t) atoll(hog_mib) * 1024 * 1024) : nullptr;
+            SRV_WRN("LLAMA_DEBUG_VRAM_HOG_MIB: %s %s MiB of VRAM\n", vram_hog ? "holding" : "failed to allocate", hog_mib);
         }
 
         if (!llama_memory_can_shift(llama_get_memory(ctx_tgt))) {
@@ -4039,7 +4081,7 @@ private:
                         size_t n_tokens_out = 0;
                         int32_t res = 0;
                         queue_tasks.yield_to_queue([&]() {
-                            res = process_mtmd_chunk(slot, slot.mbatch, cur_token_idx, n_tokens_out);
+                            res = process_mtmd_chunk(slot, slot.mbatch, cur_token_idx, n_tokens_out, (size_t) params_base.kv_spill_margin * 1024 * 1024);
                         });
 
                         if (res != 0) {

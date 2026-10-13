@@ -461,6 +461,7 @@ mtmd_context_params mtmd_context_params_default() {
         /* device            */ nullptr,
         /* weights_host      */ false,
         /* compute_lazy      */ false,
+        /* cpu_fallback      */ false,
         /* print_timings     */ true,
         /* n_threads         */ 4,
         /* image_marker      */ nullptr,
@@ -572,6 +573,7 @@ struct mtmd_context {
             /* device            */ ctx_params.device,
             /* weights_host      */ ctx_params.weights_host,
             /* compute_lazy      */ ctx_params.compute_lazy,
+            /* cpu_fallback      */ ctx_params.cpu_fallback,
             /* flash_attn_type   */ mtmd_get_clip_flash_attn_type(ctx_params.flash_attn_type),
             /* image_min_tokens  */ ctx_params.image_min_tokens,
             /* image_max_tokens  */ ctx_params.image_max_tokens,
@@ -2179,6 +2181,28 @@ size_t mtmd_batch_encode_vram_need(mtmd_batch * batch) {
         LOG_ERR("%s: error: %s\n", __func__, e.what());
         return 0;
     }
+}
+
+size_t mtmd_encode_vram_need_max(mtmd_context * ctx) {
+    try {
+        size_t need = 0;
+        for (clip_ctx * c : {ctx->ctx_v, ctx->ctx_a}) {
+            need = std::max(need, c ? clip_encode_vram_need_max(c) : 0);
+        }
+        return need;
+    } catch (const std::exception & e) {
+        LOG_ERR("%s: error: %s\n", __func__, e.what());
+        return 0;
+    }
+}
+
+size_t mtmd_batch_encode_vram_used(mtmd_batch * batch, bool * on_cpu) {
+    const clip_ctx * ctx = batch->entries.empty() ? nullptr : batch->ctx->get_clip_ctx(batch->entries[0]);
+    const clip_encode_stats stats = ctx ? clip_get_encode_stats(ctx) : clip_encode_stats{};
+    if (on_cpu) {
+        *on_cpu = stats.on_cpu;
+    }
+    return stats.graph + stats.scratch;
 }
 
 float * mtmd_batch_get_output_embd(mtmd_batch * batch, const mtmd_input_chunk * chunk) {

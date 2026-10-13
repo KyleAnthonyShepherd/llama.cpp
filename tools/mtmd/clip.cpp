@@ -174,9 +174,20 @@ struct clip_ctx {
     // offloads the encode matmuls back to it (op_offload, see ggml_backend_sched_new below)
     bool weights_host = false;
 
-    // compute buffers and the GPU backend exist only while an encode runs (compute_acquire /
-    // compute_release), so an idle projector holds no VRAM beyond its weights
+    // compute buffers and the backend scratch pool exist only while an encode runs (compute_acquire /
+    // compute_release). The backend stays, so an idle projector holds its weights and a small fixed context
     bool compute_lazy = false;
+
+    // run an encode on the CPU when the device does not have the VRAM for it. Needs weights_host
+    bool cpu_fallback = false;
+
+    // worst ratio seen of backend scratch used to scratch estimated, see clip_estimate_vram()
+    float scratch_ratio_max = 0.0f;
+    // parallel blocks the backend's FA kernel can run at most. It is not known ahead: an encode
+    // that took less scratch than that many partial results lowers it
+    size_t fa_blocks = 4;
+    clip_encode_stats last_encode = {};
+
     ggml_backend_dev_t gpu_dev = nullptr;
     ggml_backend_sched_eval_callback cb_eval = nullptr;
     void * cb_eval_user_data = nullptr;
@@ -239,14 +250,19 @@ struct clip_ctx {
         backend_ptrs.push_back(backend_cpu);
         backend_buft.push_back(ggml_backend_get_default_buffer_type(backend_cpu));
 
+        // a CPU scheduler cannot read weights that live on the device
+        cpu_fallback = ctx_params.cpu_fallback && weights_host && gpu_dev != nullptr;
+
         sched_create();
 
         debug_output_embeddings = std::getenv("MTMD_DEBUG_EMBEDDINGS") != nullptr;
     }
 
-    void sched_create() {
+    // cpu_only: leave the GPU backend out, the CPU one is last in backend_ptrs
+    void sched_create(bool cpu_only = false) {
+        const size_t i0 = cpu_only ? backend_ptrs.size() - 1 : 0;
         sched.reset(
-            ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), 8192, false, true)
+            ggml_backend_sched_new(backend_ptrs.data() + i0, backend_buft.data() + i0, backend_ptrs.size() - i0, 8192, false, true)
         );
 
         if (cb_eval != nullptr) {
@@ -254,31 +270,63 @@ struct clip_ctx {
         }
     }
 
-    // lazy mode: bring back the GPU backend and a scheduler before an encode
+    // lazy mode: bring back a scheduler before an encode
     void compute_acquire() {
-        if (sched) {
-            return;
+        if (!sched) {
+            sched_create();
         }
-        if (gpu_dev && backend == nullptr) {
-            backend = ggml_backend_dev_init(gpu_dev, nullptr);
-            if (!backend) {
-                throw std::runtime_error(string_format("%s: failed to re-initialize \"%s\" backend", __func__, ggml_backend_dev_name(gpu_dev)));
-            }
-            backend_ptrs[0] = backend;
-        }
-        sched_create();
     }
 
-    // lazy mode: free the compute buffers and the GPU backend (its memory pool, cuBLAS workspace)
-    // after an encode. The weights are in their own buffer and stay.
+    // lazy mode: free the compute buffers and the backend scratch after an encode.
+    // The weights are in their own buffer and stay.
     void compute_release() {
         if (!compute_lazy || !sched) {
             return;
         }
         sched.reset();
-        if (gpu_dev && backend != nullptr && backend != backend_cpu) {
-            ggml_backend_free(backend);
-            backend = nullptr;
+        pool_trim();
+    }
+
+    void * gpu_proc(const char * name) const {
+        ggml_backend_reg_t reg = gpu_dev ? ggml_backend_dev_backend_reg(gpu_dev) : nullptr;
+        return reg ? ggml_backend_reg_get_proc_address(reg, name) : nullptr;
+    }
+
+    size_t vram_free() const {
+        // debug: a figure to test the encode on a device that is short of VRAM
+        if (const char * mib = std::getenv("MTMD_DEBUG_VRAM_FREE_MIB")) {
+            return (size_t) atoll(mib) * 1024 * 1024;
+        }
+        typedef size_t (*free_vram_t)(ggml_backend_dev_t dev);
+        if (auto fn = (free_vram_t) gpu_proc("ggml_backend_dev_free_vram")) {
+            return fn(gpu_dev);
+        }
+        size_t free = 0, total = 0;
+        ggml_backend_dev_memory(gpu_dev, &free, &total);
+        return free;
+    }
+
+    // scratch pool of the GPU backend, outside the scheduler's buffers. Only CUDA has these procs
+
+    void pool_stats(size_t * mapped, size_t * peak) const {
+        typedef void (*pool_stats_t)(ggml_backend_t backend, size_t * mapped, size_t * used, size_t * peak);
+        size_t used = 0;
+        *mapped = *peak = 0;
+        if (auto fn = (pool_stats_t) gpu_proc("ggml_backend_cuda_pool_stats")) {
+            fn(backend, mapped, &used, peak);
+        }
+    }
+
+    bool pool_reserve(size_t size) const {
+        typedef bool (*pool_reserve_t)(ggml_backend_t backend, size_t size);
+        auto fn = (pool_reserve_t) gpu_proc("ggml_backend_cuda_pool_reserve");
+        return fn ? fn(backend, size) : true;
+    }
+
+    void pool_trim() const {
+        typedef void (*pool_trim_t)(ggml_backend_t backend);
+        if (auto fn = (pool_trim_t) gpu_proc("ggml_backend_cuda_pool_trim")) {
+            fn(backend);
         }
     }
 
@@ -4465,23 +4513,47 @@ bool clip_image_batch_encode(clip_ctx * ctx, int n_threads, const clip_image_f32
     return clip_encode(ctx, &params);
 }
 
-size_t clip_encode_vram_need(struct clip_ctx * ctx, const clip_image_f32_batch * imgs) {
-    if (imgs->entries.empty() || ctx->gpu_dev == nullptr) {
-        return 0;
+// scratch one op takes from the backend pool while it runs, outside the graph buffers.
+// An upper bound for CUDA: the exact figure depends on the kernel the backend picks
+static size_t clip_op_scratch(const ggml_tensor * node) {
+    switch (node->op) {
+        case GGML_OP_MUL_MAT:
+            {
+                const ggml_tensor * a = node->src[0];
+                const ggml_tensor * b = node->src[1];
+                if (a->type == GGML_TYPE_F32) {
+                    return b->type == GGML_TYPE_F32 ? 0 : ggml_nelements(b) * sizeof(float);
+                }
+                // in half precision the matmul converts b and keeps the output, in F32 it converts a
+                const size_t half = (ggml_nelements(b) + ggml_nelements(node)) * sizeof(float) / 2;
+                const size_t full = ggml_nelements(a) * sizeof(float);
+                return ggml_is_quantized(a->type) ? half + full : std::max(half, full);
+            }
+        case GGML_OP_FLASH_ATTN_EXT:
+            // one partial result of the output and its softmax state. FA keeps one per parallel block
+            return ggml_nelements(node) * sizeof(float) + ggml_nrows(node) * 2 * sizeof(float);
+        default:
+            return 0;
     }
+}
 
-    ctx->compute_acquire();
-    struct compute_release_guard {
-        clip_ctx * ctx;
-        ~compute_release_guard() { ctx->compute_release(); }
-    } release_guard { ctx };
+struct clip_vram_estimate {
+    size_t graph   = 0; // growth of the compute buffers over what the scheduler holds
+    size_t scratch = 0; // growth of the backend scratch pool, calibrated
+    size_t scratch_raw = 0; // the formula's figure for the whole pool
+    size_t fa_unit = 0; // scratch of the largest FA node per parallel block
+    size_t margin  = 0; // for what the estimate cannot see: the driver, fragmentation, a kernel loaded on first use
+};
+
+static clip_vram_estimate clip_estimate_vram(struct clip_ctx * ctx, const clip_image_f32_batch & imgs) {
+    clip_vram_estimate est;
 
     // before the warmup the FA type is not decided yet, and the graph without FA is far larger
     const clip_flash_attn_type fa_type = ctx->flash_attn_type;
     if (fa_type == CLIP_FLASH_ATTN_TYPE_AUTO) {
         ctx->flash_attn_type = CLIP_FLASH_ATTN_TYPE_ENABLED;
     }
-    ggml_cgraph * gf = clip_get_graph_builder(ctx, *imgs)->build();
+    ggml_cgraph * gf = clip_get_graph_builder(ctx, imgs)->build();
     ctx->flash_attn_type = fa_type;
 
     // measure on a scratch scheduler, so that the encode's own one keeps its buffers and its plan
@@ -4492,19 +4564,66 @@ size_t clip_encode_vram_need(struct clip_ctx * ctx, const clip_image_f32_batch *
     ggml_backend_sched_reserve_size(sched.get(), gf, sizes.data());
 
     // the GPU backend is first in backend_ptrs. A bigger graph frees the old buffer before it allocates the new one
-    const size_t held = ggml_backend_sched_get_buffer_size(ctx->sched.get(), ctx->backend);
-    const size_t grow = sizes[0] > held ? sizes[0] - held : 0;
+    const size_t held = ctx->sched ? ggml_backend_sched_get_buffer_size(ctx->sched.get(), ctx->backend) : 0;
+    est.graph = sizes[0] > held ? sizes[0] - held : 0;
 
-    // the backend also takes scratch outside the graph buffers, sized by the op: matmuls convert
-    // their inputs, and CUDA FA keeps a few partial results of its output in F32
-    size_t scratch = 0;
+    // the pool hands its memory back between ops, so the op that takes the most sets its size.
+    // The small temporaries of the other ops (reductions, softmax) get one growth step of the pool
     for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
-        const ggml_tensor * node = ggml_graph_node(gf, i);
-        const size_t n = node->op == GGML_OP_FLASH_ATTN_EXT ? 4 * ggml_nelements(node) * sizeof(float) : ggml_nbytes(node);
-        scratch = std::max(scratch, n);
+        ggml_tensor * node = ggml_graph_node(gf, i);
+        if (ggml_backend_sched_get_tensor_backend(sched.get(), node) != ctx->backend) {
+            continue;
+        }
+        if (node->op == GGML_OP_FLASH_ATTN_EXT) {
+            est.fa_unit = std::max(est.fa_unit, clip_op_scratch(node));
+        } else {
+            est.scratch_raw = std::max(est.scratch_raw, clip_op_scratch(node));
+        }
+    }
+    est.scratch_raw = std::max(est.scratch_raw, ctx->fa_blocks * est.fa_unit) + 2 * 1024 * 1024;
+
+    // what an encode took over the formula before is taken again, plus 5%
+    const size_t scratch = (size_t) (est.scratch_raw * std::max(1.0f, ctx->scratch_ratio_max) * 1.05f);
+
+    size_t mapped = 0, peak = 0;
+    ctx->pool_stats(&mapped, &peak);
+    est.scratch = scratch > mapped ? scratch - mapped : 0;
+    est.margin  = std::max<size_t>(64 * 1024 * 1024, (est.graph + est.scratch) / 10);
+
+    return est;
+}
+
+size_t clip_encode_vram_need(struct clip_ctx * ctx, const clip_image_f32_batch * imgs) {
+    if (imgs->entries.empty() || ctx->gpu_dev == nullptr) {
+        return 0;
     }
 
-    return grow + scratch;
+    const clip_vram_estimate est = clip_estimate_vram(ctx, *imgs);
+
+    LOG_DBG("%s: graph %.1f MiB + scratch %.1f MiB (formula %.1f MiB) + margin %.1f MiB\n", __func__,
+            est.graph / 1024.0 / 1024.0, est.scratch / 1024.0 / 1024.0, est.scratch_raw / 1024.0 / 1024.0, est.margin / 1024.0 / 1024.0);
+
+    return est.graph + est.scratch + est.margin;
+}
+
+size_t clip_encode_vram_need_max(struct clip_ctx * ctx) {
+    clip_image_f32_batch batch = clip_model_loader::get_dummy_batch(*ctx);
+
+    // a model with dynamic resolution can take a larger image than the warmup one
+    const auto & hparams = ctx->model.hparams;
+    if (ctx->model.modality == CLIP_MODALITY_VISION && hparams.image_max_pixels > 0) {
+        const int align = hparams.patch_size * std::max(1, hparams.n_merge);
+        const int sz    = (int) std::sqrt((double) hparams.image_max_pixels) / align * align;
+        if (sz > hparams.warmup_image_size) {
+            batch.entries[0].set_size({sz, sz}, false, false);
+        }
+    }
+
+    return clip_encode_vram_need(ctx, &batch);
+}
+
+struct clip_encode_stats clip_get_encode_stats(const struct clip_ctx * ctx) {
+    return ctx->last_encode;
 }
 
 // persisted state slots of the gen-audio decoder, per pipeline
@@ -4526,12 +4645,53 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
         return false;
     }
 
-    // lazy mode: the backend and compute buffers live only for this call
-    ctx->compute_acquire();
-    struct compute_release_guard {
+    ctx->last_encode = {};
+
+    // an encode that takes more than the device has aborts in the backend, so do not start one.
+    // Not for audio gen: it runs once per frame on a small graph
+    const bool on_gpu = ctx->gpu_dev != nullptr && params->gen_process == CLIP_GEN_PROCESS_GEN_UNKNOWN && !imgs.entries.empty();
+    clip_vram_estimate est;
+    size_t vram_free = 0;
+    bool on_cpu = false;
+    if (on_gpu) {
+        est = clip_estimate_vram(ctx, imgs);
+        vram_free = ctx->vram_free();
+        // 0 is a device with no usable figure
+        if (vram_free > 0 && vram_free < est.graph + est.scratch) {
+            if (!ctx->cpu_fallback) {
+                LOG_ERR("%s: the encode of a %dx%d input needs %zu MiB of VRAM, only %zu MiB are free; use --image-max-tokens or a smaller image\n", __func__,
+                        imgs.entries[0].nx(), imgs.entries[0].ny(), (est.graph + est.scratch) / (1024*1024), vram_free / (1024*1024));
+                return false;
+            }
+            on_cpu = true;
+        }
+    }
+
+    // lazy mode: the compute buffers live only for this call.
+    // An encode on the CPU gets a scheduler of its own, and the GPU one comes back after it
+    struct compute_guard {
         clip_ctx * ctx;
-        ~compute_release_guard() { ctx->compute_release(); }
-    } release_guard { ctx };
+        ggml_backend_sched_ptr sched_gpu;
+        void to_cpu() {
+            if (!ctx->compute_lazy && !sched_gpu) {
+                sched_gpu = std::move(ctx->sched);
+            }
+            ctx->sched_create(true);
+        }
+        ~compute_guard() {
+            if (sched_gpu) {
+                ctx->sched = std::move(sched_gpu);
+            } else {
+                ctx->compute_release();
+            }
+        }
+    } compute { ctx, nullptr };
+
+    if (on_cpu) {
+        compute.to_cpu();
+    } else {
+        ctx->compute_acquire();
+    }
 
     // if buffers are not allocated, we need to do a warmup run to allocate them
     if (!ctx->is_allocated) {
@@ -4544,9 +4704,39 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
     }
 
     // build the inference graph
-    ggml_backend_sched_reset(ctx->sched.get());
-    ggml_cgraph * gf = clip_get_graph_builder(ctx, imgs, params)->build();
-    ggml_backend_sched_alloc_graph(ctx->sched.get(), gf);
+    ggml_cgraph * gf = nullptr;
+    auto alloc_graph = [&]() {
+        ggml_backend_sched_reset(ctx->sched.get());
+        gf = clip_get_graph_builder(ctx, imgs, params)->build();
+        return ggml_backend_sched_alloc_graph(ctx->sched.get(), gf);
+    };
+
+    // under lazy mode the scratch pool is empty here. Take the scratch now, where a refusal can
+    // still be answered: once the compute runs, the pool aborts when the device has no more
+    size_t graph_start = 0, pool_start = 0, pool_peak_start = 0;
+    auto alloc_gpu = [&]() {
+        graph_start = ggml_backend_sched_get_buffer_size(ctx->sched.get(), ctx->backend);
+        ctx->pool_stats(&pool_start, &pool_peak_start);
+        return alloc_graph() && (!ctx->compute_lazy || ctx->pool_reserve(pool_start + est.scratch));
+    };
+
+    bool is_alloc = !on_cpu && (on_gpu ? alloc_gpu() : alloc_graph());
+    if (!is_alloc && on_gpu && ctx->cpu_fallback) {
+        if (!on_cpu) {
+            on_cpu = true;
+            compute.to_cpu();
+            ctx->pool_trim();
+        }
+        LOG_WRN("%s: encoding a %dx%d input on the CPU: the encode needs %zu MiB of VRAM, %zu MiB are free\n", __func__,
+                imgs.entries[0].nx(), imgs.entries[0].ny(), (est.graph + est.scratch) / (1024*1024), vram_free / (1024*1024));
+        is_alloc = alloc_graph();
+        ctx->last_encode.on_cpu = true;
+    }
+    if (!is_alloc) {
+        LOG_ERR("%s: failed to allocate the compute buffers for a %dx%d input; use --image-max-tokens or a smaller image\n", __func__,
+                imgs.entries[0].nx(), imgs.entries[0].ny());
+        return false;
+    }
 
     // set inputs
     const auto & model   = ctx->model;
@@ -5860,6 +6050,34 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
     if (status != GGML_STATUS_SUCCESS) {
         LOG_ERR("%s: ggml_backend_sched_graph_compute failed with error %d\n", __func__, status);
         return false;
+    }
+
+    if (on_gpu && !on_cpu) {
+        size_t mapped = 0, peak = 0;
+        ctx->pool_stats(&mapped, &peak);
+
+        // what the encode took over what the context held before it
+        const size_t graph = ggml_backend_sched_get_buffer_size(ctx->sched.get(), ctx->backend);
+        ctx->last_encode.graph           = graph > graph_start ? graph - graph_start : 0;
+        ctx->last_encode.scratch         = peak > pool_start ? peak - pool_start : 0;
+        ctx->last_encode.scratch_reserve = ctx->compute_lazy ? est.scratch : 0;
+
+        // the pool is still mapped at its high-water mark here, so the device figure is the encode's peak
+        const size_t vram_free_end = ctx->vram_free();
+        LOG_INF("%s: %dx%d input: compute buffers %.1f MiB of %.1f MiB estimated, scratch %.1f MiB of %.1f MiB estimated, device free %zu -> %zu MiB\n", __func__,
+                imgs.entries[0].nx(), imgs.entries[0].ny(), ctx->last_encode.graph / 1024.0 / 1024.0, est.graph / 1024.0 / 1024.0,
+                ctx->last_encode.scratch / 1024.0 / 1024.0, est.scratch / 1024.0 / 1024.0, vram_free / (1024*1024), vram_free_end / (1024*1024));
+
+        // a pool that did not grow says nothing about this image
+        if (peak > pool_peak_start && est.fa_unit > 0) {
+            ctx->fa_blocks = std::min(ctx->fa_blocks, std::max<size_t>(1, (peak + est.fa_unit - 1) / est.fa_unit));
+        }
+        const float ratio = peak > pool_peak_start ? (float) peak / est.scratch_raw : 0.0f;
+        if (ratio > std::max(1.0f, ctx->scratch_ratio_max)) {
+            LOG_WRN("%s: the encode took %.1f MiB of backend scratch, the formula gives %.1f MiB; later estimates are scaled by %.2f\n", __func__,
+                    peak / 1024.0 / 1024.0, est.scratch_raw / 1024.0 / 1024.0, ratio * 1.05f);
+        }
+        ctx->scratch_ratio_max = std::max(ctx->scratch_ratio_max, ratio);
     }
 
     // the last node is the embedding tensor, code2wav has no out_embd

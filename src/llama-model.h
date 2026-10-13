@@ -735,6 +735,9 @@ struct llama_model {
     int64_t t_load_us  = 0;
     int64_t t_start_us = 0;
 
+    // bytes of VRAM held back for a tenant outside the contexts, see llama_model_set_vram_reserve()
+    size_t vram_reserve = 0;
+
     explicit llama_model(const llama_model_params & params);
     virtual ~llama_model();
 
@@ -752,7 +755,7 @@ struct llama_model {
 
     uint32_t n_gpu_layers() const;
     int32_t  kv_cpu_layers() const; // see llama_model_params::kv_cpu_layers
-    size_t   kv_spill_margin() const; // bytes, see llama_model_params::kv_spill_margin
+    size_t   kv_spill_margin() const; // bytes, see llama_model_params::kv_spill_margin. Includes vram_reserve
     llama_split_mode split_mode() const;
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const;

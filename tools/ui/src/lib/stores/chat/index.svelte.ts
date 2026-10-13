@@ -26,6 +26,7 @@ import { type ChatFlowsHost, ChatMessageFlows } from '$lib/stores/chat/flows.sve
 import { chatProcessingStore } from '$lib/stores/chat/processing.svelte';
 import { type ChatStreamHost, ChatStreamManager } from '$lib/stores/chat/streams.svelte';
 import { conversationsStore } from '$lib/stores/conversations/index.svelte';
+import { hatsStore } from '$lib/stores/hats.svelte';
 import { mcpStore } from '$lib/stores/mcp/index.svelte';
 import { modelsStore } from '$lib/stores/models/index.svelte';
 import { serverStore } from '$lib/stores/server.svelte';
@@ -38,7 +39,8 @@ import type {
 	ChatStreamCallbacks,
 	DatabaseMessage,
 	DatabaseMessageExtra,
-	ErrorDialogState
+	ErrorDialogState,
+	HatWear
 } from '$lib/types';
 import {
 	findMessageById,
@@ -668,7 +670,8 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 
 				let sysOrRootId = rootId;
 
-				if (systemPrompt) {
+				// a hat brings its own system text
+				if (systemPrompt && !currentConv.hat) {
 					const systemMessage = await DatabaseService.createSystemMessage(
 						currentConv.id,
 						systemPrompt,
@@ -907,6 +910,9 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 
 		this.processing.setActiveConversation(convId);
 		const abortController = this.getOrCreateAbortController(convId);
+
+		let hat: HatWear | null = null;
+
 		const streamCallbacks: ChatStreamCallbacks = {
 			createAssistantMessage: async () => {
 				// Reset streaming state for new message
@@ -1075,8 +1081,9 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 
 				if (serverStore.isRouterMode) modelsStore.fetchRouterModels().catch(console.error);
 
-				// Pre-encode conversation in KV cache for faster next turn
-				if (settingsStore.config.preEncodeConversation) {
+				// Pre-encode conversation in KV cache for faster next turn.
+				// Not with a hat: the pre-encode prompt has no tools, so it would displace the hat's cache
+				if (settingsStore.config.preEncodeConversation && !hat) {
 					this.triggerPreEncode(
 						allMessages,
 						assistantMessage,
@@ -1147,18 +1154,32 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 			disabledTools: conversationsStore.preferences.getDisabledTools()
 		};
 
+		try {
+			hat = await this.wearHat(convId, abortController.signal);
+		} catch (error) {
+			await streamCallbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
+
+			return;
+		}
+
+		// with a hat the request starts exactly as the hat does: its system text, its tools
+		const requestMessages = hat
+			? hatsStore.applyToMessages(hat, await ChatService.normalizeMessagesForApi(allMessages))
+			: allMessages;
+
 		{
 			const agenticResult = await agenticStore.runAgenticFlow({
 				callbacks: streamCallbacks,
 				conversationId: convId,
 				flowRootMessageId: assistantMessage.id,
-				messages: allMessages,
+				messages: requestMessages,
 				options: {
 					...this.getApiOptions(),
 					...(effectiveModel ? { model: effectiveModel } : {})
 				},
 				signal: abortController.signal,
-				toolPolicy
+				toolPolicy,
+				tools: hat?.tools
 			});
 
 			if (agenticResult.handled) {
@@ -1179,7 +1200,7 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 		}
 
 		await ChatService.sendMessage(
-			allMessages,
+			requestMessages,
 			{
 				...this.getApiOptions(),
 				...(effectiveModel ? { model: effectiveModel } : {}),
@@ -1447,6 +1468,27 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 				console.warn('[ChatStore] Pre-encode failed:', err);
 			}
 		}
+	}
+
+	/**
+	 * The hat this conversation wears, with its prompt cache restored on the
+	 * server when this request could not hit it otherwise. Null for no hat.
+	 */
+	private async wearHat(convId: string, signal: AbortSignal): Promise<HatWear | null> {
+		const conv =
+			conversationsStore.activeConversation?.id === convId
+				? conversationsStore.activeConversation
+				: conversationsStore.conversations.find((c) => c.id === convId);
+
+		if (!conv?.hat) return null;
+
+		if (!hatsStore.available) {
+			hatsStore.warnMissing(conv.hat);
+
+			return null;
+		}
+
+		return hatsStore.prepare(convId, conv.hat, signal);
 	}
 }
 

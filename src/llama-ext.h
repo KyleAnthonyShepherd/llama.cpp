@@ -122,6 +122,11 @@ LLAMA_API bool llama_kv_spill(struct llama_context * ctx, size_t need_bytes);
 // Free VRAM as llama_kv_spill() counts it: the least any GPU of ctx has.
 LLAMA_API size_t llama_vram_free(const struct llama_context * ctx);
 
+// VRAM to keep free for a tenant outside the contexts of model that takes it for a while (an image
+// encode). A growing KV cache keeps it free on top of kv_spill_margin, and so does the expert hot
+// store when it refits. Nothing is freed by the call itself.
+LLAMA_API void llama_model_set_vram_reserve(struct llama_model * model, size_t n_bytes);
+
 // Free device memory a resize of ctx to n_ctx_seq_new cells needs at its peak, on top of what
 // its memory already holds. 0 when nothing has to be found.
 LLAMA_API size_t llama_resize_peak_bytes(const struct llama_context * ctx, uint32_t n_ctx_seq_new);

@@ -19,6 +19,15 @@
 export { default as DialogMcpServerAddNew } from './DialogMcpServerAddNew.svelte';
 
 /**
+ * **DialogHatEditor** - Create and edit a hat
+ *
+ * A hat's name, instructions, documents (order and reader for each) and
+ * tools, with a Build button and its progress. Talks to the server's hats
+ * tool through hatsStore.
+ */
+export { default as DialogHatEditor } from './DialogHatEditor.svelte';
+
+/**
  * **DialogMcpServers** - MCP servers dialog shown from the chat form
  *
  * Shows the same MCP server list as the `/mcp-servers` route inside a modal

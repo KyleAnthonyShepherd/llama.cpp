@@ -54,6 +54,8 @@ export { permissionsStore } from './permissions.svelte';
 // TOOLS
 export { toolsStore } from './tools.svelte';
 
+export { hatsStore } from './hats.svelte';
+
 // ENVIRONMENT / META
 export { versionStore } from './version.svelte';
 

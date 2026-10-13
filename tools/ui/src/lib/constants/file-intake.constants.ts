@@ -5,7 +5,8 @@ export const FILE_INTAKE_TOOL_SUFFIX = '_put_file';
 // same idea for a font file the server needs to draw a document as its author saw it
 export const FONT_INTAKE_TOOL_SUFFIX = '_put_font';
 
-// binary formats that go to the file intake tool, not to the text reader
+// The intake tool names the files it takes with a `pattern` on its `name` parameter (a PDF, say).
+// This list is the fallback: binary formats that must never go to the text reader.
 export const FILE_INTAKE_EXTENSIONS = ['.docx', '.pptx'];
 
 export const FONT_INTAKE_EXTENSIONS = ['.ttf', '.otf', '.ttc'];

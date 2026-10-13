@@ -2808,13 +2808,37 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--mmproj-compute-lazy"},
         {"--no-mmproj-compute-lazy"},
-        string_format("allocate the multimodal projector compute buffers (and its GPU backend) only while an encode runs, "
-                      "and free them after it, so a text-only session holds no VRAM for the projector. "
+        string_format("allocate the multimodal projector compute buffers and scratch only while an encode runs, "
+                      "and free them after it, so an idle projector holds its weights and a small fixed context. "
                       "The encode then needs that VRAM free when it starts (default: %s)", params.mmproj_compute_lazy ? "enabled" : "disabled"),
         [](common_params & params, bool value) {
             params.mmproj_compute_lazy = value;
         }
     ).set_examples(mmproj_examples).set_env("LLAMA_ARG_MMPROJ_COMPUTE_LAZY"));
+    add_opt(common_arg(
+        {"--mmproj-cpu-fallback"},
+        {"--no-mmproj-cpu-fallback"},
+        string_format("run an encode on the CPU when the GPU does not have the VRAM for it, instead of failing the request. "
+                      "Only with --mmproj-weights-host (default: %s)", params.mmproj_cpu_fallback ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.mmproj_cpu_fallback = value;
+        }
+    ).set_examples(mmproj_examples).set_env("LLAMA_ARG_MMPROJ_CPU_FALLBACK"));
+    add_opt(common_arg(
+        {"--mmproj-vram-reserve"}, "MiB|auto",
+        string_format("VRAM to keep free for the multimodal projector encode, so that the KV cache and the expert hot store "
+                      "do not have to make room for every image. auto = what the largest image needs (default: %d)", params.mmproj_vram_reserve),
+        [](common_params & params, const std::string & value) {
+            if (value == "auto") {
+                params.mmproj_vram_reserve = -1;
+                return;
+            }
+            params.mmproj_vram_reserve = std::stoi(value);
+            if (params.mmproj_vram_reserve < 0) {
+                throw std::invalid_argument("mmproj-vram-reserve must be non-negative or auto");
+            }
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MMPROJ_VRAM_RESERVE"));
     add_opt(common_arg(
         {"--image", "--audio", "--video"}, "FILE",
         "path to an image, audio, or video file. use with multimodal models, use comma-separated values for multiple files\n",

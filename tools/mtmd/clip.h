@@ -51,6 +51,7 @@ struct clip_context_params {
     ggml_backend_dev_t device;
     bool weights_host;
     bool compute_lazy;
+    bool cpu_fallback;
     enum clip_flash_attn_type flash_attn_type;
     int image_min_tokens;
     int image_max_tokens;
@@ -121,9 +122,22 @@ struct clip_encode_params {
 };
 bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params);
 
-// device memory an encode of imgs needs free when it starts, on top of what ctx already holds:
-// the growth of its compute buffers, and the backend scratch for the largest op. 0 on the CPU.
+// device memory to have free before an encode of imgs, on top of what ctx already holds: the growth
+// of its compute buffers, the backend scratch of the largest op, and a margin. 0 on the CPU.
+// The encode itself runs without the margin, and falls back to the CPU or fails below that.
 size_t clip_encode_vram_need(struct clip_ctx * ctx, const struct clip_image_f32_batch * imgs);
+
+// the same for the largest input ctx accepts
+size_t clip_encode_vram_need_max(struct clip_ctx * ctx);
+
+// what the last clip_encode() took from the device over what ctx held before
+struct clip_encode_stats {
+    size_t graph;           // compute buffers
+    size_t scratch;         // backend scratch, at its peak
+    size_t scratch_reserve; // backend scratch reserved before the compute
+    bool   on_cpu;          // the device had no room, see clip_context_params::cpu_fallback
+};
+struct clip_encode_stats clip_get_encode_stats(const struct clip_ctx * ctx);
 
 bool clip_is_llava(const struct clip_ctx * ctx);
 // note for contributor: this clip_is_(model) pattern is deprecated

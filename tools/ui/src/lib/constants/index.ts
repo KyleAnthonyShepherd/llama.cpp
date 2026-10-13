@@ -27,6 +27,7 @@ export * from './control-actions.constants';
 export * from './css-classes.constants';
 export * from './file-intake.constants';
 export * from './formatters.constants';
+export * from './hats.constants';
 export * from './headers.constants';
 export * from './key-value-pairs.constants';
 export * from './latex-protection.constants';

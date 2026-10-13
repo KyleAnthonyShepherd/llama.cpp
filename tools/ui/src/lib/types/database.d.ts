@@ -26,6 +26,8 @@ export interface DatabaseConversation {
 	/** Tool categories disabled for this conversation */
 	disabledToolCategories?: ToolSource[];
 	forkedFromConversationId?: string;
+	/** Hat this chat wears: its system text and tools replace the chat's own */
+	hat?: string;
 	pinned?: boolean;
 }
 

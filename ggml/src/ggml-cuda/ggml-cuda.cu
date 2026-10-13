@@ -632,6 +632,26 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
         CUDA_CHECK(cudaFree(ptr));
         pool_size -= size;
     }
+
+    void stats(size_t * mapped, size_t * used, size_t * peak) const override {
+        size_t cached = 0;
+        for (int i = 0; i < MAX_BUFFERS; ++i) {
+            cached += buffer_pool[i].size;
+        }
+        *mapped = pool_size;
+        *used   = pool_size - cached;
+        *peak   = pool_size;
+    }
+
+    // buffers are handed out whole, memory kept ahead would not serve a later alloc
+    bool reserve(size_t size) override {
+        GGML_UNUSED(size);
+        return true;
+    }
+
+    void trim() override {
+        clear_pool();
+    }
 };
 
 // pool with virtual memory
@@ -644,6 +664,7 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
     CUdeviceptr pool_addr = 0;
     size_t pool_used = 0;
     size_t pool_size = 0;
+    size_t pool_peak = 0;
     size_t granularity;
 #if defined(GGML_USE_HIP)
     std::vector<std::pair<CUdeviceptr, size_t>> mappings;
@@ -657,16 +678,130 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
 
     ~ggml_cuda_pool_vmm() {
         if (pool_addr != 0) {
-#if defined(GGML_USE_HIP)
-            // Workaround for https://github.com/ROCm/ROCR-Runtime/issues/285
-            for (std::pair<CUdeviceptr, size_t> & mapping : mappings) {
-                CU_CHECK(cuMemUnmap(mapping.first, mapping.second));
-            }
-#else
-            CU_CHECK(cuMemUnmap(pool_addr, pool_size));
-#endif
+            unmap();
             CU_CHECK(cuMemAddressFree(pool_addr, CUDA_POOL_VMM_MAX_SIZE));
         }
+    }
+
+    void unmap() {
+        if (pool_size == 0) {
+            return;
+        }
+#if defined(GGML_USE_HIP)
+        // Workaround for https://github.com/ROCm/ROCR-Runtime/issues/285
+        for (std::pair<CUdeviceptr, size_t> & mapping : mappings) {
+            CU_CHECK(cuMemUnmap(mapping.first, mapping.second));
+        }
+        mappings.clear();
+#else
+        CU_CHECK(cuMemUnmap(pool_addr, pool_size));
+#endif
+        pool_size = 0;
+    }
+
+#if defined(GGML_USE_HIP)
+    static const char * error_str(hipError_t err) { return hipGetErrorString(err); }
+#else
+    static const char * error_str(CUresult err) { return cu_get_error_str(err); }
+#endif
+
+    // map reserve_size more bytes of device memory at the end of the pool.
+    // returns false when the device refuses, the pool is then as it was
+    bool grow(size_t reserve_size) {
+        GGML_ASSERT(pool_size + reserve_size <= CUDA_POOL_VMM_MAX_SIZE);
+
+        // allocate more physical memory
+        CUmemAllocationProp prop = {};
+        prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+        prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+        prop.location.id = physical_device;
+        CUmemGenericAllocationHandle handle;
+        auto err = cuMemCreate(&handle, reserve_size, &prop, 0);
+        if (err != 0) {
+            GGML_LOG_WARN(GGML_CUDA_NAME " pool[%d]: cuMemCreate of %.2f MiB failed: %s\n", device, reserve_size/1024.0/1024.0, error_str(err));
+            return false;
+        }
+
+        // reserve virtual address space (if not already reserved)
+        if (pool_addr == 0) {
+            CU_CHECK(cuMemAddressReserve(&pool_addr, CUDA_POOL_VMM_MAX_SIZE, 0, 0, 0));
+        }
+
+        // map at the end of the pool
+        CUdeviceptr start_ptr = (CUdeviceptr)((char *)(pool_addr) + pool_size);
+        err = cuMemMap(start_ptr, reserve_size, 0, handle, 0);
+
+        // the memory allocation handle is no longer needed after mapping
+        CU_CHECK(cuMemRelease(handle));
+
+        if (err != 0) {
+            GGML_LOG_WARN(GGML_CUDA_NAME " pool[%d]: cuMemMap of %.2f MiB failed: %s\n", device, reserve_size/1024.0/1024.0, error_str(err));
+            return false;
+        }
+
+        // VMM Bug fix for P2P access if GGML_CUDA_P2P is set, or if NCCL build
+        bool use_peer_access = getenv("GGML_CUDA_P2P") != nullptr;
+#if defined(GGML_USE_NCCL)
+        use_peer_access = true;
+#endif // defined(GGML_USE_NCCL)
+
+        std::vector<CUmemAccessDesc> access_descs;
+        if (use_peer_access) {
+            // NCCL implicitly enables peer access (cudaDeviceEnablePeerAccess), and
+            // GGML_CUDA_P2P enables it explicitly. Unlike cudaMalloc buffers, VMM
+            // allocations do not become peer-accessible from that alone, so access
+            // must be granted explicitly here. With virtual devices, grant access
+            // on the backing *physical* devices (deduplicated, since several
+            // virtual devices can map to the same physical GPU).
+            bool physical_seen[GGML_CUDA_MAX_DEVICES] = {};
+            const int device_count = ggml_cuda_info().device_count;
+            for (int id = 0; id < device_count; ++id) {
+                const int id_physical = ggml_cuda_get_physical_device(id);
+                if (id_physical != physical_device) {
+                    int can_access_peer = 0;
+                    CUDA_CHECK(cudaDeviceCanAccessPeer(&can_access_peer, id_physical, physical_device));
+                    if (!can_access_peer) {
+                        continue;
+                    }
+                }
+                if (physical_seen[id_physical]) {
+                    continue;
+                }
+                physical_seen[id_physical] = true;
+                CUmemAccessDesc access = {};
+                access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+                access.location.id = id_physical;
+                access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+                access_descs.push_back(access);
+            }
+        } else {
+            // set access for non P2P
+            CUmemAccessDesc access = {};
+            access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+            access.location.id = physical_device;
+            access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+            access_descs.push_back(access);
+        }
+
+        err = cuMemSetAccess(start_ptr, reserve_size, access_descs.data(), access_descs.size());
+        if (err != 0) {
+            GGML_LOG_WARN(GGML_CUDA_NAME " pool[%d]: cuMemSetAccess of %.2f MiB failed: %s\n", device, reserve_size/1024.0/1024.0, error_str(err));
+            CU_CHECK(cuMemUnmap(start_ptr, reserve_size));
+            return false;
+        }
+
+#if defined(GGML_USE_HIP)
+        mappings.push_back({start_ptr, reserve_size});
+#endif
+
+        // add to the pool
+        pool_size += reserve_size;
+
+        //printf("cuda pool[%d]: size increased to %llu MB (reserved %llu MB)\n",
+        //       device, (unsigned long long) (pool_size/1024/1024),
+        //       (unsigned long long) (reserve_size/1024/1024));
+
+        return true;
     }
 
     void * alloc(size_t size, size_t * actual_size) override {
@@ -681,82 +816,11 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
             size_t reserve_size = size - avail;
             reserve_size = granularity * ((reserve_size + granularity - 1) / granularity);
 
-            GGML_ASSERT(pool_size + reserve_size <= CUDA_POOL_VMM_MAX_SIZE);
-
-            // allocate more physical memory
-            CUmemAllocationProp prop = {};
-            prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-            prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-            prop.location.id = physical_device;
-            CUmemGenericAllocationHandle handle;
-            CU_CHECK(cuMemCreate(&handle, reserve_size, &prop, 0));
-
-            // reserve virtual address space (if not already reserved)
-            if (pool_addr == 0) {
-                CU_CHECK(cuMemAddressReserve(&pool_addr, CUDA_POOL_VMM_MAX_SIZE, 0, 0, 0));
+            if (!grow(reserve_size)) {
+                GGML_LOG_ERROR(GGML_CUDA_NAME " pool[%d]: holds %.2f MiB, %.2f MiB in use, an op asked for %.2f MiB more\n",
+                               device, pool_size/1024.0/1024.0, pool_used/1024.0/1024.0, size/1024.0/1024.0);
+                ggml_cuda_error("grow(reserve_size)", __func__, __FILE__, __LINE__, "out of memory");
             }
-
-            // map at the end of the pool
-            CUdeviceptr start_ptr = (CUdeviceptr)((char *)(pool_addr) + pool_size);
-            CU_CHECK(cuMemMap(start_ptr, reserve_size, 0, handle, 0));
-#if defined(GGML_USE_HIP)
-            mappings.push_back({start_ptr, reserve_size});
-#endif
-
-            // the memory allocation handle is no longer needed after mapping
-            CU_CHECK(cuMemRelease(handle));
-
-            // VMM Bug fix for P2P access if GGML_CUDA_P2P is set, or if NCCL build
-            bool use_peer_access = getenv("GGML_CUDA_P2P") != nullptr;
-#if defined(GGML_USE_NCCL)
-            use_peer_access = true;
-#endif // defined(GGML_USE_NCCL)
-
-            if (use_peer_access) {
-                // NCCL implicitly enables peer access (cudaDeviceEnablePeerAccess), and
-                // GGML_CUDA_P2P enables it explicitly. Unlike cudaMalloc buffers, VMM
-                // allocations do not become peer-accessible from that alone, so access
-                // must be granted explicitly here. With virtual devices, grant access
-                // on the backing *physical* devices (deduplicated, since several
-                // virtual devices can map to the same physical GPU).
-                std::vector<CUmemAccessDesc> access_descs;
-                bool physical_seen[GGML_CUDA_MAX_DEVICES] = {};
-                const int device_count = ggml_cuda_info().device_count;
-                for (int id = 0; id < device_count; ++id) {
-                    const int id_physical = ggml_cuda_get_physical_device(id);
-                    if (id_physical != physical_device) {
-                        int can_access_peer = 0;
-                        CUDA_CHECK(cudaDeviceCanAccessPeer(&can_access_peer, id_physical, physical_device));
-                        if (!can_access_peer) {
-                            continue;
-                        }
-                    }
-                    if (physical_seen[id_physical]) {
-                        continue;
-                    }
-                    physical_seen[id_physical] = true;
-                    CUmemAccessDesc access = {};
-                    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-                    access.location.id = id_physical;
-                    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-                    access_descs.push_back(access);
-                }
-                CU_CHECK(cuMemSetAccess(start_ptr, reserve_size, access_descs.data(), access_descs.size()));
-            } else {
-                // set access for non P2P
-                CUmemAccessDesc access = {};
-                access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-                access.location.id = physical_device;
-                access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-                CU_CHECK(cuMemSetAccess(start_ptr, reserve_size, &access, 1));
-            }
-
-            // add to the pool
-            pool_size += reserve_size;
-
-            //printf("cuda pool[%d]: size increased to %llu MB (reserved %llu MB)\n",
-            //       device, (unsigned long long) (pool_size/1024/1024),
-            //       (unsigned long long) (reserve_size/1024/1024));
         }
 
         GGML_ASSERT(pool_addr != 0);
@@ -764,6 +828,7 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
         void * ptr = (void *) ((CUdeviceptr)((char *)(pool_addr) + pool_used));
         *actual_size = size;
         pool_used += size;
+        pool_peak = std::max(pool_peak, pool_used);
 
 #ifdef DEBUG_CUDA_MALLOC
         printf("cuda pool[%d]: allocated %llu bytes at %llx\n", device, (unsigned long long) size, ptr);
@@ -781,6 +846,32 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
 
         // all deallocations must be in reverse order of the allocations
         GGML_ASSERT(ptr == (void *) ((char *)(pool_addr) + pool_used));
+    }
+
+    void stats(size_t * mapped, size_t * used, size_t * peak) const override {
+        *mapped = pool_size;
+        *used   = pool_used;
+        *peak   = pool_peak;
+    }
+
+    bool reserve(size_t size) override {
+        if (size <= pool_size) {
+            return true;
+        }
+
+        const size_t reserve_size = granularity * ((size - pool_size + granularity - 1) / granularity);
+
+        return pool_size + reserve_size <= CUDA_POOL_VMM_MAX_SIZE && grow(reserve_size);
+    }
+
+    // the address range stays reserved, so the pool grows again from the same place
+    void trim() override {
+        if (pool_used != 0) {
+            return;
+        }
+        ggml_cuda_set_device(device);
+        unmap();
+        pool_peak = 0;
     }
 };
 #endif // defined(GGML_USE_VMM)
@@ -6106,10 +6197,60 @@ static size_t ggml_backend_cuda_device_free_vram(ggml_backend_dev_t dev) {
     return ggml_cuda_free_vram(ctx->device);
 }
 
+// scratch pools of a backend, see ggml_cuda_pool. For a caller that shares the device with
+// something else and must know, or bound, what a graph compute takes outside its buffers
+
+static void ggml_backend_cuda_pool_stats(ggml_backend_t backend, size_t * mapped, size_t * used, size_t * peak) {
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+
+    *mapped = *used = *peak = 0;
+    for (auto & pools : cuda_ctx->pools) {
+        for (auto & pool : pools) {
+            if (pool) {
+                size_t m = 0, u = 0, p = 0;
+                pool->stats(&m, &u, &p);
+                *mapped += m;
+                *used   += u;
+                *peak   += p;
+            }
+        }
+    }
+}
+
+static bool ggml_backend_cuda_pool_reserve(ggml_backend_t backend, size_t size) {
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+
+    return cuda_ctx->pool().reserve(size);
+}
+
+static void ggml_backend_cuda_pool_trim(ggml_backend_t backend) {
+    ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
+
+    // nothing may still read the scratch
+    ggml_backend_cuda_synchronize(backend);
+
+    for (auto & pools : cuda_ctx->pools) {
+        for (auto & pool : pools) {
+            if (pool) {
+                pool->trim();
+            }
+        }
+    }
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
     if (strcmp(name, "ggml_backend_dev_free_vram") == 0) {
         return (void *)ggml_backend_cuda_device_free_vram;
+    }
+    if (strcmp(name, "ggml_backend_cuda_pool_stats") == 0) {
+        return (void *)ggml_backend_cuda_pool_stats;
+    }
+    if (strcmp(name, "ggml_backend_cuda_pool_reserve") == 0) {
+        return (void *)ggml_backend_cuda_pool_reserve;
+    }
+    if (strcmp(name, "ggml_backend_cuda_pool_trim") == 0) {
+        return (void *)ggml_backend_cuda_pool_trim;
     }
     if (strcmp(name, "ggml_backend_comm_init") == 0) {
         return (void *)ggml_backend_cuda_comm_init;

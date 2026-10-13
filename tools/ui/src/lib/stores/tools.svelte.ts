@@ -16,6 +16,7 @@ import {
 	DISABLED_TOOL_KEYS_LOCALSTORAGE_KEY,
 	FILE_INTAKE_TOOL_SUFFIX,
 	FONT_INTAKE_TOOL_SUFFIX,
+	HATS_TOOL_SUFFIX,
 	HOME_TILDE,
 	TOOL_GROUP_LABELS,
 	TOOL_SERVER_LABELS
@@ -37,6 +38,22 @@ import type { OpenAIToolDefinition, ToolEntry, ToolGroup } from '$lib/types';
 import { ApiError, buildSandboxToolDefinition } from '$lib/utils';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 
+/** Which file names the intake tool takes: the `pattern` of its `name` parameter, if it gives one */
+function intakePattern(definition: OpenAIToolDefinition | undefined): RegExp | null {
+	const properties = definition?.function.parameters?.properties as
+		| Record<string, { pattern?: unknown }>
+		| undefined;
+	const pattern = properties?.name?.pattern;
+
+	if (typeof pattern !== 'string') return null;
+
+	try {
+		return new RegExp(pattern, 'i');
+	} catch {
+		return null;
+	}
+}
+
 /** Stable selection identity for a tool, shared by the disabled set and the permission store */
 
 class ToolsStore {
@@ -46,8 +63,10 @@ class ToolsStore {
 	private _disabledTools = $state(new SvelteSet<string>());
 	private _error = $state<string | null>(null);
 	// kept out of _serverTools: the UI calls them on attach, the model never sees them
+	private _fileIntakePattern = $state<RegExp | null>(null);
 	private _fileIntakeTool = $state<string | null>(null);
 	private _fontIntakeTool = $state<string | null>(null);
+	private _hatsTool = $state<string | null>(null);
 	private _loading = $state(false);
 	private _serverHome = $state<string | null | undefined>(undefined);
 	private _serverTools = $state<OpenAIToolDefinition[]>([]);
@@ -171,12 +190,20 @@ class ToolsStore {
 		return this._error;
 	}
 
+	get fileIntakePattern(): RegExp | null {
+		return this._fileIntakePattern;
+	}
+
 	get fileIntakeTool(): string | null {
 		return this._fileIntakeTool;
 	}
 
 	get fontIntakeTool(): string | null {
 		return this._fontIntakeTool;
+	}
+
+	get hatsTool(): string | null {
+		return this._hatsTool;
 	}
 
 	get isToolsEndpointUnreachable(): boolean {
@@ -255,10 +282,15 @@ class ToolsStore {
 			const listed = await ToolsService.list();
 			const intake = listed.find((info) => info.tool.endsWith(FILE_INTAKE_TOOL_SUFFIX));
 			const fontIntake = listed.find((info) => info.tool.endsWith(FONT_INTAKE_TOOL_SUFFIX));
-			const toolInfos = listed.filter((info) => info !== intake && info !== fontIntake);
+			const hats = listed.find((info) => info.tool.endsWith(HATS_TOOL_SUFFIX));
+			const toolInfos = listed.filter(
+				(info) => info !== intake && info !== fontIntake && info !== hats
+			);
 
 			this._fileIntakeTool = intake?.tool ?? null;
+			this._fileIntakePattern = intakePattern(intake?.definition);
 			this._fontIntakeTool = fontIntake?.tool ?? null;
+			this._hatsTool = hats?.tool ?? null;
 			this._serverTools = toolInfos.map((info) => info.definition);
 			this.cwdAwareTools = new SvelteSet(
 				toolInfos.filter((info) => info.uses_cwd).map((info) => info.tool)

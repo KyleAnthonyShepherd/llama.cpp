@@ -4,6 +4,7 @@
 		ChatAttachmentsList,
 		ChatFormActions,
 		ChatFormCurrentWorkingDirectory,
+		ChatFormHat,
 		ChatFormInput,
 		ChatFormInputFileInputInvisible,
 		ChatFormMcpResourcesList,
@@ -694,18 +695,22 @@
 
 	<ContextGaugePopup />
 
-	{#if conversationsStore.preferences.hasEnabledCwdTools()}
-		<ChatFormCurrentWorkingDirectory
-			bind:query={pickers.workingDirectoryQuery}
-			customAnchor={mentionAnchor}
-			directory={cwd}
-			{disabled}
-			isOpen={pickers.isWorkingDirectoryPickerOpen}
-			onChange={handleWorkingDirectoryChange}
-			onClose={pickers.handleWorkingDirectoryClose}
-			onOpen={pickers.handleWorkingDirectoryOpen}
-		/>
-	{/if}
+	<div class="flex flex-wrap items-center gap-x-1">
+		{#if conversationsStore.preferences.hasEnabledCwdTools()}
+			<ChatFormCurrentWorkingDirectory
+				bind:query={pickers.workingDirectoryQuery}
+				customAnchor={mentionAnchor}
+				directory={cwd}
+				{disabled}
+				isOpen={pickers.isWorkingDirectoryPickerOpen}
+				onChange={handleWorkingDirectoryChange}
+				onClose={pickers.handleWorkingDirectoryClose}
+				onOpen={pickers.handleWorkingDirectoryOpen}
+			/>
+		{/if}
+
+		<ChatFormHat {disabled} />
+	</div>
 </form>
 
 <DialogMcpResourcesBrowser

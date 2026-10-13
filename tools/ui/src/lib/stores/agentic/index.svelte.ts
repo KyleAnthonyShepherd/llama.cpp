@@ -309,7 +309,8 @@ class AgenticStore {
 			messages,
 			options = {},
 			signal,
-			toolPolicy
+			toolPolicy,
+			tools: toolsOverride
 		} = params;
 
 		// Clear any pending permissions/continue requests for this conversation when starting a new flow
@@ -347,7 +348,8 @@ class AgenticStore {
 			}
 		}
 
-		const tools = toolsStore.getEnabledToolsForLLM(disabledTools, disabledToolCategories);
+		const tools =
+			toolsOverride ?? toolsStore.getEnabledToolsForLLM(disabledTools, disabledToolCategories);
 
 		if (tools.length === 0) {
 			return { handled: false };

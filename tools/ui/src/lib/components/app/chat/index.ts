@@ -265,6 +265,14 @@ export { default as ChatFormInput } from './ChatForm/ChatFormInput/ChatFormInput
 export { default as ChatFormCurrentWorkingDirectory } from './ChatForm/ChatFormCurrentWorkingDirectory/ChatFormCurrentWorkingDirectory.svelte';
 
 /**
+ * Hat picker. Renders a chip below the chat form when the server offers a
+ * hats tool; clicking it lists the hats, one of which the chat can wear, and
+ * opens the hat editor. A hat is a system prompt, tools and documents whose
+ * prompt cache the server restores when the chat starts.
+ */
+export { default as ChatFormHat } from './ChatForm/ChatFormHat/ChatFormHat.svelte';
+
+/**
  * **ChatFormPickerMcpPrompts** - MCP prompt selection interface
  *
  * Floating picker for browsing and selecting MCP Server Prompts.

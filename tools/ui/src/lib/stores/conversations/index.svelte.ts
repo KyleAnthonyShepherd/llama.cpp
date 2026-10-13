@@ -271,6 +271,7 @@ class ConversationsStore implements ConversationsPreferencesHost {
 		// new chats.
 		const conversation = await DatabaseService.createConversation(conversationName, {
 			cwd: this.preferences.pendingCwd ?? undefined,
+			hat: this.preferences.pendingHat ?? undefined,
 			reasoningEffort: this.preferences.pendingReasoningEffort,
 			...this.preferences.getToolPolicySnapshot()
 		});

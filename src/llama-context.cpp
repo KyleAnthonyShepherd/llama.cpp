@@ -1392,6 +1392,14 @@ int32_t llama_context::free_expert_hotstore_bytes(size_t n_bytes) {
 
     shrink_expert_hotstore(n_bytes);
 
+    // the caller counts free VRAM as vram_free() does, and the driver's own figure can read higher
+    const size_t free_mem = vram_free();
+    const size_t per_slot = expert_hotstore->bytes_per_slot_total();
+
+    if (free_mem < n_bytes && per_slot > 0) {
+        drop_expert_hotstore_slots((int) ((n_bytes - free_mem + per_slot - 1) / per_slot));
+    }
+
     return expert_hotstore->hot_s;
 }
 
@@ -1517,7 +1525,7 @@ int32_t llama_context::refit_expert_hotstore(bool reserve) {
     // one of those round trips costs a full re-plant from host - far more than the slot or two
     // held back. The growth step is the caller's to pick, so this waits for the first one to
     // measure it rather than guessing at the size.
-    const size_t vram_reserve = 16ull*1024ull*1024ull + ctx_grow_need;
+    const size_t vram_reserve = 16ull*1024ull*1024ull + ctx_grow_need + model.vram_reserve;
 
     have = have > vram_reserve ? have - vram_reserve : 0;
 
@@ -5171,6 +5179,10 @@ bool llama_kv_unspill(struct llama_context * ctx, bool force) {
 
 size_t llama_vram_free(const struct llama_context * ctx) {
     return ctx->vram_free();
+}
+
+void llama_model_set_vram_reserve(struct llama_model * model, size_t n_bytes) {
+    model->vram_reserve = n_bytes;
 }
 
 size_t llama_resize_peak_bytes(const struct llama_context * ctx, uint32_t n_ctx_seq_new) {
