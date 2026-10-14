@@ -1,5 +1,75 @@
 # llama.cpp
 
+> [!WARNING]
+> **This is Kyle Shepherd's personal fork** ([KyleAnthonyShepherd/llama.cpp](https://github.com/KyleAnthonyShepherd/llama.cpp)), branch `Ternary`. It is tuned for one laptop (RTX 3060 6 GB, i9-11900H, 64 GB RAM) and a home server, running Qwen3.6 35B-A3B / 27B and Ternary Bonsai 27B. It is not meant for upstream as a whole. Most features below are off unless their flag is given.
+
+## How this branch differs from upstream
+
+Layers, oldest first:
+
+1. **Upstream** [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) `master` as of 2026-09-17 (`972d2313b`), merged in through this fork's `master`.
+2. **PrismML** [PrismML-Eng/llama.cpp](https://github.com/PrismML-Eng/llama.cpp) branch `prism` (prism-v7): the low-bit formats Q1_0, PQ2_0 and PTQ1_0 with CPU, CUDA, HIP and Metal kernels, the Hadamard weight fold, K-cache mean centering (`--kv-mean-center`), dspark drafter fixes, and their release CI. Their own notes are in the box below.
+3. **Expert cache** from Miltos22's upstream PR [#26563](https://github.com/ggml-org/llama.cpp/pull/26563): keeps the hottest MoE experts in VRAM (`-ehs N` / `--expert-hot-s`, `-ehs -1` fits it automatically, `--ecf`, `--expert-dwell`, `--expert-hyst`, `--expert-heat-decay`, `--expert-heat-defer`, `--expert-heat-log-period`).
+4. **This branch's own work**, listed next.
+
+### Context and KV cache
+
+| What | Flags | Notes |
+|---|---|---|
+| KV cache that grows with the conversation, and shrinks back between requests | `--ctx-max N`, `--ctx-grow-factor`, `--ctx-grow-headroom` | start small with `-c 512`, grow up to `--ctx-max` |
+| a per-request context budget, so an agent keeps room to wrap up | `--ctx-limit N`, request field `n_ctx_limit` | stop type `ctx_limit` |
+| KV of the first N layers in host memory | `--kv-cpu-layers N` | `PLAN-kv-host-streaming.md` |
+| KV layers spill to host memory when growth does not fit in VRAM, and come back when idle | `--kv-spill-margin` | placement uses real free VRAM, not the WDDM budget |
+| CPU flash attention decode for quantized KV, grouped by query head, AVX-512 VNNI for q8_0 | | |
+| RAM slot store: named slot states in RAM, next to the disk ones | `--slot-ram-limit N`, `/slots` with `"store": "ram"` | used by the web UI's hats |
+| prompt cache matches by text where the tokens differ | | a model can sample an unusual token split of a text (`.` + `\n\n` for `.\n\n`); the next request tokenizes it the usual way and missed the cache from there, a full re-prefill on hybrid models. The server now takes the cached tokens where the text is the same. Upstream issue [#11970](https://github.com/ggml-org/llama.cpp/issues/11970), unmerged PR [#12067](https://github.com/ggml-org/llama.cpp/pull/12067) |
+
+### Speculative decoding and MoE
+
+| What | Flags | Notes |
+|---|---|---|
+| draft width that follows the cost of cold experts | `--spec-adaptive-width` | `PLAN-adaptive-draft-width.md` |
+| expert cache under speculative decoding: tiered path for small batches, draft-aware heatmap, shrinks when the KV cache grows | `--expert-tier-max-tokens` | `PLAN-qwen36-35b-moe.md`, `PLAN-ngram-mod-expert-cache.md` |
+| op offload threshold that small host weights do not drive | `--op-offload-min-batch` | |
+| MTP draft state kept in step across image and audio chunks | | |
+
+### Images (mmproj)
+
+| What | Flags | Notes |
+|---|---|---|
+| encoder weights in host memory, compute buffers only while encoding | `--mmproj-weights-host`, `--mmproj-compute-lazy` | `PLAN-mmproj-lazy-vram.md` |
+| an image encode borrows the KV cache's VRAM and gives it back; fails the request, not the server, when it does not fit | `--mmproj-vram-reserve`, `--mmproj-cpu-fallback` | `PLAN-adaptive-mmproj.md` |
+
+### Sampling and loops
+
+| What | Flags | Notes |
+|---|---|---|
+| repetition penalties and DRY that skip the prompt, and pause inside tool calls | `--rep-skip-prompt`, `--rep-skip-tool-calls` | |
+| stop when the output is one sequence repeated | `--repetition-stop N` | stop type `repetition` |
+| **loop guard**: watches thinking and answer for a reply that goes in circles, then closes it, adds a system note and opens a new reply. `reflect` mode lets the model judge the loop first, on a copy of its context parked in RAM | `--loop-guard off\|log\|note\|reflect`, `--loop-guard-trace DIR`, request fields `loop_guard*` | needs a chat template that renders a late system message: `models/templates/*-loop-guard.jinja`. Clients get `loop_guard` events in the stream. `PLAN-loop-guard.md` |
+
+### Web UI (`tools/ui`)
+
+- thinking and response prefill, per turn and as a default
+- office files (docx, pptx, ...) attached through a server tool, missing-font warning, download of the saved file
+- hats: a chat can wear a saved prompt cache (system prompt, tools and documents) restored from the RAM slot store
+- loop guard: holds the split reply and the system note as separate messages, shows the reflection
+
+### Ternary Bonsai
+
+- `examples/ternary-repack`: lossless PTQ1_0 to Q4_0 or PQ2_0 for the blocks that run on the CPU
+- faster PTQ1_0 mat-vec on NVIDIA, AVX-512 PQ2_0 dot, multi-threaded CONCAT and GET_ROWS
+- `PLAN-ternary-bonsai-27b.md`
+
+### Other
+
+- Windows shared builds export all llama symbols
+- the `PLAN-*.md` files at the root record the design, measurements and decisions behind each change
+
+Builds here use `build-cuda` (MSVC, CUDA, `-DGGML_NATIVE=OFF` with AVX-512 VNNI on). The web UI is built from source only when Node 22 is on `PATH`; otherwise CMake embeds upstream's prebuilt UI and the fork's UI changes are missing.
+
+---
+
 > [!IMPORTANT]
 > **This is the PrismML fork of llama.cpp**, the main line behind the [Bonsai](https://huggingface.co/collections/prism-ml/bonsai) models (branch `prism`, developed as `prism-v7`). It tracks current mainline llama.cpp and adds the fork's low-bit formats and runtime features on top.
 >
