@@ -1,4 +1,4 @@
-import type { ApiChatCompletionToolCall } from './api';
+import type { ApiChatCompletionToolCall, ApiLoopGuardEvent } from './api';
 import type { DatabaseMessage, DatabaseMessageExtra } from './database';
 import type {
 	AttachmentAction,
@@ -148,6 +148,8 @@ export interface ChatStreamCallbacks {
 		extras?: DatabaseMessageExtra[]
 	) => Promise<void>;
 	createAssistantMessage?: () => Promise<DatabaseMessage>;
+	createLoopGuardNote?: (content: string) => Promise<DatabaseMessage>;
+	onLoopGuardReflection?: (event: ApiLoopGuardEvent) => void;
 	onFlowComplete?: (timings?: ChatMessageTimings) => void;
 	onError?: (error: Error) => void;
 	onTurnComplete?: (intermediateTimings: ChatMessageTimings) => void;

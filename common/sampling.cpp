@@ -475,6 +475,9 @@ static bool is_rep_sampler(const struct llama_sampler * smpl) {
 
 // penalties and DRY push the model away from exact copies, which breaks paths and code copied into a tool call
 static bool rep_paused(struct common_sampler * gsmpl) {
+    if (gsmpl->params.rep_off) {
+        return true;
+    }
     return gsmpl->params.rep_skip_tool_calls && gsmpl->params.grammar_lazy &&
         grammar_should_apply(gsmpl) && llama_sampler_grammar_is_triggered(gsmpl->grmr);
 }
@@ -767,6 +770,40 @@ bool common_sampler_reasoning_budget_force(struct common_sampler * gsmpl) {
     }
 
     return common_reasoning_budget_force(gsmpl->rbudget);
+}
+
+common_sampler_phase common_sampler_get_phase(const struct common_sampler * gsmpl) {
+    if (!gsmpl) {
+        return COMMON_SAMPLER_PHASE_CONTENT;
+    }
+
+    if (gsmpl->rbudget) {
+        const auto state = common_reasoning_budget_get_state(gsmpl->rbudget);
+        if (state == REASONING_BUDGET_COUNTING) {
+            return COMMON_SAMPLER_PHASE_REASONING;
+        }
+        if (state == REASONING_BUDGET_WAITING_UTF8 || state == REASONING_BUDGET_FORCING) {
+            return COMMON_SAMPLER_PHASE_FORCED;
+        }
+    }
+
+    if (gsmpl->grmr && (!gsmpl->params.grammar_lazy || llama_sampler_grammar_is_triggered(gsmpl->grmr))) {
+        return COMMON_SAMPLER_PHASE_FORCED;
+    }
+
+    return COMMON_SAMPLER_PHASE_CONTENT;
+}
+
+void common_sampler_set_rep_off(struct common_sampler * gsmpl, bool off) {
+    if (gsmpl) {
+        gsmpl->params.rep_off = off;
+    }
+}
+
+void common_sampler_accept_prompt(struct common_sampler * gsmpl, llama_token token) {
+    if (gsmpl && gsmpl->rbudget) {
+        llama_sampler_accept(gsmpl->rbudget, token);
+    }
 }
 
 // helpers

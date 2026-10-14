@@ -351,6 +351,21 @@ export interface ApiChatCompletionStreamChunk {
 		cache_n?: number;
 	};
 	prompt_progress?: ChatMessagePromptProgress;
+	loop_guard?: ApiLoopGuardEvent;
+}
+
+/**
+ * Loop guard event of llama-server (--loop-guard), sent in a chunk with an empty delta.
+ * On `note` the assistant message so far is complete, `message` follows it in the history,
+ * and the deltas after it belong to a new assistant message. See PLAN-loop-guard.md section 3.9
+ */
+export interface ApiLoopGuardEvent {
+	event: 'reflect_start' | 'reflect_delta' | 'resume' | 'note';
+	phase?: string;
+	text?: string;
+	cause?: string;
+	signals?: Record<string, unknown>;
+	message?: { role: string; content: string };
 }
 
 export interface ApiChatCompletionResponse {

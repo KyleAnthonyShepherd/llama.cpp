@@ -42,6 +42,7 @@ import type {
 	ErrorDialogState,
 	HatWear
 } from '$lib/types';
+import type { ApiLoopGuardEvent } from '$lib/types/api';
 import {
 	findMessageById,
 	formatCwdMessage,
@@ -50,6 +51,7 @@ import {
 	normalizeModelName
 } from '$lib/utils';
 import { SvelteMap } from 'svelte/reactivity';
+import { toast } from 'svelte-sonner';
 
 class ChatStore implements ChatStreamHost, ChatFlowsHost {
 	chatReasoningStates = new SvelteMap<string, boolean>();
@@ -912,6 +914,9 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 		const abortController = this.getOrCreateAbortController(convId);
 
 		let hat: HatWear | null = null;
+		// llama-server --loop-guard split the reply: this flow made more than one message
+		let loopGuardSplit = false;
+		let loopGuardReflection = '';
 
 		const streamCallbacks: ChatStreamCallbacks = {
 			createAssistantMessage: async () => {
@@ -939,6 +944,31 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 
 				currentMessageId = msg.id;
 				lastCreatedInFlow = msg.id;
+
+				return msg;
+			},
+			createLoopGuardNote: async (content: string) => {
+				// a real message of the conversation: the server holds it in its cache at this
+				// place, so it has to be sent back at this place. type TEXT keeps it visible
+				const msg = await DatabaseService.createMessageBranch(
+					{
+						children: [],
+						content,
+						convId,
+						role: MessageRole.SYSTEM,
+						timestamp: Date.now(),
+						toolCalls: '',
+						type: MessageType.TEXT
+					},
+					currentMessageId
+				);
+
+				if (conversationsStore.activeConversation?.id === convId) {
+					conversationsStore.addMessageToActive(msg);
+				}
+
+				lastCreatedInFlow = msg.id;
+				loopGuardSplit = true;
 
 				return msg;
 			},
@@ -1082,8 +1112,9 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 				if (serverStore.isRouterMode) modelsStore.fetchRouterModels().catch(console.error);
 
 				// Pre-encode conversation in KV cache for faster next turn.
-				// Not with a hat: the pre-encode prompt has no tools, so it would displace the hat's cache
-				if (settingsStore.config.preEncodeConversation && !hat) {
+				// Not with a hat: the pre-encode prompt has no tools, so it would displace the hat's cache.
+				// Not after a loop guard split: the pre-encode prompt knows only one assistant message
+				if (settingsStore.config.preEncodeConversation && !hat && !loopGuardSplit) {
 					this.triggerPreEncode(
 						allMessages,
 						assistantMessage,
@@ -1091,6 +1122,20 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 						effectiveModel,
 						!!settingsStore.config.excludeReasoningFromContext
 					);
+				}
+			},
+			onLoopGuardReflection: (event: ApiLoopGuardEvent) => {
+				// the reflection is the server talking about the reply, it is not part of any message
+				if (event.event === 'reflect_start') {
+					loopGuardReflection = '';
+					toast.info('Loop guard: the reply repeats itself, reflecting...');
+				} else if (event.event === 'reflect_delta') {
+					loopGuardReflection += event.text ?? '';
+				} else if (event.event === 'resume') {
+					toast.info('Loop guard: no loop found, the reply goes on', {
+						description: loopGuardReflection.trim() || undefined,
+						duration: 15000
+					});
 				}
 			},
 			onModel: (modelName: string) => recordModel(modelName),
@@ -1262,6 +1307,23 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 					}
 				},
 				onError: streamCallbacks.onError,
+				onLoopGuard: async (event: ApiLoopGuardEvent) => {
+					if (event.event !== 'note' || !event.message) {
+						streamCallbacks.onLoopGuardReflection?.(event);
+
+						return;
+					}
+
+					// same as the agentic loop: the reply so far, then the note, then a new reply
+					await streamCallbacks.onAssistantTurnComplete?.(
+						streamedContent,
+						streamedReasoningContent || undefined,
+						undefined,
+						undefined
+					);
+					await streamCallbacks.createLoopGuardNote?.(event.message.content);
+					await streamCallbacks.createAssistantMessage?.();
+				},
 				onModel: streamCallbacks.onModel,
 				onReasoningChunk: streamCallbacks.onReasoningChunk,
 				onTimings: streamCallbacks.onTimings,

@@ -1,3 +1,4 @@
+import type { ApiLoopGuardEvent } from './api';
 import type { ChatMessagePromptProgress, ChatMessageTimings } from './chat';
 import type { DatabaseMessageExtra } from './database';
 import type { OpenAIToolDefinition } from './mcp';
@@ -140,6 +141,8 @@ export interface SettingsChatServiceOptions {
 	) => void;
 	onError?: (error: Error) => void;
 	onConnectionState?: (state: StreamConnectionState) => void;
+	// awaited before the next delta is handled, so a `note` can split the message first
+	onLoopGuard?: (event: ApiLoopGuardEvent) => void | Promise<void>;
 }
 
 export type SettingsConfigType = typeof SETTING_CONFIG_DEFAULT & {

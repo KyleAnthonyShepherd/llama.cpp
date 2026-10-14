@@ -1795,6 +1795,28 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--loop-guard"}, "MODE",
+        string_format(
+            "watch thinking and normal output for text that repeats itself (default: %s)\n"
+            "- off\n"
+            "- log: report a trip in the server log\n"
+            "- note: close the reply, add a system note, open a new reply\n"
+            "- reflect: as note, but a reflection on the parked context writes the note\n"
+            "note and reflect need a chat template that renders a system message after an assistant message, "
+            "see models/templates/*-loop-guard.jinja and PLAN-loop-guard.md; requests may override the mode with loop_guard",
+            common_loop_guard_mode_name(params.loop_guard.mode)),
+        [](common_params & params, const std::string & value) {
+            params.loop_guard.mode = common_loop_guard_mode_from_name(value);
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--loop-guard-trace"}, "DIR",
+        "write one TSV file per completion with the per-token loop guard signals (logprob, entropy, repeat rate, line repeats)",
+        [](common_params & params, const std::string & value) {
+            params.loop_guard.trace_dir = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         { "--kv-unified-per-slot" }, "N",
         "context limit per parallel slot (default: unset, behavior unchanged).\n"
         "when set without -c/--ctx-size, the shared KV pool is sized to n_parallel*N",

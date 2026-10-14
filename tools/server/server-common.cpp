@@ -1476,6 +1476,8 @@ json oaicompat_chat_params_parse(
 
     llama_params["message_delimiters"] = chat_params.message_delimiters.to_json();
 
+    llama_params["loop_guard_thinking"] = inputs.enable_thinking;
+
     // Reasoning budget: pass parameters through to sampling layer
     {
         int reasoning_budget = json_value(body, "reasoning_budget_tokens",

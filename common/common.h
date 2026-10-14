@@ -254,6 +254,7 @@ struct common_params_sampling {
     bool    ignore_eos         = false;
     bool    rep_skip_prompt    = false;  // penalties and DRY see only the generated tokens, not the prompt
     bool    rep_skip_tool_calls = false; // penalties and DRY pause once a lazy grammar (tool call) triggers
+    bool    rep_off            = false;  // penalties and DRY are not applied, the tokens are still recorded. Set at runtime by the loop guard
     bool    no_perf            = false;  // disable performance metrics
     bool    timing_per_token   = false;
 
@@ -431,6 +432,51 @@ enum common_reasoning_format {
     // do not extend this enum unless you absolutely have to
     // in most cases, use COMMON_REASONING_FORMAT_AUTO
     // see: https://github.com/ggml-org/llama.cpp/pull/15408
+};
+
+// what the server does when generated text starts to repeat itself, see PLAN-loop-guard.md
+enum common_loop_guard_mode {
+    COMMON_LOOP_GUARD_OFF,
+    COMMON_LOOP_GUARD_LOG,     // watch and log only
+    COMMON_LOOP_GUARD_NOTE,    // close the reply, add a fixed system note, open a new reply
+    COMMON_LOOP_GUARD_REFLECT, // same, but a reflection run on the parked context writes the note
+};
+
+const char *           common_loop_guard_mode_name(common_loop_guard_mode mode);
+common_loop_guard_mode common_loop_guard_mode_from_name(const std::string & name);
+
+struct common_params_loop_guard {
+    common_loop_guard_mode mode = COMMON_LOOP_GUARD_OFF;
+
+    // the defaults come from runs of Qwen3.6-35B-A3B, see PLAN-loop-guard.md section 9
+    float   novelty      = 0.06f; // trip when at most this share of the last n_words words is new. 0 = off
+    int32_t n_words      = 300;
+    int32_t n_words_min  = 600;   // no novelty trip before this many words in a phase
+    int32_t line_repeats = 5;     // trip when one line was produced this many times. 0 = off
+    int32_t n_line_min   = 12;    // shorter lines are not counted
+    float   rate         = 0.0f;  // trip when this share of the last n_window token n-grams repeats earlier ones. 0 = off
+    int32_t n_gram       = 8;
+    int32_t n_window     = 256;
+    int32_t n_min        = 256;   // no rate trip before this many tokens in a phase
+    int32_t n_max        = 2;    // interventions per request, then stop with "repetition"
+
+    // penalties and DRY after a note: 0 = as before, 1 = forget the reply so far, 2 = off for the rest of the request
+    int32_t rep_after    = 1;
+
+    // the reply after a note thinks first. Off: it answers right away, a new thinking block tends to walk back into the loop
+    bool    think_after  = false;
+
+    // the reflection of the "reflect" mode
+    float   reflect_temp      = 0.3f;
+    int32_t reflect_n_predict = 256;
+
+    // texts, empty = built in. "{evidence}" is replaced by what the monitor saw
+    std::string note_text;       // the note of the "note" mode, and the fallback of "reflect"
+    std::string note_header;     // goes before the note that the reflection wrote
+    std::string note_footer;     // goes after it
+    std::string reflect_prompt;  // the system message that asks for the reflection
+
+    std::string trace_dir;       // write one TSV per completion with the per-token signals
 };
 
 
@@ -796,6 +842,8 @@ struct common_params {
     int32_t n_ctx_limit     =     0; // stop generation once the context holds this many tokens; 0 = disabled
 
     int32_t repetition_stop =     0; // stop once the last N generated tokens are one sequence repeated 3+ times; 0 = disabled
+
+    struct common_params_loop_guard loop_guard;
 };
 
 // call once at the start of a program if it uses libcommon

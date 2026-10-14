@@ -2,6 +2,7 @@
 #include "server-chat.h"
 #include "server-common.h"
 #include "server-http.h"
+#include "server-loop-guard.h"
 #include "server-task.h"
 #include "server-queue.h"
 #include "server-schema.h"
@@ -74,6 +75,77 @@ static bool is_repeating(const llama_tokens & tokens, int32_t n) {
 
     return false;
 }
+
+// logprob of `token` and entropy (in nats) of the whole distribution, from the raw logits at batch index idx
+static void token_stats(llama_context * ctx, const llama_vocab * vocab, int idx, llama_token token, float & logprob, float & entropy) {
+    const float * logits  = llama_get_logits_ith(ctx, idx);
+    const int     n_vocab = llama_vocab_n_tokens(vocab);
+
+    if (logits == nullptr || token < 0 || token >= n_vocab) {
+        return;
+    }
+
+    float max_l = logits[0];
+    for (int i = 1; i < n_vocab; ++i) {
+        max_l = std::max(max_l, logits[i]);
+    }
+
+    // s = sum of exp(d), sd = sum of d * exp(d), with d = logit - max
+    double s  = 0.0;
+    double sd = 0.0;
+    for (int i = 0; i < n_vocab; ++i) {
+        const float d = logits[i] - max_l;
+        // the tail adds nothing that a float can hold
+        if (d > -30.0f) {
+            const double e = std::exp((double) d);
+            s  += e;
+            sd += e * d;
+        }
+    }
+
+    const double log_s = std::log(s);
+
+    logprob = (float) ((double) (logits[token] - max_l) - log_s);
+    entropy = (float) (log_s - sd / s);
+}
+
+static const char * guard_phase_name(common_sampler_phase phase) {
+    switch (phase) {
+        case COMMON_SAMPLER_PHASE_CONTENT:   return "content";
+        case COMMON_SAMPLER_PHASE_REASONING: return "thinking";
+        case COMMON_SAMPLER_PHASE_FORCED:    return "forced";
+    }
+    return "content";
+}
+
+// make text fit on one line of a log or a TSV file
+static std::string guard_escape(const std::string & text) {
+    std::string res;
+    for (const char c : text) {
+        switch (c) {
+            case '\n': res += "\\n";  break;
+            case '\r': res += "\\r";  break;
+            case '\t': res += "\\t";  break;
+            case '\\': res += "\\\\"; break;
+            default:   res += c;
+        }
+    }
+    return res;
+}
+
+// what the loop guard puts around its system note, cut from renders of the chat template
+struct server_guard_template {
+    bool ok = false;
+
+    std::string pre_think;   // ends a reply that is in its thinking, starts the system turn
+    std::string pre_content; // ends a reply that is in its answer, starts the system turn
+    std::string post_on;     // ends the system turn, starts a reply with thinking on
+    std::string post_off;    // same, with thinking off
+
+    // generation prompts of the reply that follows, for the chat parser
+    std::string gen_on;
+    std::string gen_off;
+};
 
 // synthetic draft verification for benchmarking - accept draft tokens at random instead of by match with the target
 // on replay the draft was already accepted before a context checkpoint restore, so repeat the same decisions
@@ -362,6 +434,90 @@ struct server_spec_width {
     }
 };
 
+// loop guard state of the running request, see PLAN-loop-guard.md
+struct server_slot_guard {
+    server_loop_monitor  mon;
+    common_sampler_phase phase   = COMMON_SAMPLER_PHASE_CONTENT;
+    int32_t              n_trips = 0;
+
+    bool intervene = false; // false = only log a trip
+
+    // a trip that waits for a token where the reply can be closed
+    bool        trip_pending = false;
+    int32_t     n_wait       = 0;
+    std::string note;
+
+    bool    stop    = false; // out of interventions, end the request
+    int32_t n_notes = 0;     // notes added to this request
+
+    // the note is on its way through the prompt path
+    bool hop = false;
+
+    // prompt size of the request as the client sent it, -1 = the task still has it
+    int32_t n_prompt_tokens = -1;
+
+    // not streamed: the messages from before each note
+    std::vector<server_guard_segment> segments;
+
+    // what the monitor saw at the trip
+    json        signals;
+    std::string evidence;
+
+    // reflect mode: the reflection runs on the slot, the request waits in `parked`
+    bool        reflecting = false;
+    std::string reflection; // text of the last reflection
+
+    struct {
+        std::unique_ptr<const server_task> task;
+        common_sampler_ptr                 smpl;
+
+        std::string  generated_text;
+        llama_tokens generated_tokens;
+        size_t       n_sent_text   = 0;
+        size_t       last_nl_pos   = 0;
+        bool         has_new_line  = false;
+        int32_t      n_predict_max = -1;
+        llama_token  sampled       = LLAMA_TOKEN_NULL;
+
+        std::vector<completion_token_output> generated_token_probs;
+
+        server_slot_stats stats;
+
+        // the whole state of the slot in host memory. Nothing evicts it, see PLAN-loop-guard.md section 3.6
+        server_prompt_cache_state state;
+    } parked;
+
+    std::ofstream trace;
+
+    void reset() {
+        mon.reset();
+        phase   = COMMON_SAMPLER_PHASE_CONTENT;
+        n_trips = 0;
+
+        intervene    = false;
+        trip_pending = false;
+        n_wait       = 0;
+        note.clear();
+        stop    = false;
+        n_notes = 0;
+        hop     = false;
+
+        n_prompt_tokens = -1;
+        segments.clear();
+
+        signals = json();
+        evidence.clear();
+
+        reflecting = false;
+        reflection.clear();
+        parked = {};
+
+        if (trace.is_open()) {
+            trace.close();
+        }
+    }
+};
+
 struct server_slot {
     int id;
 
@@ -487,6 +643,7 @@ struct server_slot {
 
     std::function<void(int /* id_slot */)>   callback_on_release;
     std::function<void(const server_slot &)> callback_on_reset; // called before reset()
+    std::function<void(server_slot &)>       callback_on_guard_abort;
 
     // this is for printing timings with slot progress, not part of metrics
     int64_t t_print_last = 0;
@@ -494,10 +651,14 @@ struct server_slot {
 
     server_spec_width spec_w;
 
+    server_slot_guard guard;
+
     void reset() {
         SLT_DBG(*this, "%s", "\n");
 
         spec_is_replay = false;
+
+        guard.reset();
 
         last_nl_pos    = 0;
         generated_text = "";
@@ -593,6 +754,11 @@ struct server_slot {
 
     bool has_budget() const {
         return n_predict_max == -1 || n_remaining() > 0;
+    }
+
+    // prompt size of the request. The loop guard grows the task's tokens, the client did not send those
+    int32_t n_prompt_tokens() const {
+        return guard.n_prompt_tokens >= 0 ? guard.n_prompt_tokens : task->n_tokens();
     }
 
     bool is_processing() const {
@@ -691,6 +857,11 @@ struct server_slot {
             // do not keep context of the child slots - the parent's context is enough
             if (task->is_child()) {
                 prompt_clear();
+            }
+
+            // the request ended under a loop guard reflection: leave the parked context in the slot, not the reflection
+            if (guard.reflecting) {
+                callback_on_guard_abort(*this);
             }
 
             callback_on_reset(*this);
@@ -1070,6 +1241,8 @@ private:
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
 
     common_speculative_ptr spec;
+
+    server_guard_template guard_tmpl;
 
     bool add_bos_token = true;
 
@@ -1549,6 +1722,12 @@ private:
                 }
             };
 
+            slot.callback_on_guard_abort = [this](server_slot & slot) {
+                if (!guard_restore_parked(slot)) {
+                    slot.prompt_clear();
+                }
+            };
+
             // kept across tasks: the fit describes the box and the model, not one request
             slot.spec_w.reset(spec_adaptive);
 
@@ -1764,7 +1943,86 @@ private:
             }
         }
 
+        if (!guard_probe_template() && params_base.loop_guard.mode >= COMMON_LOOP_GUARD_NOTE) {
+            SRV_ERR("%s", "--loop-guard note and reflect put a system message after an assistant message, and the chat template does not render one there\n");
+            SRV_ERR("%s", "load a template that does with --chat-template-file, e.g. models/templates/Qwen3.6-35B-A3B-loop-guard.jinja. See PLAN-loop-guard.md\n");
+            return false;
+        }
+
         return true;
+    }
+
+    // find what the chat template puts around a system message that follows an assistant message
+    bool guard_probe_template() {
+        static const std::string mark_r = "LGPROBER";
+        static const std::string mark_c = "LGPROBEC";
+        static const std::string mark_z = "LGPROBEZ";
+
+        // text between two marks, and the text after the second one
+        auto cut = [&](bool with_content, bool thinking, std::string & pre, std::string & post, std::string & gen) {
+            common_chat_templates_inputs inputs;
+            inputs.use_jinja             = chat_params.use_jinja;
+            inputs.chat_template_kwargs  = chat_params.chat_template_kwargs;
+            inputs.reasoning_format      = chat_params.reasoning_format;
+            inputs.enable_thinking       = thinking;
+            inputs.add_generation_prompt = true;
+
+            common_chat_msg user;
+            user.role    = "user";
+            user.content = "LGPROBEU";
+
+            common_chat_msg assistant;
+            assistant.role              = "assistant";
+            assistant.reasoning_content = mark_r;
+            assistant.content           = with_content ? mark_c : "";
+
+            common_chat_msg system;
+            system.role    = "system";
+            system.content = mark_z;
+
+            inputs.messages = { user, assistant, system };
+
+            const auto res = common_chat_templates_apply(chat_params.tmpls.get(), inputs);
+
+            const std::string & mark_a = with_content ? mark_c : mark_r;
+
+            const size_t pos_a = res.prompt.find(mark_a);
+            const size_t pos_z = res.prompt.find(mark_z);
+            if (pos_a == std::string::npos || pos_z == std::string::npos || pos_z < pos_a) {
+                return false;
+            }
+
+            pre  = res.prompt.substr(pos_a + mark_a.size(), pos_z - pos_a - mark_a.size());
+            post = res.prompt.substr(pos_z + mark_z.size());
+            gen  = res.generation_prompt;
+
+            return !pre.empty() && !post.empty();
+        };
+
+        guard_tmpl = {};
+
+        try {
+            std::string post;
+            std::string gen;
+
+            guard_tmpl.ok =
+                cut(false, true,  guard_tmpl.pre_think,   guard_tmpl.post_on,  guard_tmpl.gen_on) &&
+                cut(false, false, guard_tmpl.pre_think,   guard_tmpl.post_off, guard_tmpl.gen_off) &&
+                cut(true,  true,  guard_tmpl.pre_content, post,                gen);
+        } catch (const std::exception & e) {
+            SRV_TRC("loop guard: the chat template refused a system message after an assistant message: %s\n", e.what());
+            guard_tmpl.ok = false;
+        }
+
+        if (guard_tmpl.ok && params_base.loop_guard.mode != COMMON_LOOP_GUARD_OFF) {
+            SRV_INF("loop guard: mode = %s\n", common_loop_guard_mode_name(params_base.loop_guard.mode));
+            SRV_INF("loop guard: note framing, after thinking: '%s'\n", guard_escape(guard_tmpl.pre_think).c_str());
+            SRV_INF("loop guard: note framing, after content:  '%s'\n", guard_escape(guard_tmpl.pre_content).c_str());
+            SRV_INF("loop guard: note framing, next reply:     '%s'\n", guard_escape(guard_tmpl.post_on).c_str());
+            SRV_INF("loop guard: note framing, no thinking:    '%s'\n", guard_escape(guard_tmpl.post_off).c_str());
+        }
+
+        return guard_tmpl.ok;
     }
 
     server_slot * get_slot_by_id(int id_slot) {
@@ -2061,7 +2319,10 @@ private:
                 return false;
             }
 
-            const bool need_pre_sample_logits = task.params.sampling.n_probs > 0 && !task.params.post_sampling_probs;
+            // the loop guard reads the raw logits too
+            const bool need_pre_sample_logits =
+                (task.params.sampling.n_probs > 0 && !task.params.post_sampling_probs) ||
+                task.params.loop_guard.mode != COMMON_LOOP_GUARD_OFF;
 
             bool use_backend_sampling = task.params.sampling.backend_sampling;
 
@@ -2093,6 +2354,8 @@ private:
 
         slot.task = std::make_unique<const server_task>(std::move(task));
 
+        guard_begin(slot);
+
         slot.state = slot.task->is_child()
             ? SLOT_STATE_WAIT_OTHER // wait for the parent to process prompt
             : SLOT_STATE_STARTED;
@@ -2104,10 +2367,578 @@ private:
         return true;
     }
 
+    void guard_begin(server_slot & slot) {
+        const auto & lg = slot.task->params.loop_guard;
+
+        if (lg.mode == COMMON_LOOP_GUARD_OFF || slot.task->type != SERVER_TASK_TYPE_COMPLETION) {
+            return;
+        }
+
+        slot.guard.mon.configure(lg.n_gram, lg.n_window, lg.n_min, lg.n_line_min, lg.n_words, lg.n_words_min);
+
+        // a note needs chat turns, a client that can hold them, and a template that renders them
+        slot.guard.intervene =
+            lg.mode >= COMMON_LOOP_GUARD_NOTE && guard_tmpl.ok &&
+            slot.task->params.res_type == TASK_RESPONSE_TYPE_OAI_CHAT &&
+            slot.task->params.n_cmpl == 1 && !slot.task->is_child();
+
+        if (lg.mode >= COMMON_LOOP_GUARD_NOTE && !slot.guard.intervene) {
+            SLT_WRN(slot, "%s", "loop guard: this request is only watched (needs /v1/chat/completions, n = 1, and a chat template that passed the startup check)\n");
+        }
+
+        if (!lg.trace_dir.empty()) {
+            const auto path = std::filesystem::path(lg.trace_dir) / string_format("%012" PRId64 "-task%d.tsv", ggml_time_ms(), slot.task->id);
+
+            slot.guard.trace.open(path);
+            if (slot.guard.trace) {
+                slot.guard.trace << "i\ttoken\tphase\tlogprob\tentropy\trate\tnovelty\tline_repeats\ttrip\tpiece\n";
+            } else {
+                SLT_ERR(slot, "loop guard: failed to create %s\n", path.string().c_str());
+            }
+        }
+    }
+
+    // text of the model that goes into a note or a prompt: short, and with no angle brackets,
+    // so that it cannot spell a special token
+    static std::string guard_plain(const std::string & text, size_t n_max = 200) {
+        std::string res = text.substr(0, n_max);
+        res.resize(validate_utf8(res));
+        std::replace(res.begin(), res.end(), '<', '(');
+        std::replace(res.begin(), res.end(), '>', ')');
+        return string_strip(res);
+    }
+
+    // a text of the loop guard: the one from the request if it has one, with {evidence} filled in
+    static std::string guard_text(const std::string & custom, const std::string & built_in, const std::string & evidence) {
+        std::string res = custom.empty() ? built_in : custom;
+        string_replace_all(res, "{evidence}", evidence);
+        return res;
+    }
+
+    // the note of the "note" mode, and the fallback of the "reflect" mode
+    static std::string guard_note_text(const common_params_loop_guard & lg, const std::string & evidence) {
+        return guard_text(lg.note_text,
+                "LOOP GUARD: your last reply was stopped because it went in circles. {evidence}"
+                " Going over it again will not give a better answer. Do not examine it again."
+                " Write your final answer now from what you already worked out. Where you are unsure, give your best reading and mark it with (?).",
+                evidence);
+    }
+
+    // feed one generated token to the loop guard
+    void guard_push(server_slot & slot, const completion_token_output & result, const std::string & piece) {
+        const auto & lg = slot.task->params.loop_guard;
+        auto & g = slot.guard;
+
+        const auto phase = common_sampler_get_phase(slot.smpl.get());
+        if (phase != g.phase) {
+            // a draft copied from the thinking into the answer is not a repeat
+            g.mon.reset();
+            g.phase        = phase;
+            g.trip_pending = false;
+        }
+
+        // forced output repeats honestly, and a half written tool call cannot be closed
+        const bool watch = phase != COMMON_SAMPLER_PHASE_FORCED;
+        if (watch) {
+            g.mon.push(result.tok, piece, result.logprob, result.entropy);
+        }
+
+        const bool trip = watch && !g.trip_pending && g.mon.tripped(lg.rate, lg.novelty, lg.line_repeats);
+
+        if (g.trace.is_open()) {
+            g.trace << slot.stats.n_gen << '\t' << result.tok << '\t' << guard_phase_name(phase) << '\t'
+                    << result.logprob << '\t' << result.entropy << '\t'
+                    << g.mon.rate() << '\t' << g.mon.novelty() << '\t' << g.mon.line_repeats << '\t' << (trip ? 1 : 0) << '\t' << guard_escape(piece) << '\n';
+        }
+
+        if (!trip) {
+            return;
+        }
+
+        g.n_trips++;
+
+        SLT_WRN(slot, "loop guard: trip %d in %s, n_gen = %d, novelty = %.3f, rate = %.2f, line repeats = %d, mean logprob = %.2f, mean entropy = %.2f, line = '%s'\n",
+                g.n_trips, guard_phase_name(phase), (int) slot.stats.n_gen, g.mon.novelty(), g.mon.rate(), g.mon.line_repeats,
+                g.mon.mean_logprob(), g.mon.mean_entropy(), g.mon.line_top.c_str());
+
+        if (g.intervene) {
+            if (g.n_notes >= lg.n_max) {
+                g.stop = true;
+            } else {
+                g.trip_pending = true;
+                g.n_wait       = 0;
+
+                g.signals = json {
+                    {"novelty",      g.mon.novelty()},
+                    {"rate",         g.mon.rate()},
+                    {"line_repeats", g.mon.line_repeats},
+                    {"line",         g.mon.line_top},
+                    {"n_tokens",     g.mon.n_tokens},
+                    {"mean_logprob", g.mon.mean_logprob()},
+                    {"mean_entropy", g.mon.mean_entropy()},
+                };
+
+                g.evidence = string_format("The reply spent %d tokens in its %s, and only %d%% of its last %d words were new: it kept going over the same things.",
+                        g.mon.n_tokens, phase == COMMON_SAMPLER_PHASE_REASONING ? "thinking" : "answer", (int) (100.0f * g.mon.novelty() + 0.5f), g.mon.n_words);
+                if (g.mon.line_repeats >= 3 && !g.mon.line_top.empty()) {
+                    g.evidence += string_format(" This line came %d times: \"%s\".", g.mon.line_repeats, guard_plain(g.mon.line_top).c_str());
+                }
+
+                g.note = guard_note_text(lg, g.evidence);
+            }
+        }
+
+        g.mon.rearm(lg.line_repeats);
+    }
+
+    // true if appending the tokens `add` of `text` gives what tokenizing the reply and `text` in one piece gives.
+    // the client sends the reply back as text, and its tokens have to match the cache
+    bool guard_seam_ok(const server_slot & slot, const llama_tokens & add, const std::string & text) const {
+        // the chat template trims a message
+        if (slot.generated_text.empty() || std::isspace((unsigned char) slot.generated_text.back())) {
+            return false;
+        }
+
+        // the end of the reply: tokens that are decoded, then the one that waits
+        llama_tokens tail;
+        const int n = slot.prompt.n_tokens();
+        for (int i = std::max(0, n - 15); i < n; ++i) {
+            const llama_token tok = slot.prompt.tokens[i];
+            if (tok == LLAMA_TOKEN_NULL) {
+                tail.clear();
+            } else {
+                tail.push_back(tok);
+            }
+        }
+        tail.push_back(slot.sampled);
+
+        const llama_tokens joined = common_tokenize(vocab, common_detokenize(vocab, tail, true) + text, false, true);
+
+        // the head of `tail` has lost its left context, so compare only around the seam
+        const size_t n_tail = std::min<size_t>(2, tail.size());
+        if (joined.size() < n_tail + add.size()) {
+            return false;
+        }
+
+        return std::equal(tail.end() - n_tail, tail.end(), joined.end() - add.size() - n_tail) &&
+               std::equal(add.begin(), add.end(), joined.end() - add.size());
+    }
+
+    void send_guard_event(server_slot & slot, const json & event, bool split = false, const std::string & generation_prompt = "") {
+        auto res = std::make_unique<server_task_result_cmpl_partial>();
+
+        res->id    = slot.task->id;
+        res->index = slot.task->index;
+
+        res->loop_guard              = event;
+        res->guard_split             = split;
+        res->guard_generation_prompt = generation_prompt;
+
+        res->n_decoded             = slot.stats.n_gen;
+        res->n_prompt_tokens       = slot.n_prompt_tokens();
+        res->n_prompt_tokens_cache = slot.stats.n_prompt_cached;
+        res->post_sampling_probs   = slot.task->params.post_sampling_probs;
+
+        res->verbose           = slot.task->params.verbose;
+        res->res_type          = slot.task->params.res_type;
+        res->oaicompat_model   = slot.task->params.oaicompat_model;
+        res->oaicompat_cmpl_id = slot.task->params.oaicompat_cmpl_id;
+
+        queue_results.send(std::move(res));
+    }
+
+    // close the reply, add `note` as a system turn and open a new reply.
+    // everything is appended, the context of the reply is not changed. See PLAN-loop-guard.md section 3.4
+    void guard_inject(server_slot & slot, const std::string & note, const llama_tokens & add) {
+        auto & g = slot.guard;
+
+        const bool think_on = guard_think_after(slot);
+        const std::string & generation_prompt = think_on ? guard_tmpl.gen_on : guard_tmpl.gen_off;
+
+        server_task next(SERVER_TASK_TYPE_COMPLETION);
+
+        next.id      = slot.task->id;
+        next.index   = slot.task->index;
+        next.id_slot = slot.task->id_slot;
+        next.params  = slot.task->params;
+
+        // the hop must reuse the whole slot
+        next.params.cache_prompt = true;
+
+        next.tokens = slot.prompt.tokens.clone();
+        next.tokens.push_back(slot.sampled);
+        next.tokens.insert(add);
+
+        if (g.n_prompt_tokens < 0) {
+            g.n_prompt_tokens = slot.task->n_tokens();
+        }
+
+        // the reply so far is a message of its own from here on
+        if (slot.task->params.stream) {
+            send_guard_event(slot, json {
+                {"event",   "note"},
+                {"phase",   guard_phase_name(g.phase)},
+                {"message", json {{"role", "system"}, {"content", note}}},
+            }, true, generation_prompt);
+        } else {
+            g.segments.push_back({ slot.generated_text, note, generation_prompt });
+        }
+
+        slot.generated_text.clear();
+        slot.n_sent_text  = 0;
+        slot.last_nl_pos  = 0;
+        slot.has_new_line = false;
+
+        // the sampler has to know about the thinking tags that are added here
+        for (const llama_token tok : add) {
+            common_sampler_accept_prompt(slot.smpl.get(), tok);
+        }
+
+        // the new reply may have to state what the old one stated. Penalties and DRY would stop it
+        if (slot.task->params.loop_guard.rep_after == 1) {
+            common_sampler_reset_rep(slot.smpl.get());
+        } else if (slot.task->params.loop_guard.rep_after == 2) {
+            common_sampler_set_rep_off(slot.smpl.get(), true);
+        }
+
+        SLT_INF(slot, "loop guard: note %d added in %s, %d tokens: %s\n",
+                g.n_notes, guard_phase_name(g.phase), (int) add.size(), note.c_str());
+
+        slot.task  = std::make_unique<const server_task>(std::move(next));
+        slot.state = SLOT_STATE_STARTED;
+
+        g.hop = true;
+
+        g.mon.reset();
+        g.phase = common_sampler_get_phase(slot.smpl.get());
+    }
+
+    // does the reply after a note start with a thinking block
+    static bool guard_think_after(const server_slot & slot) {
+        return slot.task->params.guard_thinking && slot.task->params.loop_guard.think_after;
+    }
+
+    // what the note is wrapped in: the end of the reply, a system turn, the start of the next reply
+    std::string guard_frame(const server_slot & slot, const std::string & text, bool think_on) const {
+        const bool in_think = slot.guard.phase == COMMON_SAMPLER_PHASE_REASONING;
+
+        return (in_think ? guard_tmpl.pre_think : guard_tmpl.pre_content) + text +
+               (think_on ? guard_tmpl.post_on   : guard_tmpl.post_off);
+    }
+
+    // park the request in host memory and run the reflection on the slot, after the parked context.
+    // returns false if the reflection could not start, the slot is then unchanged
+    bool guard_begin_reflection(server_slot & slot) {
+        auto & g = slot.guard;
+
+        static const std::string grammar =
+            "root ::= \"CAUSE: \" sent \"\\nSTUCK: \" (\"yes\" | \"no\") \"\\nNOTE: \" sent (\" \" sent)? (\" \" sent)? \"\\n\"?\n"
+            "sent ::= ([^\\n<>.!?] | \".\" [^ \\n<>.!?]){1,250} [.!?]\n";
+
+        // the verdict comes after the cause, so that it follows from what the model just wrote.
+        // The sentences are counted by the grammar: a reflection that may ramble does ramble, and its
+        // note then walks the agent back into the loop
+        const auto & lg = slot.task->params.loop_guard;
+
+        const std::string prompt = guard_text(lg.reflect_prompt,
+            "LOOP GUARD REFLECTION. A monitor stopped the assistant's reply above. {evidence}\n"
+            "You are not the assistant. Do not work on the task, and do not look at the image or the data again. Judge the reply above, and answer in exactly three lines:\n"
+            "CAUSE: one sentence: which question the reply keeps going back to.\n"
+            "STUCK: yes if it goes over that question again and again without a new result. no if the repeated text is real progress, like the rows of a long table.\n"
+            "NOTE: at most three short sentences to the assistant. Tell it to stop examining that question and to write its final answer now. "
+            "Do not give any value, reading or result of your own: if the assistant reached the same answer more than once, tell it to keep that one, otherwise tell it to mark the value as unclear. "
+            "If the task cannot be done as asked (the clues contradict each other, or the data is missing or unreadable), tell it to say so in its answer instead of forcing a result.",
+            g.evidence);
+
+        const llama_tokens add = common_tokenize(vocab, guard_frame(slot, prompt, false), false, true);
+
+        server_task next(SERVER_TASK_TYPE_COMPLETION);
+
+        next.id      = slot.task->id;
+        next.index   = slot.task->index;
+        next.id_slot = slot.task->id_slot;
+
+        // response formatting of the request, so that the events of the reflection reach its stream
+        next.params.res_type          = slot.task->params.res_type;
+        next.params.oaicompat_model   = slot.task->params.oaicompat_model;
+        next.params.oaicompat_cmpl_id = slot.task->params.oaicompat_cmpl_id;
+        next.params.verbose           = slot.task->params.verbose;
+
+        // the text goes out as loop guard events, not as a reply
+        next.params.stream           = false;
+        next.params.cache_prompt     = true;
+        next.params.n_predict        = lg.reflect_n_predict;
+        next.params.t_max_predict_ms = 120000;
+        next.params.repetition_stop  = 96;
+
+        next.params.sampling            = params_base.sampling;
+        next.params.sampling.temp       = lg.reflect_temp;
+        next.params.sampling.n_probs    = 0;
+
+        // no repetition control: the reflection has to quote the reply as it is
+        next.params.sampling.penalty_repeat  = 1.0f;
+        next.params.sampling.penalty_freq    = 0.0f;
+        next.params.sampling.penalty_present = 0.0f;
+        next.params.sampling.dry_multiplier  = 0.0f;
+        next.params.sampling.grammar    = common_grammar(COMMON_GRAMMAR_TYPE_USER, grammar);
+        next.params.sampling.logit_bias = slot.task->params.sampling.logit_bias;
+
+        next.tokens = slot.prompt.tokens.clone();
+        next.tokens.push_back(slot.sampled);
+        next.tokens.insert(add);
+
+        common_sampler_ptr smpl;
+        try {
+            smpl.reset(common_sampler_init(model_tgt, next.params.sampling));
+        } catch (const std::exception & e) {
+            SLT_ERR(slot, "loop guard: failed to make the sampler of the reflection: %s\n", e.what());
+            return false;
+        }
+
+        const int64_t t_start = ggml_time_us();
+
+        std::string err;
+        if (!slot_state_capture(slot, g.parked.state, err)) {
+            SLT_ERR(slot, "loop guard: failed to park the request: %s\n", err.c_str());
+            g.parked.state = {};
+            return false;
+        }
+
+        SLT_INF(slot, "loop guard: parked %d tokens in host memory, %.3f MiB in %.1f ms\n",
+                slot.prompt.n_tokens(), g.parked.state.size() / (1024.0 * 1024.0), (ggml_time_us() - t_start) / 1e3);
+
+        if (slot.task->params.stream) {
+            send_guard_event(slot, json {
+                {"event",   "reflect_start"},
+                {"phase",   guard_phase_name(g.phase)},
+                {"signals", g.signals},
+            });
+        }
+
+        if (g.n_prompt_tokens < 0) {
+            g.n_prompt_tokens = slot.task->n_tokens();
+        }
+
+        g.parked.sampled               = slot.sampled;
+        g.parked.n_sent_text           = slot.n_sent_text;
+        g.parked.last_nl_pos           = slot.last_nl_pos;
+        g.parked.has_new_line          = slot.has_new_line;
+        g.parked.n_predict_max         = slot.n_predict_max;
+        g.parked.stats                 = slot.stats;
+        g.parked.generated_text        = std::move(slot.generated_text);
+        g.parked.generated_tokens      = std::move(slot.generated_tokens);
+        g.parked.generated_token_probs = std::move(slot.generated_token_probs);
+        g.parked.smpl                  = std::move(slot.smpl);
+        g.parked.task                  = std::move(slot.task);
+
+        slot.generated_text.clear();
+        slot.generated_tokens.clear();
+        slot.generated_token_probs.clear();
+        slot.n_sent_text   = 0;
+        slot.last_nl_pos   = 0;
+        slot.has_new_line  = false;
+        slot.n_predict_max = next.params.n_predict;
+        slot.stats.n_gen   = 0; // keeps the timestamps, the reflection has its own token budget
+
+        slot.smpl  = std::move(smpl);
+        slot.task  = std::make_unique<const server_task>(std::move(next));
+        slot.state = SLOT_STATE_STARTED;
+
+        g.hop        = true;
+        g.reflecting = true;
+        g.reflection.clear();
+
+        return true;
+    }
+
+    // put the parked context back into the slot. true if the slot holds exactly what was parked
+    bool guard_restore_parked(server_slot & slot) {
+        auto & g = slot.guard;
+
+        const int32_t n_park = (int32_t) g.parked.state.prompt.tokens.size();
+        const int64_t t_start = ggml_time_us();
+
+        std::string err;
+        const bool ok = slot_state_restore(slot, g.parked.state, err) && slot.prompt.n_tokens() == n_park;
+
+        if (ok) {
+            SLT_INF(slot, "loop guard: restored the parked context, %d tokens in %.1f ms\n", n_park, (ggml_time_us() - t_start) / 1e3);
+        } else {
+            SLT_ERR(slot, "loop guard: failed to restore the parked context: %s\n", err.c_str());
+        }
+
+        g.parked.state = {};
+
+        return ok;
+    }
+
+    // the reflection is done: restore the parked request, then add the note or go on without one
+    void guard_end_reflection(server_slot & slot) {
+        auto & g = slot.guard;
+
+        g.reflection = string_strip(slot.generated_text);
+
+        SLT_INF(slot, "loop guard: reflection, %d tokens: %s\n", (int) slot.stats.n_gen, guard_escape(g.reflection).c_str());
+
+        const bool ok = guard_restore_parked(slot);
+
+        slot.task                  = std::move(g.parked.task);
+        slot.smpl                  = std::move(g.parked.smpl);
+        slot.sampled               = g.parked.sampled;
+        slot.n_sent_text           = g.parked.n_sent_text;
+        slot.last_nl_pos           = g.parked.last_nl_pos;
+        slot.has_new_line          = g.parked.has_new_line;
+        slot.n_predict_max         = g.parked.n_predict_max;
+        slot.stats                 = g.parked.stats;
+        slot.generated_text        = std::move(g.parked.generated_text);
+        slot.generated_tokens      = std::move(g.parked.generated_tokens);
+        slot.generated_token_probs = std::move(g.parked.generated_token_probs);
+
+        slot.stop           = STOP_TYPE_NONE;
+        slot.has_next_token = true;
+        slot.i_batch        = -1;
+
+        g.parked     = {};
+        g.reflecting = false;
+        g.hop        = false;
+
+        if (!ok) {
+            send_error(slot, "loop guard: failed to restore the context after the reflection", ERROR_TYPE_SERVER);
+            slot.release();
+            return;
+        }
+
+        // CAUSE: ... \n STUCK: yes|no \n NOTE: ...
+        auto field = [&](const std::string & key) {
+            const size_t pos = g.reflection.find(key);
+            if (pos == std::string::npos) {
+                return std::string();
+            }
+            const size_t beg = pos + key.size();
+            const size_t end = g.reflection.find('\n', beg);
+            return string_strip(g.reflection.substr(beg, end == std::string::npos ? end : end - beg));
+        };
+
+        const std::string looping = field("STUCK:");
+        const std::string cause   = field("CAUSE:");
+        std::string advice = guard_plain(field("NOTE:"), 1000);
+
+        // the reflection tends to copy sentences of the footer, from an earlier note or from its own prompt. The footer is added below
+        {
+            const std::string footer = guard_text(slot.task->params.loop_guard.note_footer, "Do not examine it again. Write your final answer now, and mark any value you are unsure of with (?).", g.evidence);
+
+            size_t cut = std::string::npos;
+            for (const auto & sentence : string_split<std::string>(footer, '.')) {
+                const std::string head = string_strip(sentence).substr(0, 20);
+                if (head.size() < 12) {
+                    continue;
+                }
+                // case aside: the copy may start a sentence of its own
+                std::string a = advice;
+                std::string h = head;
+                std::transform(a.begin(), a.end(), a.begin(), ::tolower);
+                std::transform(h.begin(), h.end(), h.begin(), ::tolower);
+                cut = std::min(cut, a.find(h));
+            }
+            if (cut != std::string::npos) {
+                advice = string_strip(advice.substr(0, cut));
+
+                // the cut can fall inside a sentence: "stop examining X and"
+                for (const char * tail : { " and", " or", ",", ";" }) {
+                    if (string_ends_with(advice, tail)) {
+                        advice = string_strip(advice.substr(0, advice.size() - strlen(tail)));
+                    }
+                }
+                if (!advice.empty() && advice.back() != '.' && advice.back() != '!' && advice.back() != '?') {
+                    advice += ".";
+                }
+            }
+        }
+
+        if (looping == "no") {
+            SLT_INF(slot, "%s", "loop guard: the reflection found no loop, the reply goes on\n");
+
+            if (slot.task->params.stream) {
+                send_guard_event(slot, json {
+                    {"event", "resume"},
+                    {"cause", cause},
+                });
+            }
+
+            // the drafter has seen the reflection, show it the reply again
+            if (slot.can_speculate()) {
+                common_speculative_begin(spec.get(), slot.id, slot.prompt.tokens.get_text_tokens());
+            }
+
+            return;
+        }
+
+        // no usable answer: the fixed note
+        std::string note = g.note;
+        if (looping == "yes" && !advice.empty()) {
+            const auto & lg = slot.task->params.loop_guard;
+
+            note = guard_text(lg.note_header, "LOOP GUARD: your last reply was stopped because it went in circles.", g.evidence) + " " + advice + " " +
+                   guard_text(lg.note_footer, "Do not examine it again. Write your final answer now, and mark any value you are unsure of with (?).", g.evidence);
+        }
+
+        const llama_tokens add = common_tokenize(vocab, guard_frame(slot, note, guard_think_after(slot)), false, true);
+
+        guard_inject(slot, note, add);
+    }
+
+    // act on a recorded trip, at a token where the reply can be closed cleanly
+    void guard_act(server_slot & slot) {
+        auto & g = slot.guard;
+
+        const std::string text = guard_frame(slot, g.note, guard_think_after(slot));
+
+        const llama_tokens add = common_tokenize(vocab, text, false, true);
+
+        if (!guard_seam_ok(slot, add, text)) {
+            if (g.n_wait++ < 32) {
+                return; // look again after the next token
+            }
+
+            SLT_WRN(slot, "%s", "loop guard: found no clean place to close the reply, the next request may not match the cache\n");
+        }
+
+        g.trip_pending = false;
+
+        const bool reflect = slot.task->params.loop_guard.mode == COMMON_LOOP_GUARD_REFLECT;
+
+        // the token that waits, the reflection and its prompt, the note, and some room to answer
+        const int32_t n_need = slot.prompt.n_tokens() + 1 + (int32_t) add.size() + (reflect ? 768 : 256);
+        if (n_need > std::max(slot.n_ctx, params_base.n_ctx_max)) {
+            SLT_WRN(slot, "loop guard: no room to step in (need %d tokens), stopping\n", n_need);
+
+            slot.stop           = STOP_TYPE_REPETITION;
+            slot.has_next_token = false;
+
+            slot.print_timings();
+            send_final_response(slot);
+            slot.release();
+
+            return;
+        }
+
+        g.n_notes++;
+
+        if (reflect && guard_begin_reflection(slot)) {
+            return;
+        }
+
+        guard_inject(slot, g.note, add);
+    }
+
     bool process_token(completion_token_output & result, server_slot & slot) {
         // remember which tokens were sampled - used for repetition penalties during sampling
         const std::string token_str = result.text_to_send;
         slot.sampled = result.tok;
+
+        if (slot.task->params.loop_guard.mode != COMMON_LOOP_GUARD_OFF && slot.task->type == SERVER_TASK_TYPE_COMPLETION) {
+            guard_push(slot, result, token_str);
+        }
 
         slot.generated_text += token_str;
         if (slot.task->params.return_tokens || slot.task->params.repetition_stop > 0) {
@@ -2149,6 +2980,12 @@ private:
             slot.add_token(result);
             if (slot.task->params.stream) {
                 send_partial_response(slot, result, false);
+            } else if (slot.guard.reflecting && slot.guard.parked.task->params.stream && !result.text_to_send.empty()) {
+                // the reflection is shown to the client, marked as such
+                send_guard_event(slot, json {
+                    {"event", "reflect_delta"},
+                    {"text",  result.text_to_send},
+                });
             }
         }
 
@@ -2249,6 +3086,13 @@ private:
             slot.has_next_token = false;
 
             SLT_WRN(slot, "stopped by repetition, n_gen = %d, repetition_stop = %d\n", (int) slot.stats.n_gen, slot.task->params.repetition_stop);
+        }
+
+        if (slot.has_next_token && slot.guard.stop) {
+            slot.stop           = STOP_TYPE_REPETITION;
+            slot.has_next_token = false;
+
+            SLT_WRN(slot, "stopped by the loop guard after %d notes, n_gen = %d\n", slot.guard.n_notes, (int) slot.stats.n_gen);
         }
 
         if (llama_vocab_is_eog(vocab, result.tok)) {
@@ -2366,7 +3210,7 @@ private:
         }
 
         res->n_decoded             = slot.stats.n_gen;
-        res->n_prompt_tokens       = slot.task->n_tokens();
+        res->n_prompt_tokens       = slot.n_prompt_tokens();
         res->n_prompt_tokens_cache = slot.stats.n_prompt_cached;
         res->post_sampling_probs   = slot.task->params.post_sampling_probs;
 
@@ -2415,7 +3259,7 @@ private:
 
         res->truncated             = slot.truncated;
         res->n_decoded             = slot.stats.n_gen;
-        res->n_prompt_tokens       = slot.task->n_tokens();
+        res->n_prompt_tokens       = slot.n_prompt_tokens();
         res->n_prompt_tokens_cache = slot.stats.n_prompt_cached;
         res->n_tokens_cached       = slot.prompt.n_tokens();
         res->has_new_line          = slot.has_new_line;
@@ -2447,6 +3291,9 @@ private:
         }
 
         res->generation_params = slot.task->params; // copy the parameters
+
+        res->guard_segments   = std::move(slot.guard.segments);
+        res->guard_reflection = slot.guard.reflection;
 
         queue_results.send(std::move(res));
     }
@@ -2712,6 +3559,63 @@ private:
         return true;
     }
 
+    // copy the whole state of the slot (target and draft context, tokens, checkpoints) to host memory
+    bool slot_state_capture(const server_slot & slot, server_prompt_cache_state & state, std::string & err) const {
+        const bool has_dft = ctx_dft && ctx_dft != ctx_tgt;
+
+        const size_t size_tgt =           llama_state_seq_get_size_ext(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        const size_t size_dft = has_dft ? llama_state_seq_get_size_ext(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE) : 0;
+
+        try {
+            state.data.main.resize(size_tgt);
+            state.data.drft.resize(size_dft);
+        } catch (const std::bad_alloc & e) {
+            err = string_format("failed to allocate %.3f MiB for the slot state: %s", (size_tgt + size_dft) / (1024.0 * 1024.0), e.what());
+
+            return false;
+        }
+
+        llama_state_seq_get_data_ext(ctx_tgt, state.data.main.data(), size_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        if (has_dft) {
+            llama_state_seq_get_data_ext(ctx_dft, state.data.drft.data(), size_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        }
+
+        state.prompt = slot.prompt.clone();
+
+        return true;
+    }
+
+    // write a captured state back into the slot. On failure the slot is empty
+    bool slot_state_restore(server_slot & slot, const server_prompt_cache_state & state, std::string & err) {
+        const auto & data = state.data;
+
+        {
+            const size_t n = llama_state_seq_set_data_ext(ctx_tgt, data.main.data(), data.main.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+            if (n != data.main.size()) {
+                slot.prompt.clear(); // the KV cache may already be invalidated
+                err = "unable to restore slot, no available space in KV cache";
+
+                return false;
+            }
+        }
+
+        if (!data.drft.empty()) {
+            GGML_ASSERT(ctx_dft);
+
+            const size_t n = llama_state_seq_set_data_ext(ctx_dft, data.drft.data(), data.drft.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+            if (n != data.drft.size()) {
+                slot.prompt.clear();
+                err = "unable to restore the draft state of the slot";
+
+                return false;
+            }
+        }
+
+        slot.prompt = state.prompt.clone();
+
+        return true;
+    }
+
     // save the slot state (target and draft) into the RAM store under `name`, overwriting any
     // entry with the same name. Returns the number of bytes stored, or 0 with `err` set
     size_t ram_store_save(const server_slot & slot, const std::string & name, std::string & err) {
@@ -2748,21 +3652,9 @@ private:
 
         server_prompt_cache_state state;
 
-        try {
-            state.data.main.resize(size_tgt);
-            state.data.drft.resize(size_dft);
-        } catch (const std::bad_alloc & e) {
-            err = string_format("failed to allocate %.3f MiB for the RAM slot store: %s", size_new / (1024.0 * 1024.0), e.what());
-
+        if (!slot_state_capture(slot, state, err)) {
             return 0;
         }
-
-        llama_state_seq_get_data_ext(ctx_tgt, state.data.main.data(), size_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
-        if (has_dft) {
-            llama_state_seq_get_data_ext(ctx_dft, state.data.drft.data(), size_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
-        }
-
-        state.prompt = slot.prompt.clone();
 
         ram_store.states.insert_or_assign(name, std::move(state));
 
@@ -2780,31 +3672,9 @@ private:
 
         maybe_grow_for_restore(slot, (int32_t) it->second.prompt.tokens.size());
 
-        const auto & data = it->second.data;
-
-        {
-            const size_t n = llama_state_seq_set_data_ext(ctx_tgt, data.main.data(), data.main.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
-            if (n != data.main.size()) {
-                slot.prompt.clear(); // the KV cache may already be invalidated
-                err = "unable to restore slot, no available space in KV cache";
-
-                return 0;
-            }
+        if (!slot_state_restore(slot, it->second, err)) {
+            return 0;
         }
-
-        if (!data.drft.empty()) {
-            GGML_ASSERT(ctx_dft);
-
-            const size_t n = llama_state_seq_set_data_ext(ctx_dft, data.drft.data(), data.drft.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
-            if (n != data.drft.size()) {
-                slot.prompt.clear();
-                err = "unable to restore the draft state of the slot";
-
-                return 0;
-            }
-        }
-
-        slot.prompt = it->second.prompt.clone();
 
         return it->second.size();
     }
@@ -3526,6 +4396,13 @@ private:
             }
         });
 
+        // loop guard: act on a recorded trip. No draft is in flight here, and the slot leaves the generating state
+        iterate(slots, [&](server_slot & slot) {
+            if (slot.state == SLOT_STATE_GENERATING && slot.guard.trip_pending && slot.spec_draft.empty()) {
+                guard_act(slot);
+            }
+        });
+
         // start populating the batch for this iteration
         batch.clear();
 
@@ -3714,7 +4591,10 @@ private:
 
                     // TODO: maybe move branch to outside of this loop in the future
                     if (slot.state == SLOT_STATE_STARTED) {
-                        slot.stats.update_prompt_start();
+                        // a loop guard hop is part of a running request, its timings and stats go on
+                        if (!slot.guard.hop) {
+                            slot.stats.update_prompt_start();
+                        }
 
                         slot.state = SLOT_STATE_PROCESSING_PROMPT;
 
@@ -4007,6 +4887,14 @@ private:
                             }
                         }
 
+                        // a loop guard hop only appends. Anything else would rewind the context of the reply
+                        if (slot.guard.hop && n_past != slot.prompt.n_tokens()) {
+                            SLT_ERR(slot, "loop guard: the hop is not an append (n_past = %d, slot tokens = %d)\n", n_past, slot.prompt.n_tokens());
+                            send_error(slot, "loop guard: failed to append to the context", ERROR_TYPE_SERVER);
+                            slot.release();
+                            return;
+                        }
+
                         // [TAG_PROMPT_LOGITS]
                         if (n_past == slot.task->n_tokens() && n_past > 0) {
                             SLT_WRN(slot, "need to evaluate at least 1 token for each active slot (n_past = %d, task.n_tokens() = %d)\n", n_past, slot.task->n_tokens());
@@ -4014,19 +4902,23 @@ private:
                             SLT_WRN(slot, "n_past was set to %d\n", n_past);
                         }
 
-                        slot.stats.n_prompt_cached    = n_past;
-                        slot.stats.n_prompt_processed = 0;
+                        if (!slot.guard.hop) {
+                            slot.stats.n_prompt_cached    = n_past;
+                            slot.stats.n_prompt_processed = 0;
 
-                        metrics.add_prompt_cached(n_past);
+                            metrics.add_prompt_cached(n_past);
+                        }
 
                         slot.prompt.tokens.keep_first(n_past);
 
                         // now that n_past is settled, hand back any cache this request does
                         // not need (see maybe_grow_for_request() for the other direction)
-                        maybe_shrink_for_request(slot);
+                        if (!slot.guard.hop) {
+                            maybe_shrink_for_request(slot);
+                        }
 
                         // this is to signal the client that the request has started processing
-                        if (slot.task->params.stream) {
+                        if (slot.task->params.stream && !slot.guard.hop) {
                             if (slot.task->params.return_progress) {
                                 // send initial 0% progress update if needed
                                 send_partial_response(slot, {}, true);
@@ -4071,8 +4963,8 @@ private:
 
                     bool do_checkpoint = params_base.n_ctx_checkpoints > 0;
 
-                    // make checkpoints only for completion tasks
-                    do_checkpoint = do_checkpoint && slot.task->type == SERVER_TASK_TYPE_COMPLETION;
+                    // make checkpoints only for completion tasks, and not for the few tokens of a loop guard hop
+                    do_checkpoint = do_checkpoint && slot.task->type == SERVER_TASK_TYPE_COMPLETION && !slot.guard.hop;
 
                     // make a checkpoint of the parts of the memory that cannot be rolled back.
                     // checkpoints are created only if:
@@ -4215,10 +5107,13 @@ private:
                         // extract the logits only for the last token
                         batch.set_output(batch.size() - 1, true);
 
-                        slot.stats.n_gen = 0;
-                        slot.i_batch     = batch.size() - 1;
+                        slot.i_batch = batch.size() - 1;
 
-                        slot.init_sampler();
+                        // after a loop guard hop the reply goes on with its counters and its sampler
+                        if (!slot.guard.hop) {
+                            slot.stats.n_gen = 0;
+                            slot.init_sampler();
+                        }
                     } else {
                         // skip ordinary mid-prompt checkpoints, unless the batch starts a user
                         // message or we are near the end of the prompt
@@ -4430,7 +5325,7 @@ private:
         iterate(slots, [&](server_slot & slot) {
             // optionally send prompt processing progress
             if (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_DONE_PROMPT) {
-                if (slot.task->params.stream && slot.task->params.return_progress) {
+                if (slot.task->params.stream && slot.task->params.return_progress && !slot.guard.hop) {
                     send_partial_response(slot, {}, true);
                 }
             }
@@ -4460,6 +5355,8 @@ private:
 
                 // prompt evaluated for next-token prediction
                 slot.state = SLOT_STATE_GENERATING;
+
+                slot.guard.hop = false;
 
                 // stop before sampling anything, leaving the cache holding exactly the prompt:
                 // - the prompt alone spent the context budget, so the caller gets the same clean
@@ -4539,7 +5436,17 @@ private:
                 populate_token_probs(slot, result, slot.task->params.post_sampling_probs, params_base.special, tok_idx);
             }
 
+            // a softmax over the vocabulary per token (about 5% of a 35B-A3B step): only for the trace
+            if (slot.task->params.loop_guard.mode != COMMON_LOOP_GUARD_OFF && !slot.task->params.loop_guard.trace_dir.empty()) {
+                token_stats(slot.ctx_tgt, vocab, tok_idx, id, result.logprob, result.entropy);
+            }
+
             if (!process_token(result, slot)) {
+                if (slot.guard.reflecting) {
+                    guard_end_reflection(slot);
+                    return;
+                }
+
                 // release slot because of stop condition
                 slot.print_timings();
                 send_final_response(slot);
@@ -4563,6 +5470,12 @@ private:
 
             GGML_ASSERT(n_draft > 0);
 
+            const bool want_probs = slot.task->params.sampling.n_probs > 0;
+            const bool want_stats = slot.task->params.loop_guard.mode != COMMON_LOOP_GUARD_OFF && !slot.task->params.loop_guard.trace_dir.empty();
+
+            // probabilities of the accepted tokens
+            std::vector<completion_token_output> spec_out;
+
             // verify and try to accept the draft
             {
                 common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
@@ -4574,6 +5487,7 @@ private:
                     : server_sample_and_accept_synth(
                             slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft,
                             synth_probs, slot.spec_synth_rng, slot.spec_is_replay);
+                const auto i_batch = std::move(slot.spec_i_batch);
                 slot.spec_i_batch.clear();
 
                 GGML_ASSERT(accepted.size() >= 1);
@@ -4616,6 +5530,25 @@ private:
 
                 if (trace > 0) {
                     SLT_INF(slot, "accepted %2zu/%2zu draft tokens\n", accepted.size() - 1, n_draft);
+                }
+
+                // read the logits now, they are gone after the next decode
+                if (want_probs || want_stats) {
+                    spec_out.resize(accepted.size());
+                    for (size_t i = 0; i < accepted.size(); ++i) {
+                        auto & out = spec_out[i];
+
+                        out.tok  = accepted[i];
+                        out.prob = 1.0f;
+
+                        // only the pre-sampling values can be read here, also when the request asked for post-sampling ones
+                        if (want_probs) {
+                            populate_token_probs(slot, out, false, params_base.special, i_batch[i]);
+                        }
+                        if (want_stats) {
+                            token_stats(slot.ctx_tgt, vocab, i_batch[i], accepted[i], out.logprob, out.entropy);
+                        }
+                    }
                 }
 
                 common_speculative_accept(spec.get(), slot.id, accepted.size() - 1);
@@ -4670,13 +5603,23 @@ private:
 
                 result.tok          = ids[i];
                 result.text_to_send = common_token_to_piece(slot.ctx_tgt, result.tok, accept_special_token(slot, result.tok));
-                result.prob         = 1.0f; // set later
+                result.prob         = 1.0f;
 
-                // TODO: set result.probs
+                if (i < spec_out.size()) {
+                    result.prob    = spec_out[i].prob;
+                    result.probs   = std::move(spec_out[i].probs);
+                    result.logprob = spec_out[i].logprob;
+                    result.entropy = spec_out[i].entropy;
+                }
 
                 slot.stats.n_gen += 1;
 
                 if (!process_token(result, slot)) {
+                    if (slot.guard.reflecting) {
+                        guard_end_reflection(slot);
+                        return;
+                    }
+
                     slot.print_timings();
                     send_final_response(slot);
                     slot.release();
@@ -4989,8 +5932,9 @@ private:
 
             n_prompt_tokens++;
 
+            // the tokens of a loop guard hop are not part of the prompt the client sent
             auto & slot = slots[t.id_slot];
-            if (slot.stats.is_set()) {
+            if (slot.stats.is_set() && !slot.guard.hop) {
                 slot.stats.n_prompt_processed++;
             }
         }
@@ -5008,7 +5952,7 @@ private:
         for (int i = off; i < off + n_tokens; ++i) {
             const auto & t = batch.tokens[i];
             auto & slot = slots[t.id_slot];
-            if (t.is_prompt && slot.stats.is_set()) {
+            if (t.is_prompt && slot.stats.is_set() && !slot.guard.hop) {
                 slot.stats.set_prompt_last(t_now);
             }
         }

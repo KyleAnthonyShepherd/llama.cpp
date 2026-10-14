@@ -168,6 +168,66 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
         ->set_hard_limits(0, INT32_MAX)
         ->set_desc("Stop once the last N generated tokens are one sequence repeated 3 or more times (0 = disabled). See --repetition-stop"));
 
+    add((new field_str("loop_guard"))
+        ->set_desc("Loop guard mode for this request: off, log, note or reflect. See --loop-guard")
+        ->set_handler([&](field_eval_context & ctx, const json & data) {
+            ctx.params.loop_guard.mode = common_loop_guard_mode_from_name(data.at("loop_guard").get<std::string>());
+        }));
+
+    add((new field_bool("loop_guard_thinking", params.guard_thinking))
+        ->set_desc("Loop guard: set by the chat endpoint, true if thinking is on for the request"));
+
+    add((new field_num("loop_guard_novelty", params.loop_guard.novelty))
+        ->set_hard_limits(0.0f, 1.0f)
+        ->set_desc("Loop guard: trip when at most this share of the last words of the reply is new (0 = off)"));
+
+    add((new field_num("loop_guard_rate", params.loop_guard.rate))
+        ->set_hard_limits(0.0f, 1.0f)
+        ->set_desc("Loop guard: trip when this share of the last tokens repeats n-grams produced earlier in the same reply (0 = off)"));
+
+    add((new field_num("loop_guard_line_repeats", params.loop_guard.line_repeats))
+        ->set_hard_limits(0, INT32_MAX)
+        ->set_desc("Loop guard: trip when one line was produced this many times in the same reply (0 = off)"));
+
+    add((new field_num("loop_guard_rep_after", params.loop_guard.rep_after))
+        ->set_hard_limits(0, 2)
+        ->set_desc("Loop guard: penalties and DRY after a note. 0 = as before, 1 = forget the reply so far, 2 = off for the rest of the request"));
+
+    add((new field_bool("loop_guard_think_after", params.loop_guard.think_after))
+        ->set_desc("Loop guard: the reply after a note starts with a thinking block. Off: it answers right away"));
+
+    add((new field_num("loop_guard_reflect_temp", params.loop_guard.reflect_temp))
+        ->set_hard_limits(0.0f, 2.0f)
+        ->set_desc("Loop guard: temperature of the reflection"));
+
+    add((new field_num("loop_guard_reflect_n_predict", params.loop_guard.reflect_n_predict))
+        ->set_hard_limits(16, 2048)
+        ->set_desc("Loop guard: token limit of the reflection"));
+
+    add((new field_str("loop_guard_note_text"))
+        ->set_desc("Loop guard: the fixed note. {evidence} is replaced by what the monitor saw. Empty = built in")
+        ->set_handler([&](field_eval_context & ctx, const json & data) {
+            ctx.params.loop_guard.note_text = data.at("loop_guard_note_text").get<std::string>();
+        }));
+
+    add((new field_str("loop_guard_note_header"))
+        ->set_desc("Loop guard: text before the note that the reflection wrote. Empty = built in")
+        ->set_handler([&](field_eval_context & ctx, const json & data) {
+            ctx.params.loop_guard.note_header = data.at("loop_guard_note_header").get<std::string>();
+        }));
+
+    add((new field_str("loop_guard_note_footer"))
+        ->set_desc("Loop guard: text after the note that the reflection wrote. Empty = built in")
+        ->set_handler([&](field_eval_context & ctx, const json & data) {
+            ctx.params.loop_guard.note_footer = data.at("loop_guard_note_footer").get<std::string>();
+        }));
+
+    add((new field_str("loop_guard_reflect_prompt"))
+        ->set_desc("Loop guard: the system message that asks for the reflection. {evidence} is replaced. Empty = built in")
+        ->set_handler([&](field_eval_context & ctx, const json & data) {
+            ctx.params.loop_guard.reflect_prompt = data.at("loop_guard_reflect_prompt").get<std::string>();
+        }));
+
     add((new field_num("mirostat", params.sampling.mirostat))
         ->set_limits(0, 2)
         ->set_desc("Enable Mirostat sampling, controlling perplexity during text generation (0 = disabled, 1 = Mirostat, 2 = Mirostat 2.0)"));
@@ -545,6 +605,7 @@ task_params eval_llama_cmpl_schema(
     params.n_cache_reuse = params_base.n_cache_reuse;
     params.n_ctx_limit   = params_base.n_ctx_limit;
     params.repetition_stop = params_base.repetition_stop;
+    params.loop_guard    = params_base.loop_guard;
     params.cache_prompt  = params_base.cache_prompt;
     params.antiprompt    = params_base.antiprompt;
     params.sse_ping_interval = params_base.sse_ping_interval;
@@ -571,6 +632,11 @@ task_params eval_llama_cmpl_schema(
         // if "reasoning_format" is not provided, its handler will not be called, we will need to handle it here
         auto reasoning_format = params.chat_parser_params.reasoning_format;
         params.chat_parser_params.reasoning_in_content = params.stream && (reasoning_format == COMMON_REASONING_FORMAT_DEEPSEEK_LEGACY);
+    }
+
+    // the loop guard reads the phase of the reply from the budget sampler
+    if (params.loop_guard.mode != COMMON_LOOP_GUARD_OFF) {
+        params.sampling.reasoning_control = true;
     }
 
     // debugging

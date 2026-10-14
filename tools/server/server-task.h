@@ -68,6 +68,9 @@ struct task_params {
     int32_t n_ctx_limit = 0; // stop once the slot holds this many tokens, 0 = no limit
     int32_t repetition_stop = 0; // stop once the last N generated tokens repeat one sequence 3+ times, 0 = disabled
 
+    struct common_params_loop_guard loop_guard;
+    bool guard_thinking = true; // the request has thinking on, a reply opened after a loop guard note thinks too
+
     int32_t n_cache_reuse = 0; // min chunk size to attempt reusing from the cache via KV shifting (0 = disabled)
 
     int64_t t_max_prompt_ms  = -1; // TODO: implement
@@ -137,6 +140,16 @@ struct task_result_state {
         bool is_partial,
         std::vector<common_chat_msg_diff> & diffs,
         bool filter_tool_calls = false);
+
+    // the loop guard closed the message: what follows is a new assistant message
+    void guard_split(const std::string & generation_prompt);
+};
+
+// text that a request generated before a loop guard note, and the note
+struct server_guard_segment {
+    std::string text;
+    std::string note;
+    std::string generation_prompt; // of the reply opened after the note
 };
 
 struct server_task {
@@ -307,6 +320,8 @@ using server_task_result_ptr = std::unique_ptr<server_task_result>;
 struct completion_token_output {
     llama_token tok;
     float prob;
+    float logprob = 0.0f; // of this token in the raw model output, before any sampler
+    float entropy = 0.0f; // of the raw model output, in nats
     std::string text_to_send;
     struct prob_info {
         llama_token tok;
@@ -359,6 +374,11 @@ struct server_task_result_cmpl_final : server_task_result {
     std::vector<common_chat_msg_diff> oaicompat_msg_diffs; // to be populated by update()
     bool is_updated = false;
 
+    // loop guard, see PLAN-loop-guard.md section 3.9
+    std::vector<server_guard_segment> guard_segments;
+    json guard_messages = json::array(); // to be populated by update()
+    std::string guard_reflection;
+
     // for OpenAI Responses API
     std::string oai_resp_id;
     std::string oai_resp_reasoning_id;
@@ -372,6 +392,19 @@ struct server_task_result_cmpl_final : server_task_result {
 
     virtual void update(task_result_state & state) override {
         is_updated = true;
+
+        // not streamed: each part from before a note is a message of its own
+        for (const auto & seg : guard_segments) {
+            std::vector<common_chat_msg_diff> diffs;
+            common_chat_msg msg = state.update_chat_msg(seg.text, true, diffs);
+            msg.role = "assistant";
+
+            guard_messages.push_back(msg.to_json_oaicompat());
+            guard_messages.push_back({{"role", "system"}, {"content", seg.note}});
+
+            state.guard_split(seg.generation_prompt);
+        }
+
         oaicompat_msg = state.update_chat_msg(content, false, oaicompat_msg_diffs);
 
         oai_resp_id = state.oai_resp_id;
@@ -412,6 +445,11 @@ struct server_task_result_cmpl_partial : server_task_result {
     bool is_progress = false;
     bool is_begin = false; // whether to send 200 status to HTTP client (begin of SSE stream)
                            // ref: https://github.com/ggml-org/llama.cpp/pull/23884
+
+    // loop guard event, sent in a chunk of its own with no text. See PLAN-loop-guard.md section 3.9
+    json        loop_guard;
+    bool        guard_split = false;     // the event closes the assistant message
+    std::string guard_generation_prompt; // of the reply opened after the note
     completion_token_output prob_output;
     server_slot_stats stats;
     result_prompt_progress progress;

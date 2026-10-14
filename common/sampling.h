@@ -95,6 +95,22 @@ uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl);
 // force the reasoning budget sampler (if any) to begin forcing its end sequence now.
 bool common_sampler_reasoning_budget_force(struct common_sampler * gsmpl);
 
+enum common_sampler_phase {
+    COMMON_SAMPLER_PHASE_CONTENT,
+    COMMON_SAMPLER_PHASE_REASONING, // inside the thinking block
+    COMMON_SAMPLER_PHASE_FORCED,    // a grammar (e.g. a tool call) or the reasoning budget dictates the output
+};
+
+// which part of the reply the last accepted token belongs to
+common_sampler_phase common_sampler_get_phase(const struct common_sampler * gsmpl);
+
+// stop or resume applying the penalties and DRY. They keep recording tokens either way
+void common_sampler_set_rep_off(struct common_sampler * gsmpl, bool off);
+
+// show the reasoning budget sampler a token that was put into the context without sampling,
+// so that it follows a thinking block that the caller opened or closed
+void common_sampler_accept_prompt(struct common_sampler * gsmpl, llama_token token);
+
 // helpers
 
 // access the internal list of current candidate tokens

@@ -63,6 +63,7 @@ json task_params::to_json(bool only_metrics) const {
             {"rep_skip_prompt",           sampling.rep_skip_prompt},
             {"rep_skip_tool_calls",       sampling.rep_skip_tool_calls},
             {"repetition_stop",           repetition_stop},
+            {"loop_guard",                common_loop_guard_mode_name(loop_guard.mode)},
             {"mirostat",                  sampling.mirostat},
             {"mirostat_tau",              sampling.mirostat_tau},
             {"mirostat_eta",              sampling.mirostat_eta},
@@ -120,6 +121,10 @@ json task_params::to_json(bool only_metrics) const {
         {"rep_skip_prompt",           sampling.rep_skip_prompt},
         {"rep_skip_tool_calls",       sampling.rep_skip_tool_calls},
         {"repetition_stop",           repetition_stop},
+        {"loop_guard",                common_loop_guard_mode_name(loop_guard.mode)},
+        {"loop_guard_novelty",        loop_guard.novelty},
+        {"loop_guard_rate",           loop_guard.rate},
+        {"loop_guard_line_repeats",   loop_guard.line_repeats},
         {"mirostat",                  sampling.mirostat},
         {"mirostat_tau",              sampling.mirostat_tau},
         {"mirostat_eta",              sampling.mirostat_eta},
@@ -165,6 +170,20 @@ task_result_state::task_result_state(const common_chat_parser_params & chat_pars
         // initialize chat_msg to avoid emitting a delta containing the assistant prefill
         chat_msg = common_chat_parse("", true, chat_parser_params);
     }
+}
+
+void task_result_state::guard_split(const std::string & generation_prompt) {
+    chat_parser_params.generation_prompt = generation_prompt;
+    chat_parser_params.is_continuation   = false;
+
+    chat_msg = {};
+    diffs.clear();
+    generated_text.clear();
+    generated_tool_call_ids.clear();
+    sent_tool_call_names.clear();
+
+    thinking_block_started = false;
+    text_block_started     = false;
 }
 
 common_chat_msg task_result_state::update_chat_msg(
@@ -463,6 +482,16 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
         {"usage",              usage_json_oaicompat()},
         {"id", oaicompat_cmpl_id}
     };
+
+    // the messages that come before `message`, see PLAN-loop-guard.md section 3.9
+    if (!guard_messages.empty()) {
+        res["loop_guard"] = json {
+            {"messages", guard_messages},
+        };
+        if (!guard_reflection.empty()) {
+            res["loop_guard"]["reflection"] = guard_reflection;
+        }
+    }
 
     // extra fields for debugging purposes
     if (verbose) {
@@ -1008,6 +1037,12 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
     if (is_begin) {
         return; // begin marker only flushes headers, skip parsing
     }
+    if (!loop_guard.is_null()) {
+        if (guard_split) {
+            state.guard_split(guard_generation_prompt);
+        }
+        return; // an event has no text
+    }
     state.update_chat_msg(content, true, oaicompat_msg_diffs);
 
     // Copy current state for use in to_json_*() (reflects state BEFORE this chunk)
@@ -1148,6 +1183,12 @@ json server_task_result_cmpl_partial::to_json_oaicompat_chat() {
             {"object", "chat.completion.chunk"},
         });
     };
+    if (!loop_guard.is_null()) {
+        add_delta(json::object());
+        deltas.back()["loop_guard"] = loop_guard;
+        return deltas;
+    }
+
     // We have to send an initial update to conform to openai behavior
     if (first || is_progress) {
         add_delta({

@@ -39,6 +39,7 @@ import type {
 	ApiChatCompletionToolCall,
 	ApiChatMessageContentPart,
 	ApiChatMessageData,
+	ApiLoopGuardEvent,
 	ApiStreamSession
 } from '$lib/types/api';
 import { isAbortError } from '$lib/utils/abort';
@@ -443,7 +444,8 @@ export class ChatService {
 		conversationId?: string,
 		abortSignal?: AbortSignal,
 		onConnectionState?: (state: StreamConnectionState) => void,
-		streamModel?: string | null
+		streamModel?: string | null,
+		onLoopGuard?: (event: ApiLoopGuardEvent) => void | Promise<void>
 	): Promise<void> {
 		let reader = response.body?.getReader();
 
@@ -649,6 +651,21 @@ export class ChatService {
 								if (timings) {
 									ChatService.notifyTimings(timings, promptProgress, onTimings);
 									lastTimings = timings;
+								}
+
+								// llama-server --loop-guard. on a note the message so far is complete: the
+								// handler stores it, then the note, and what follows is a new message
+								if (parsed.loop_guard) {
+									if (!abortSignal?.aborted) {
+										await onLoopGuard?.(parsed.loop_guard);
+									}
+
+									if (parsed.loop_guard.event === 'note') {
+										aggregatedContent = '';
+										fullReasoningContent = '';
+									}
+
+									continue;
 								}
 
 								if (content) {
@@ -1048,6 +1065,7 @@ export class ChatService {
 			onCompletionId,
 			onConnectionState,
 			onError,
+			onLoopGuard,
 			onModel,
 			onReasoningChunk,
 			onTimings,
@@ -1352,7 +1370,8 @@ export class ChatService {
 					conversationId,
 					signal,
 					onConnectionState,
-					options.model
+					options.model,
+					onLoopGuard
 				);
 
 				return;

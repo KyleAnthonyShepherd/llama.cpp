@@ -438,6 +438,24 @@ std::string common_params_get_system_info(const common_params & params) {
     return os.str();
 }
 
+const char * common_loop_guard_mode_name(common_loop_guard_mode mode) {
+    switch (mode) {
+        case COMMON_LOOP_GUARD_OFF:     return "off";
+        case COMMON_LOOP_GUARD_LOG:     return "log";
+        case COMMON_LOOP_GUARD_NOTE:    return "note";
+        case COMMON_LOOP_GUARD_REFLECT: return "reflect";
+    }
+    return "off";
+}
+
+common_loop_guard_mode common_loop_guard_mode_from_name(const std::string & name) {
+    if (name == "off")     { return COMMON_LOOP_GUARD_OFF; }
+    if (name == "log")     { return COMMON_LOOP_GUARD_LOG; }
+    if (name == "note")    { return COMMON_LOOP_GUARD_NOTE; }
+    if (name == "reflect") { return COMMON_LOOP_GUARD_REFLECT; }
+    throw std::invalid_argument("unknown loop guard mode: " + name + " (use off, log, note or reflect)");
+}
+
 //
 // String utils
 //

@@ -58,7 +58,8 @@ import type {
 import type {
 	ApiChatCompletionToolCall,
 	ApiChatMessageContentPart,
-	ApiChatMessageData
+	ApiChatMessageData,
+	ApiLoopGuardEvent
 } from '$lib/types/api';
 import type {
 	ChatMessageAgenticTimings,
@@ -443,12 +444,14 @@ class AgenticStore {
 		const { agenticConfig, callbacks, conversationId, messages, options, signal, tools } = params;
 		const {
 			createAssistantMessage,
+			createLoopGuardNote,
 			createToolResultMessage,
 			onAssistantTurnComplete,
 			onAttachments,
 			onChunk,
 			onCompletionId,
 			onFlowComplete,
+			onLoopGuardReflection,
 			onModel,
 			onReasoningChunk,
 			onTimings,
@@ -535,6 +538,38 @@ class AgenticStore {
 						onCompletionId,
 						onError: (error: Error) => {
 							throw error;
+						},
+						onLoopGuard: async (event: ApiLoopGuardEvent) => {
+							if (event.event !== 'note' || !event.message) {
+								onLoopGuardReflection?.(event);
+
+								return;
+							}
+
+							// the server closed the reply and put a system note after it. hold both,
+							// in this order, so that the next request renders what the server has cached
+							await onAssistantTurnComplete?.(
+								turnContent,
+								turnReasoningContent || undefined,
+								undefined,
+								undefined
+							);
+
+							sessionMessages.push({
+								content: turnContent,
+								reasoning_content: turnReasoningContent || undefined,
+								role: MessageRole.ASSISTANT
+							});
+							sessionMessages.push({
+								content: event.message.content,
+								role: MessageRole.SYSTEM
+							});
+
+							await createLoopGuardNote?.(event.message.content);
+							await createAssistantMessage?.();
+
+							turnContent = '';
+							turnReasoningContent = '';
 						},
 						onModel,
 						onReasoningChunk: (chunk: string) => {

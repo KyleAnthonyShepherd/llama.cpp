@@ -2,7 +2,8 @@ import type {
 	ApiChatCompletionRequest,
 	ApiChatCompletionToolCall,
 	ApiChatMessageContentPart,
-	ApiChatMessageData
+	ApiChatMessageData,
+	ApiLoopGuardEvent
 } from './api';
 import type {
 	ChatMessageAgenticTimings,
@@ -139,6 +140,10 @@ export interface AgenticFlowCallbacks {
 	) => Promise<void>;
 	/** Create a new assistant message for the next agentic turn */
 	createAssistantMessage?: () => Promise<DatabaseMessage>;
+	/** Store the system note of a loop guard after the current assistant message */
+	createLoopGuardNote?: (content: string) => Promise<DatabaseMessage>;
+	/** A loop guard reflection started, streamed text, or ended with no note */
+	onLoopGuardReflection?: (event: ApiLoopGuardEvent) => void;
 	/** Entire agentic flow is complete */
 	onFlowComplete?: (timings?: ChatMessageTimings) => void;
 	/** Error during flow */
