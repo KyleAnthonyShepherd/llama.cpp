@@ -788,6 +788,99 @@ bool server_tokens::validate(const struct llama_context * ctx) const {
     return n_media == map_idx_to_media.size();
 }
 
+std::vector<std::array<size_t, 3>> server_tokens::align_to(const server_tokens & cache, const llama_vocab * vocab, size_t n_look) {
+    std::vector<std::array<size_t, 3>> edits;
+
+    const size_t n0 = get_common_prefix(cache);
+
+    llama_tokens out; // this prompt from n0 to a, with the tokens of the cache where the text is the same
+    size_t a = n0;    // position in this prompt
+    size_t b = n0;    // position in the cache
+
+    while (a < tokens.size() && b < cache.tokens.size()) {
+        const llama_token ta = tokens[a];
+        const llama_token tb = cache.tokens[b];
+
+        // media is compared by get_common_prefix only
+        if (ta == LLAMA_TOKEN_NULL || tb == LLAMA_TOKEN_NULL) {
+            break;
+        }
+
+        if (ta == tb) {
+            out.push_back(ta);
+            a++;
+            b++;
+            continue;
+        }
+
+        // the two sides split the text differently here. Grow the shorter text until both are the same
+        // and the next tokens agree again (or the cache ends), or until the texts differ
+        std::string sa;
+        std::string sb;
+        size_t ea = a;
+        size_t eb = b;
+        bool   ok = false;
+
+        while (true) {
+            if (sa.size() <= sb.size()) {
+                if (ea >= tokens.size() || ea - a >= n_look || tokens[ea] == LLAMA_TOKEN_NULL) {
+                    break;
+                }
+                sa += common_token_to_piece(vocab, tokens[ea++], true);
+            } else {
+                if (eb >= cache.tokens.size() || eb - b >= n_look || cache.tokens[eb] == LLAMA_TOKEN_NULL) {
+                    break;
+                }
+                sb += common_token_to_piece(vocab, cache.tokens[eb++], true);
+            }
+
+            const size_t m = std::min(sa.size(), sb.size());
+            if (sa.compare(0, m, sb, 0, m) != 0) {
+                break;
+            }
+
+            if (sa.size() == sb.size() && (eb == cache.tokens.size() || (ea < tokens.size() && tokens[ea] == cache.tokens[eb]))) {
+                ok = true;
+                break;
+            }
+        }
+
+        if (!ok) {
+            break;
+        }
+
+        edits.push_back({ a, ea - a, eb - b });
+        out.insert(out.end(), cache.tokens.begin() + b, cache.tokens.begin() + eb);
+
+        a = ea;
+        b = eb;
+    }
+
+    if (edits.empty()) {
+        return edits;
+    }
+
+    // the common prefix, the aligned part, then the rest of this prompt with its media
+    server_tokens res = clone();
+    res.keep_first(n0);
+    res.insert(out);
+
+    for (size_t i = a; i < tokens.size(); ) {
+        if (tokens[i] != LLAMA_TOKEN_NULL) {
+            res.tokens.push_back(tokens[i]);
+            i++;
+            continue;
+        }
+        const auto & chunk = find_chunk(i);
+        res.push_back(chunk.get());
+        i += mtmd_input_chunk_get_n_tokens(chunk.get());
+    }
+
+    *this = std::move(res);
+
+    return edits;
+}
+
 server_tokens server_tokens::clone() const {
     server_tokens res;
     res.has_mtmd = has_mtmd;

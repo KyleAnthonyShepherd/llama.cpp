@@ -10,6 +10,7 @@
 
 #include "json.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -232,6 +233,12 @@ public:
     std::string detokenize(const llama_context * ctx, bool special) const;
 
     size_t get_common_prefix(const server_tokens & b) const;
+
+    // where this prompt spells the same text as `cache` with other tokens, take the tokens of `cache`.
+    // A model can sample a split that the tokenizer does not make ("." + "\n\n" for ".\n\n"), and the client
+    // sends text back, so the prompt would miss the cache from there. ref: https://github.com/ggml-org/llama.cpp/issues/11970
+    // returns the replacements as {start, old length, new length} in prompt positions, empty if nothing changed
+    std::vector<std::array<size_t, 3>> align_to(const server_tokens & cache, const llama_vocab * vocab, size_t n_look = 64);
 
     // split the tokens into message spans, skipping over media chunks
     common_chat_msg_spans find_message_spans(const common_chat_msg_delimiters & delims) const;

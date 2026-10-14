@@ -1972,6 +1972,30 @@ private:
             slot.lora = params_base.lora_adapters;
         }
 
+        // the prompt may spell the cached text with other tokens than the ones the model sampled
+        if (task.params.cache_prompt && !slot.prompt.tokens.empty() && task.type == SERVER_TASK_TYPE_COMPLETION) {
+            const int64_t t_start = ggml_time_us();
+            const size_t  n_old   = task.tokens.size();
+
+            const auto edits = task.tokens.align_to(slot.prompt.tokens, vocab);
+
+            if (!edits.empty()) {
+                // message positions after a replacement move with it
+                for (auto & span : task.params.message_spans.spans) {
+                    int64_t shift = 0;
+                    for (const auto & e : edits) {
+                        if (e[0] + e[1] <= span.pos) {
+                            shift += (int64_t) e[2] - (int64_t) e[1];
+                        }
+                    }
+                    span.pos = (size_t) ((int64_t) span.pos + shift);
+                }
+
+                SLT_INF(slot, "prompt spells the cached text with other tokens at %zu places, took the cached tokens (%zu -> %zu tokens, %.2f ms)\n",
+                        edits.size(), n_old, task.tokens.size(), (ggml_time_us() - t_start) / 1000.0);
+            }
+        }
+
         // if using alora, make sure it's only a single one requested and active
         size_t alora_invocation_start = task.tokens.size();
         if (lora_all_alora(slot.lora)) {
