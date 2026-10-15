@@ -48,6 +48,68 @@ Layers, oldest first:
 | stop when the output is one sequence repeated | `--repetition-stop N` | stop type `repetition` |
 | **loop guard**: watches thinking and answer for a reply that goes in circles, then closes it, adds a system note and opens a new reply. `reflect` mode lets the model judge the loop first, on a copy of its context parked in RAM | `--loop-guard off\|log\|note\|reflect`, `--loop-guard-trace DIR`, request fields `loop_guard*` | needs a chat template that renders a late system message: `models/templates/Qwen3.6-35B-A3B-unsloth-loop-guard.jinja` for unsloth's Qwen3.6-35B-A3B-MTP GGUF, `Qwen3.6-35B-A3B-heretic-loop-guard.jinja` for llmfan46's heretic one. Clients get `loop_guard` events in the stream. `PLAN-loop-guard.md` |
 
+#### How the loop guard works
+
+Server code: `tools/server/server-loop-guard.h` (the monitor) and the `guard_*` functions in `tools/server/server-context.cpp`. Design, measurements and the reasons behind each number: `PLAN-loop-guard.md`.
+
+**1. Watching.** Every generated token of a `/v1/chat/completions` reply goes through a monitor, in the thinking and in the answer, each phase on its own. Tool calls and other grammar-forced output are not watched. The monitor trips on either of:
+
+- **word novelty**: of the last 300 words, 6% or fewer were never written before in this phase, after at least 600 words. A table, a list or a calculation keeps bringing new words; a loop goes over the same ones. Healthy replies on Qwen3.6-35B-A3B stayed at 13-45%, loops fell to 2-6%.
+- **exact lines**: one line of 12 or more tokens written 5 times (a copy loop).
+
+An 8-gram repeat rate rule exists but is off: it fired on healthy structured work and missed paraphrased loops. Token logprob and entropy are only computed with `--loop-guard-trace DIR`, which writes one TSV per reply with every token's signals for tuning offline (it costs about 5% speed).
+
+**2. Waiting for a clean cut.** After a trip the server waits up to 32 tokens for a point where the reply's text, closed and sent back by the client, tokenizes to exactly the tokens in the cache. Otherwise the next request would miss the cache there.
+
+**3a. `note` mode.** The reply is closed where it stands, a system message is appended, and a new assistant reply is opened, all as tokens decoded straight into the same slot (nothing is rewound or re-processed):
+
+```
+assistant   the looping reply, cut off (A)
+system      LOOP GUARD: your last reply was stopped because it went in circles. <evidence>
+            Do not examine it again. Write your final answer now, and mark any value you are unsure of with (?).
+assistant   a new reply (B), which starts with thinking closed and answers right away
+```
+
+The evidence says how many tokens were spent and how few words were new, and quotes the repeated line if it came 3+ times. Repetition penalties and DRY forget reply A, so B can restate its values.
+
+**3b. `reflect` mode** (the recommended one). Before the note, the model judges the loop itself:
+
+1. **Park**: the slot's full state (KV cache, recurrent state, draft model, sampler, request) is copied to RAM. On the 35B that is 180-260 MiB in about 0.1 s. This is the same mechanism as the RAM slot store, not a context checkpoint, so nothing can evict it.
+2. **Reflect**: on the same slot, after reply A, a system message asks the model, as a reviewer and not as the assistant, why the reply is stuck. It answers under a grammar, at temperature 0.3 with no penalties, in at most about 256 tokens:
+   ```
+   CAUSE: one sentence
+   STUCK: yes|no
+   NOTE: one to three sentences of advice to the assistant
+   ```
+   It may not give values of its own, may tell the assistant to keep a result it already reached more than once, and should tell it to say so when the task cannot be done.
+3. **Restore**: the parked state comes back (about 0.05 s), so the reflection leaves nothing in the context. This also happens if the client disconnects mid-reflection.
+4. `STUCK: yes`: the note is injected as in `note` mode, with the reflection's advice in place of the evidence. `STUCK: no`: reply A simply continues. A reflection that cannot be parsed falls back to the fixed note.
+
+A whole reflect step costs about 5-8 s on the 35B.
+
+**4. Limits.** At most 2 interventions per request (a "not stuck" verdict counts as one). The next trip ends the request with stop type `repetition`. In `log` mode the server only logs trips.
+
+**5. What the client sees.** Stream chunks carry a top-level `loop_guard` object with an empty `delta`:
+
+| Event | Meaning |
+|---|---|
+| `reflect_start` | the server is reflecting; carries the trip's signals |
+| `reflect_delta` | text of the reflection, not part of any message |
+| `resume` | the reflection said "not stuck"; the deltas that follow continue reply A |
+| `note` | close reply A as it is, append `message` (the system note) to the history unchanged, start reply B |
+
+A non-stream response has B as `choices[0].message` and `loop_guard.messages` = `[A, note, ...]` to put before it. A client that keeps `A, note, B` in its history, as the web UI does, gets a full cache hit on the next request. A client that ignores the events still works, but pays one re-process of that reply on its next turn.
+
+**6. The template.** The note is a system message after an assistant message. Most chat templates drop it or raise an error, so `note` and `reflect` need a template that renders it in place. At startup the server renders a test chat to find the exact framing tokens, prints them, and refuses to start if the template does not render the note. The `*-loop-guard.jinja` files are the GGUFs' own templates with that one fix (and, for the heretic GGUF, rendering an empty thinking block too).
+
+**Launch** (unsloth GGUF; use the heretic template for the heretic one):
+
+```
+llama-server ... --jinja --loop-guard reflect --chat-template-file models/templates/Qwen3.6-35B-A3B-unsloth-loop-guard.jinja
+```
+
+Requests can override the mode with `"loop_guard": "off|log|note|reflect"` and the thresholds with `loop_guard_novelty`, `loop_guard_line_repeats`, `loop_guard_reflect_temp` and the other `loop_guard_*` fields (`tools/server/server-schema.cpp`).
+
 ### Web UI (`tools/ui`)
 
 - thinking and response prefill, per turn and as a default
