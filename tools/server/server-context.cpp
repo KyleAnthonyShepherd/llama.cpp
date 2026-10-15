@@ -1945,7 +1945,7 @@ private:
 
         if (!guard_probe_template() && params_base.loop_guard.mode >= COMMON_LOOP_GUARD_NOTE) {
             SRV_ERR("%s", "--loop-guard note and reflect put a system message after an assistant message, and the chat template does not render one there\n");
-            SRV_ERR("%s", "load a template that does with --chat-template-file, e.g. models/templates/Qwen3.6-35B-A3B-loop-guard.jinja. See PLAN-loop-guard.md\n");
+            SRV_ERR("%s", "load a template that does with --chat-template-file, e.g. models/templates/Qwen3.6-35B-A3B-unsloth-loop-guard.jinja. See PLAN-loop-guard.md\n");
             return false;
         }
 

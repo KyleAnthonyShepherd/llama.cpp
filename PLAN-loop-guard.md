@@ -146,7 +146,7 @@ Not used: embedding similarity between chunks. The generation context is not in 
 
 The guard needs one thing from the template: **a system message placed after an assistant message renders as its own system turn, at that place.** Two parts make that sure.
 
-**A loop guard template file.** `models/templates/Qwen3.6-35B-A3B-loop-guard.jinja`, loaded with the existing `--chat-template-file`. It is the template of the GGUF in use with one change: a `system` / `developer` message that is not part of the top block renders as `<|im_start|>system\n` + content + `<|im_end|>\n` (the heretic template already does this, the unsloth one needs the branch added at its line 88). The file starts with a Jinja comment that says which GGUF it came from, what was changed, and that `--loop-guard` needs it. The `--loop-guard` help text names the file.
+**A loop guard template file.** `models/templates/Qwen3.6-35B-A3B-unsloth-loop-guard.jinja`, loaded with the existing `--chat-template-file`. It is the template of the GGUF in use with one change: a `system` / `developer` message that is not part of the top block renders as `<|im_start|>system\n` + content + `<|im_end|>\n` (the heretic template already does this, the unsloth one needs the branch added at its line 88). The file starts with a Jinja comment that says which GGUF it came from, what was changed, and that `--loop-guard` needs it. The `--loop-guard` help text names the file.
 
 Loading a file on purpose, not patching the model's template in memory when the flag is set: a text patch on a template that upstream or a new GGUF has changed fails without a sign, a file is something a future reader can open and diff.
 
@@ -371,7 +371,7 @@ Built in one session, not committed. Tested with a separate CPU-only build (`bui
 | Note injection, seam check | `guard_act()`, `guard_seam_ok()`, `guard_inject()` |
 | Reflection, parking | `guard_begin_reflection()`, `guard_end_reflection()`, `guard_restore_parked()`, `slot_state_capture()` / `slot_state_restore()` (shared with the RAM slot store) |
 | Events and non-stream fields | `send_guard_event()`, `server_task_result_cmpl_partial::loop_guard`, `server_task_result_cmpl_final::guard_segments`, `task_result_state::guard_split()` in `tools/server/server-task.{h,cpp}` |
-| Loop guard template for the unsloth GGUF | `models/templates/Qwen3.6-35B-A3B-loop-guard.jinja` |
+| Loop guard template for the unsloth GGUF | `models/templates/Qwen3.6-35B-A3B-unsloth-loop-guard.jinja` |
 | Web UI | `onLoopGuard` in `chat.service.ts`, the split in `stores/agentic/index.svelte.ts` and `stores/chat/index.svelte.ts` |
 
 ### 8.2 Where the code differs from sections 1-7
@@ -423,7 +423,7 @@ cmake -B build-lg -DGGML_CUDA=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES
 cmake --build build-lg --config Release --target llama-server
 build-lg/bin/Release/llama-server -m <Qwen3.5-0.8B gguf> --jinja -c 16384 -np 1 --port 8091 \
     --loop-guard reflect --loop-guard-trace <dir> \
-    --chat-template-file models/templates/Qwen3.6-35B-A3B-loop-guard.jinja
+    --chat-template-file models/templates/Qwen3.6-35B-A3B-unsloth-loop-guard.jinja
 ```
 
 Then send a chat request with the loop transcript as `reasoning_content` of a last assistant message, `continue_final_message: true`, `add_generation_prompt: false`. End the prefill at a full line: a cut inside a word makes a token seam that no tokenizer produces, and the follow-up then misses the cache for a reason that has nothing to do with the guard. `LLAMA_SERVER_SLOTS_DEBUG=1 LLAMA_SERVER_SLOTS_N_DIFF=14` prints the tokens around a cache mismatch.
@@ -498,7 +498,7 @@ Healthy tasks with DRY off and `reflect`: math, essay and the CSV table did not 
 --loop-guard reflect --chat-template-file models/templates/Qwen3.6-35B-A3B-heretic-loop-guard.jinja
 ```
 
-(or `Qwen3.6-35B-A3B-loop-guard.jinja` for the unsloth GGUF). And reconsider DRY allowed length 2: it causes most of the loops the guard then has to break, and it costs cache hits on every turn.
+(or `Qwen3.6-35B-A3B-unsloth-loop-guard.jinja` for the unsloth GGUF). And reconsider DRY allowed length 2: it causes most of the loops the guard then has to break, and it costs cache hits on every turn.
 
 ---
 
@@ -540,8 +540,14 @@ The guard does what it is for: it breaks the loop and gets an answer out. Whethe
 
 ### 10.5 Cache
 
-The follow-up request reused the whole cache in 20 of 22 runs. The two misses: at temp 1.0 the model sometimes samples a rare token split of plain text (`"` + `?).`, ` (` + `Sil` + `ty`); the client's history tokenizes the usual way, and the cache misses from there. This is not the guard, any multi-turn chat at this temperature can hit it. A fix would compare text, not tokens, where the cache and the new prompt part; not built.
+The follow-up request reused the whole cache in 20 of 22 runs. The two misses: at temp 1.0 the model sometimes samples a rare token split of plain text (`"` + `?).`, ` (` + `Sil` + `ty`); the client's history tokenizes the usual way, and the cache misses from there. This is not the guard, any multi-turn chat at this temperature can hit it. Fixed since: the server takes the cached tokens where the prompt spells the same text with other tokens (`server_tokens::align_to`, commit `919fe6ff5`).
 
 ### 10.6 Recommendation
 
 With plain sampling the model loops less, and when it does the guard gets it out. `--loop-guard reflect` with the loop guard template of the GGUF in use. `note` works about as well for escaping, without the reflection's 5-8 s, but it cannot say "not stuck".
+
+## 11. The unsloth GGUF, 2026-10-15
+
+`unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_S with `models/templates/Qwen3.6-35B-A3B-unsloth-loop-guard.jinja` (renamed from `Qwen3.6-35B-A3B-loop-guard.jinja`, so the file names the GGUF it belongs to), plain sampling, `reflect`, rig `srv35.sh` with `MODEL_NAME=unsloth`. The template probe passes, and the unsloth source already renders the empty thinking block, so the heretic fix is not needed here.
+
+8 runs (img_smudge, img_dots, contradiction, img_table, 2 seeds each): 4 tripped, reflected and ended with an answer; the follow-up request of all 8 reused the cache (prompt_n 22-23). The reflections were on point ("stop examining the column headers", "you reached 70 twice, give it").

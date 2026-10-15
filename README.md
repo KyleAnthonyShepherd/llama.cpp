@@ -46,7 +46,7 @@ Layers, oldest first:
 |---|---|---|
 | repetition penalties and DRY that skip the prompt, and pause inside tool calls | `--rep-skip-prompt`, `--rep-skip-tool-calls` | |
 | stop when the output is one sequence repeated | `--repetition-stop N` | stop type `repetition` |
-| **loop guard**: watches thinking and answer for a reply that goes in circles, then closes it, adds a system note and opens a new reply. `reflect` mode lets the model judge the loop first, on a copy of its context parked in RAM | `--loop-guard off\|log\|note\|reflect`, `--loop-guard-trace DIR`, request fields `loop_guard*` | needs a chat template that renders a late system message: `models/templates/*-loop-guard.jinja`. Clients get `loop_guard` events in the stream. `PLAN-loop-guard.md` |
+| **loop guard**: watches thinking and answer for a reply that goes in circles, then closes it, adds a system note and opens a new reply. `reflect` mode lets the model judge the loop first, on a copy of its context parked in RAM | `--loop-guard off\|log\|note\|reflect`, `--loop-guard-trace DIR`, request fields `loop_guard*` | needs a chat template that renders a late system message: `models/templates/Qwen3.6-35B-A3B-unsloth-loop-guard.jinja` for unsloth's Qwen3.6-35B-A3B-MTP GGUF, `Qwen3.6-35B-A3B-heretic-loop-guard.jinja` for llmfan46's heretic one. Clients get `loop_guard` events in the stream. `PLAN-loop-guard.md` |
 
 ### Web UI (`tools/ui`)
 

@@ -3,7 +3,7 @@
     One change: a system or developer message after the top block is rendered as its own system turn, at its place.
     The source template drops such a message without an error. The loop guard puts a system note between two
     assistant messages, and the client sends it back at that place, so it has to render there.
-    Use: --chat-template-file models/templates/Qwen3.6-35B-A3B-loop-guard.jinja -#}
+    Use: --chat-template-file models/templates/Qwen3.6-35B-A3B-unsloth-loop-guard.jinja -#}
 {%- set image_count = namespace(value=0) %}
 {%- set video_count = namespace(value=0) %}
 {%- macro render_content(content, do_vision_count, is_system_content=false) %}
