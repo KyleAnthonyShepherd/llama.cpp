@@ -4484,9 +4484,10 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MAX"));
     add_opt(common_arg(
         {"--spec-adaptive-width"},
-        string_format("compute --spec-draft-p-min per step instead of taking it as a constant: a draft token is "
-            "kept only when its confidence beats what the cold experts it pulls cost to verify. needs the "
-            "expert hot store (default: %s)",
+        string_format("adapt the draft per step. with the expert hot store: compute --spec-draft-p-min, a draft token is "
+            "kept only when its confidence beats what the cold experts it pulls cost to verify. without it: pick the "
+            "draft depth in [1, --spec-draft-n-max] that gives the most tokens per second, from measured acceptance "
+            "and cycle time (default: %s)",
             params.speculative.adaptive_width ? "enabled" : "disabled"),
         [](common_params & params) {
             params.speculative.adaptive_width = true;

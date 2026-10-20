@@ -434,6 +434,154 @@ struct server_spec_width {
     }
 };
 
+// Adaptive draft depth (--spec-adaptive-width without the expert hot store).
+//
+// On a dense model a cycle drafts W tokens and verifies 1 + W. Take the W that gives the most
+// tokens per unit of time:
+//
+//   W* = argmax over W in [1, W_cap] of  G(W) / T(W)
+//   G(W) = 1 + sum_{k=1..W} prod_{j<=k} a_j     expected tokens per cycle
+//
+// a_j is the decayed rate at which draft position j is accepted after j-1 was, T(W) the decayed
+// mean time of a cycle that drafted W tokens. Draft confidence is not used: an MTP head is often
+// sure and wrong, so only what the target accepted counts.
+struct server_spec_depth {
+    static constexpr double DECAY_ACC = 0.90; // acceptance follows the text, ~7 cycles half-life
+    static constexpr double DECAY_T   = 0.98; // cycle time is a property of the box, ~35 samples
+    static constexpr double PRIOR_N   = 2.0;  // pseudo count that pulls a position towards the one before it
+    static constexpr double PRIOR_A0  = 0.8;
+    static constexpr int    N_PROBE   = 16;   // a_{W+1} and T(W-1) are only seen when we go there
+    static constexpr double MARGIN    = 1.02; // a move has to win by this much
+
+    bool enabled = false;
+
+    int w_cap   = 0;
+    int w       = 0;
+    int n_cycle = 0;
+    int n_probe = 0;
+
+    std::vector<double> acc_n, acc_d; // [w_cap] decayed accepts / tries of each draft position
+    std::vector<double> t_s,   t_w;   // [w_cap + 1] decayed sum of cycle us / weight, by drafted count
+    std::vector<int>    t_n;          // [w_cap + 1] timed cycles seen, by drafted count
+
+    void init(bool on, int cap) {
+        enabled = on && cap > 0;
+        w_cap   = cap;
+        w       = 1;
+        n_cycle = 0;
+        n_probe = 0;
+        acc_n.assign(std::max(cap, 0), 0.0);
+        acc_d.assign(std::max(cap, 0), 0.0);
+        t_s.assign(std::max(cap, 0) + 1, 0.0);
+        t_w.assign(std::max(cap, 0) + 1, 0.0);
+        t_n.assign(std::max(cap, 0) + 1, 0);
+    }
+
+    // depth to draft this cycle
+    int next() {
+        if (!enabled) {
+            return -1;
+        }
+
+        // warm-up: time every depth once before trusting the rule
+        for (int i = 1; i <= w_cap; ++i) {
+            if (t_w[i] == 0.0) {
+                return i;
+            }
+        }
+
+        if (n_cycle > 0 && n_cycle % N_PROBE == 0) {
+            // alternate up and down, so both neighbours stay fresh
+            const bool up = (n_probe++ % 2 == 0);
+            if (up && w < w_cap) {
+                return w + 1;
+            }
+            if (!up && w > 1) {
+                return w - 1;
+            }
+        }
+
+        return w;
+    }
+
+    double acc(int k, double prev) const {
+        return (acc_n[k] + PRIOR_N*prev) / (acc_d[k] + PRIOR_N);
+    }
+
+    // expected tokens per us when drafting d tokens, or -1 when that depth has no timing yet
+    double rate(int d) const {
+        if (d < 1 || d > w_cap || t_w[d] == 0.0) {
+            return -1.0;
+        }
+
+        double g = 1.0;
+        double p = 1.0;
+        double a = PRIOR_A0;
+        for (int k = 0; k < d; ++k) {
+            a  = acc(k, a);
+            p *= a;
+            g += p;
+        }
+
+        return g / (t_s[d] / t_w[d]);
+    }
+
+    void add_cycle(int n_draft, int n_accepted, int64_t t_us) {
+        if (!enabled || n_draft < 1 || n_draft > w_cap) {
+            return;
+        }
+
+        for (int k = 0; k < w_cap; ++k) {
+            acc_n[k] *= DECAY_ACC;
+            acc_d[k] *= DECAY_ACC;
+        }
+        for (int k = 0; k < n_draft && k <= n_accepted; ++k) {
+            acc_d[k] += 1.0;
+            acc_n[k] += k < n_accepted ? 1.0 : 0.0;
+        }
+
+        // the first two cycles of a new verify width also capture its CUDA graph
+        if (t_us > 0 && t_n[n_draft]++ < 2) {
+            t_us = 0;
+        }
+
+        if (t_us > 0) {
+            // one slow cycle must not stick to a depth that is rarely revisited
+            double t = (double) t_us;
+            if (t_w[n_draft] > 0.0) {
+                t = std::min(t, 2.0*t_s[n_draft]/t_w[n_draft]);
+            }
+            t_s[n_draft] = DECAY_T*t_s[n_draft] + t;
+            t_w[n_draft] = DECAY_T*t_w[n_draft] + 1.0;
+        }
+
+        n_cycle++;
+
+        // climb one step at a time, but drop straight to the best shallower depth: a wasted draft
+        // step costs a full cycle slot, a missed one only a little speed
+        const double r_cur = rate(w);
+        if (r_cur < 0.0) {
+            return;
+        }
+
+        int    d_best = w;
+        double r_best = r_cur;
+        for (int d = 1; d < w; ++d) {
+            const double r = rate(d);
+            if (r > r_best) {
+                d_best = d;
+                r_best = r;
+            }
+        }
+
+        if (d_best < w && r_best > r_cur*MARGIN) {
+            w = d_best;
+        } else if (rate(w + 1) > r_cur*MARGIN) {
+            w++;
+        }
+    }
+};
+
 // loop guard state of the running request, see PLAN-loop-guard.md
 struct server_slot_guard {
     server_loop_monitor  mon;
@@ -650,6 +798,7 @@ struct server_slot {
     int32_t n_gen_last = 0;
 
     server_spec_width spec_w;
+    server_spec_depth spec_d;
 
     server_slot_guard guard;
 
@@ -984,6 +1133,18 @@ struct server_slot {
             SLT_INF(*this,
                     "draft acceptance = %0.5f (%5d accepted / %5d generated), mean len = %5.2f\n",
                     draft_ratio, n_draft_accepted, n_draft_total, mean_acc_len);
+            if (spec_d.enabled && n_draft_verif_steps > 0) {
+                std::string est;
+                double a = server_spec_depth::PRIOR_A0;
+                for (int d = 1; d <= spec_d.w_cap; ++d) {
+                    a = spec_d.acc(d - 1, a);
+                    est += string_format(" %d: T %.1f ms a %.2f", d,
+                            spec_d.t_w[d] > 0.0 ? spec_d.t_s[d]/spec_d.t_w[d]/1000.0 : 0.0, a);
+                }
+                SLT_INF(*this,
+                        "  adaptive depth = %5.2f mean drafted, now %d |%s\n",
+                        (double) n_draft_total / n_draft_verif_steps, spec_d.w, est.c_str());
+            }
             SLT_INF(*this,
                     "   tier bypassed = %10" PRId64 " batches too wide for -ehs\n",
                     llama_expert_tier_n_bypassed(ctx_tgt));
@@ -1683,16 +1844,21 @@ private:
         }
 
         bool spec_adaptive = params_base.speculative.adaptive_width;
+        bool spec_depth    = false;
 
         if (spec_adaptive) {
-            if (params_base.expert_hot_s == 0) {
-                SRV_WRN("%s", "--spec-adaptive-width prices a draft token by the cold experts it pulls, "
-                        "and the expert hot store is off so there is nothing to price against. disabling it\n");
+            if (!spec) {
                 spec_adaptive = false;
             } else if (common_speculative_n_max(&params_base.speculative) != params_base.speculative.draft.n_max) {
-                SRV_WRN("%s", "--spec-adaptive-width sets p_min, which only the draft-model speculators read, "
+                SRV_WRN("%s", "--spec-adaptive-width only drives the draft-model speculators, "
                         "and another speculator here drafts wider. disabling it\n");
                 spec_adaptive = false;
+            } else if (params_base.expert_hot_s == 0) {
+                // no cold experts to price a draft token by: adapt the depth instead
+                SRV_INF("--spec-adaptive-width: no expert hot store, adapting the draft depth in [1, %d]\n",
+                        params_base.speculative.draft.n_max);
+                spec_adaptive = false;
+                spec_depth    = true;
             }
         }
 
@@ -1730,6 +1896,7 @@ private:
 
             // kept across tasks: the fit describes the box and the model, not one request
             slot.spec_w.reset(spec_adaptive);
+            slot.spec_d.init(spec_depth, params_base.speculative.draft.n_max);
 
             slot.reset();
         }
@@ -4433,7 +4600,11 @@ private:
                 const bool use_ckpt_tgt = ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
                 const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
 
-                const int n_draft_max = slot.get_n_draft_max();
+                int n_draft_max = slot.get_n_draft_max();
+
+                if (slot.spec_d.enabled && n_draft_max > 0) {
+                    n_draft_max = std::min(n_draft_max, slot.spec_d.next());
+                }
 
                 // the width stays where the user put it. What adapts is how sure the drafter has
                 // to be before it adds another token, which is what actually costs cold experts
@@ -5579,6 +5750,14 @@ private:
                 if (llama_expert_cold_last(slot.ctx_tgt, &cold, &n_tokens) && n_tokens == (int32_t) n_draft + 1) {
                     slot.spec_w.add_sample(ggml_time_us() - slot.spec_w.t_step_beg, cold, n_tokens);
                 }
+            }
+
+            if (slot.spec_d.enabled) {
+                // a step time is only this slot's when it owns the batch. the first cycles of a
+                // request also pay for the draft context catching up on the prompt
+                const bool timed = n_generating_last == 1 && slot.stats.n_draft_verif_steps > 2;
+                const int64_t t_cycle = timed ? ggml_time_us() - slot.spec_w.t_step_beg : 0;
+                slot.spec_d.add_cycle((int) n_draft, (int) n_accepted, t_cycle);
             }
 
             auto & n_accepted_per_pos = slot.n_accepted_per_pos;
