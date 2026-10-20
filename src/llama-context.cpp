@@ -900,7 +900,11 @@ void llama_context::synchronize() {
         return;
     }
 
-    ggml_backend_sched_synchronize(sched.get());
+    // the getters call this once each; after the first call the backends are idle
+    if (sync_pending || cparams.pipeline_parallel) {
+        ggml_backend_sched_synchronize(sched.get());
+        sync_pending = false;
+    }
 
     // FIXME: if multiple single tokens are evaluated without a synchronization,
     // the stats will be added to the prompt evaluation stats
@@ -3587,6 +3591,8 @@ ggml_status llama_context::graph_compute(
     for (const auto & set_n_threads_fn : set_n_threads_fns) {
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
     }
+
+    sync_pending = true;
 
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (status != GGML_STATUS_SUCCESS) {
