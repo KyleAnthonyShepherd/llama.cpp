@@ -324,13 +324,41 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
         return false;
     }
     {
-        // tuning knob: largest batch that still takes mvq, for every quant type except PTQ1_0
-        static const int env_max = [] {
+        // tuning knob: largest batch that still takes mvq, "N" for every type or "q4_K=3,q6_K=2,default=8"
+        // (PTQ1_0 keeps its own rule)
+        static const std::array<int, GGML_TYPE_COUNT> env_max = [] {
+            std::array<int, GGML_TYPE_COUNT> res;
+            res.fill(-1);
             const char * s = getenv("GGML_CUDA_MMVQ_MAX_COLS");
-            return s ? atoi(s) : -1;
+            if (s == nullptr) {
+                return res;
+            }
+            std::string spec(s);
+            size_t pos = 0;
+            while (pos <= spec.size()) {
+                const size_t end = std::min(spec.find(',', pos), spec.size());
+                const std::string item = spec.substr(pos, end - pos);
+                const size_t eq = item.find('=');
+                if (eq == std::string::npos) {
+                    if (!item.empty()) {
+                        res.fill(atoi(item.c_str()));
+                    }
+                } else {
+                    const std::string name = item.substr(0, eq);
+                    const int n = atoi(item.c_str() + eq + 1);
+                    for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
+                        const char * tn = ggml_type_name((ggml_type) t);
+                        if (name == "default" ? res[t] < 0 : (tn != nullptr && name == tn)) {
+                            res[t] = n;
+                        }
+                    }
+                }
+                pos = end + 1;
+            }
+            return res;
         }();
-        if (env_max >= 0 && type != GGML_TYPE_PTQ1_0) {
-            return ne11 <= env_max;
+        if (env_max[type] >= 0 && type != GGML_TYPE_PTQ1_0) {
+            return ne11 <= env_max[type];
         }
     }
 #if !defined(GGML_USE_HIP)
@@ -351,12 +379,27 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
         }
     }
     if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc == 860) {
-        switch (type) { // tuned on RTX 3060 Laptop (sm_86, 65 W cap: mvq turns ALU bound at 3 columns)
-            case GGML_TYPE_Q4_K:
-                return ne11 <= 3;
+        switch (type) { // tuned on RTX 3060 Laptop (sm_86, 65 W cap: mvq turns ALU bound early), phase0/mmvq-table.sh
+            case GGML_TYPE_Q3_K:
+                return ne11 <= 1;
+            case GGML_TYPE_Q2_K:
             case GGML_TYPE_Q5_K:
             case GGML_TYPE_Q6_K:
                 return ne11 <= 2;
+            case GGML_TYPE_Q4_K:
+            case GGML_TYPE_Q5_1:
+            case GGML_TYPE_Q8_0:
+            case GGML_TYPE_MXFP4:
+                return ne11 <= 3;
+            case GGML_TYPE_IQ2_XS:
+            case GGML_TYPE_IQ4_XS:
+                return ne11 <= 4;
+            case GGML_TYPE_Q4_0:
+            case GGML_TYPE_Q4_1:
+            case GGML_TYPE_Q5_0:
+            case GGML_TYPE_IQ4_NL:
+            case GGML_TYPE_IQ3_S:
+                return ne11 <= 5;
             default:
                 return ne11 <= MMVQ_MAX_BATCH_SIZE;
         }
