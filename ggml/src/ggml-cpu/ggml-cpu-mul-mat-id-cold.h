@@ -8,7 +8,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define MMID_MATRIX_ROW(row_id, i1) matrix_rows[(row_id)*ids->ne[0]*ids->ne[1] + (i1)]
+// the rows of each src0 matrix are stored back to back, starting at matrix_row_offs[row_id]
+#define MMID_MATRIX_ROW(row_id, i1) matrix_rows[matrix_row_offs[row_id] + (i1)]
 
 struct mmid_row_mapping {
     int32_t i1;
@@ -25,14 +26,12 @@ void ggml_compute_forward_mul_mat_id_one_chunk(
     struct ggml_tensor * dst,
     const struct ggml_tensor * src0,
     const struct ggml_tensor * src1,
-    const struct ggml_tensor * ids,
-    const int64_t cur_a,
     const int64_t ir0_start,
     const int64_t ir0_end,
     const int64_t ir1_start,
     const int64_t ir1_end,
     const char * src0_cur,
-    const struct mmid_row_mapping * matrix_rows,
+    const struct mmid_row_mapping * matrix_rows, // rows of the current src0 matrix
     const size_t row_size,
     const bool src1_cont,
     const void * wdata);

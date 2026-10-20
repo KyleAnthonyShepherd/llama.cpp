@@ -301,6 +301,9 @@ private:
 
     llm_graph_cb graph_get_cb() const;
 
+    void vsub_init(uint32_t n_dynamic, uint32_t n_rank);
+    void vsub_init_head(ggml_tensor * w, const llama_vocab_subset::head & head);
+
     // disable auto fused ops (Flash Attention, Gated Delta Net) whose op lands on a device
     // that differs from the layer it belongs to (usually due to missing backend support)
     void resolve_fused_ops(const llama_memory_context_i * mctx, uint32_t n_seqs);
@@ -443,6 +446,11 @@ private:
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;
+
+    // reduced draft LM head, nullptr = full LM head
+    std::unique_ptr<llama_vocab_subset>  vsub;
+    std::vector<ggml_context_ptr>        vsub_ctxs;
+    std::vector<ggml_backend_buffer_ptr> vsub_bufs;
 
     // keep copies of the per-sequence memory on the device
     std::map<llama_seq_id, llama_memory_buffers> mem_storage;

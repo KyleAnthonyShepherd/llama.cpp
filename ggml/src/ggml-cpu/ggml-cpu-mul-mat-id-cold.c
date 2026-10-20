@@ -96,8 +96,11 @@ void ggml_compute_forward_mul_mat_id_cold(
     int64_t * matrix_row_counts =
         incr_ptr_aligned(&wdata_cur, n_as*sizeof(int64_t), sizeof(int64_t));
 
+    int64_t * matrix_row_offs =
+        incr_ptr_aligned(&wdata_cur, n_as*sizeof(int64_t), sizeof(int64_t));
+
     struct mmid_row_mapping * matrix_rows =
-        incr_ptr_aligned(&wdata_cur, n_as*ids->ne[0]*ids->ne[1]*sizeof(struct mmid_row_mapping), sizeof(int64_t));
+        incr_ptr_aligned(&wdata_cur, ids->ne[0]*ids->ne[1]*sizeof(struct mmid_row_mapping), sizeof(int64_t));
 
     char (*atomic_current_chunk)[CACHE_LINE_SIZE] =
         incr_ptr_aligned(&wdata_cur, CACHE_LINE_SIZE * n_as, CACHE_LINE_SIZE);
@@ -138,6 +141,25 @@ void ggml_compute_forward_mul_mat_id_cold(
                 const int32_t i02 = *(const int32_t *) ((const char *) ids->data + iid1*ids->nb[1] + id*ids->nb[0]);
 
                 assert(i02 >= 0 && i02 < n_as);
+
+                if (cold_mask[i02] == 0) {
+                    continue;
+                }
+
+                matrix_row_counts[i02] += 1;
+            }
+        }
+
+        int64_t offs = 0;
+        for (int i02 = 0; i02 < n_as; ++i02) {
+            matrix_row_offs[i02] = offs;
+            offs += matrix_row_counts[i02];
+            matrix_row_counts[i02] = 0;
+        }
+
+        for (int64_t iid1 = 0; iid1 < ids->ne[1]; ++iid1) {
+            for (int id = 0; id < n_ids; ++id) {
+                const int32_t i02 = *(const int32_t *) ((const char *) ids->data + iid1*ids->nb[1] + id*ids->nb[0]);
 
                 if (cold_mask[i02] == 0) {
                     continue;
@@ -202,9 +224,9 @@ void ggml_compute_forward_mul_mat_id_cold(
             const int64_t ir1_end = MIN(ir1_start + dr1, nr1);
 
             ggml_compute_forward_mul_mat_id_one_chunk(
-                dst, src0, src1, ids, cur_a,
+                dst, src0, src1,
                 ir0_start, ir0_end, ir1_start, ir1_end,
-                src0_cur, matrix_rows, row_size, src1_cont, wdata
+                src0_cur, &MMID_MATRIX_ROW(cur_a, 0), row_size, src1_cont, wdata
             );
 
             if (nth >= nchunk0 * nchunk1) {

@@ -444,6 +444,10 @@ extern "C" {
         uint32_t n_ctx_max;       // upper bound the KV cache may grow to via llama_decode()'s automatic growth; 0 = disabled (default)
         float    ctx_grow_factor; // growth multiplier applied to n_ctx when growing automatically (default: 1.5);
                                   // the actual growth target is always at least large enough to fit the batch that triggered growth
+
+        // [EXPERIMENTAL] draft contexts: compute only the lowest token ids plus this many best-scoring others per output (0 = full LM head)
+        uint32_t n_vocab_dynamic;
+        uint32_t n_vocab_rank; // rank of the scorer that picks those ids (0 = default)
     };
 
     struct llama_model_tensor_override {

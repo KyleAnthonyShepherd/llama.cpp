@@ -2634,6 +2634,9 @@ common_speculative_init_result::common_speculative_init_result(
     // n_rs_seq stays as common_context_params_to_llama set it: the draft context needs the same rollback window as the target, with n_rs_seq == 0 its seq_rm fails silently on partial acceptance and keeps stale positions
     cparams.ctx_other = ctx_tgt;
 
+    cparams.n_vocab_dynamic = params.speculative.draft.vocab_dynamic;
+    cparams.n_vocab_rank    = params.speculative.draft.vocab_rank;
+
     std::string model_path;
     if (has_draft) {
         model_path = params.speculative.draft.mparams.path;
