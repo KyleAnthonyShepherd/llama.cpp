@@ -356,6 +356,18 @@ Still open, largest first:
 2. **MMQ at 5 columns**: 20-72 row tiles on 30 SMs, run as stream-k plus a fixup (~3 us per mat-mul, ~0.6 ms per cycle) at 64% of bandwidth. A smaller row tile for tiny batches would let plain tiling fill the SMs without the fixup. ~2-4%.
 3. GDN with rollback snapshots (~1.1 ms per cycle) and the snapshot `cpy_scalar`s.
 
+### 5.12 Device-side MTP draft chain (design approved by Kyle 2026-10-20, not started in code)
+
+One decode of an n-token ubatch (pos0..pos0+n-1) on the draft context through a chain graph that unrolls the n MTP steps. Facts checked in the code:
+- draft sampler is top-k 10 and takes data[0] (`common/speculative.cpp` ~1430), so in-graph `ggml_argmax` is the same draft up to ties. Use the chain only when p_min == 0.
+- `build_sampling()` returns early when `res->t_logits` is null (`llama-graph.cpp` ~3957): set it null in the chain graph and expose a new `res->t_chain` (I32 [n]); `decode()` (`llama-context.cpp` ~2654-2766) copies outputs by result tensor, so add an async copy of `t_chain` there and a getter in `llama-ext.h`. Mark no batch outputs.
+- per step i: K/V store through `cpy_k`/`cpy_v` with a 1-element view of `k_idxs`/`v_idxs` (I64 [n_tokens], `llama-kv-cache.cpp` ~2052); read through the full `get_k`/`get_v` view; mask = 1-row view of the causal kq_mask (flash attn only asserts contiguous, `ggml.c` ~5563). RoPE is `ggml_rope_multi` (4 sections): positions for token i are strided by n_tokens in `inp_pos`, so take a strided view + `ggml_cont` to [4].
+- step 0 input: batch token 0 + `pending_h`; step i > 0: `get_rows(tok_embd, argmax_{i-1})` and `h_nextn` of step i-1. The trimmed head hooks `build_lora_mm` per call, so it works per step.
+- add a `mtp_chain` field to `llm_graph_params` and to `allow_reuse`, so a chain graph never reuses the catch-up graph.
+- host: in `common_speculative_impl_draft_mtp::draft()`, a fast path that builds the n-token batch, toggles the chain flag on the draft context, decodes once, reads n ids, truncates at EOS. The flag goes in `arg.cpp`, Qwen3.5/3.6 only (`src/models/qwen35.cpp` graph_mtp ~546; qwen35moe has its own copy).
+
+Check: greedy text identical to the loop on the 5 sweep prompts; ABBA t/s; nsys GPU idle per cycle (now ~3.8 ms). Expected +5-7% at n_max 4 on the laptop, nothing at n_max 1.
+
 ### 5.11 GGML_CUDA_MMVQ_MAX_COLS and phase0/mmvq-table.sh
 
 The knob now takes per-type values: `GGML_CUDA_MMVQ_MAX_COLS=q4_K=3,q6_K=2,default=8` (a bare `N` still sets every type). `phase0/mmvq-table.sh` times every type at 1-8 columns with the knob at 8 (MMVQ) and at 0 (MMQ or whatever path is next), picks each type's crossover, and prints the export line plus a C++ table entry. On Linux: `BIN_DIR=./build/bin ./phase0/mmvq-table.sh`. For the 1660 Ti the export route is the safe one: compute capability 7.5 is shared with the RTX 20 series, which has tensor cores, so a baked-in `cc == 750` entry would also change those cards.
