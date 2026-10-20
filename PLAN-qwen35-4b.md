@@ -338,6 +338,8 @@ All A/Bs below are interleaved new/old/old/new (ABBA): the laptop slows ~1 t/s p
 
 After these: **~122.8 greedy / ~98.2 sampled** at n_max 4 (was 118.4 / 95.6).
 
+On the 35B-A3B (`-cmoe -ehs 24`, greedy, code + reason, ABBA against the build with only the first sm_86 table): n_max 2 +3.1% / -3.5%, n_max 3 +2.6% / +1.3%. That is inside its run-to-run spread (up to 15% between runs of one build), so no measurable change. Its experts (17 GB of Q4_K) go through MUL_MAT_ID, which the table does not touch; its dense part is 2 GB of Q8_0, which crosses at 4 columns, so only n_max 3+ can use it. In the same runs n_max 3 beat n_max 2 by ~10% on both prompts; worth a proper sweep in the usual 35B configuration.
+
 Where the host time goes, from the server's own `DEBUG_TIMINGS` (temporarily enabled) on the code prompt, 139 t/s, 3.86 tokens per cycle:
 
 | phase | ms per cycle | GPU part (nsys) | host part |
