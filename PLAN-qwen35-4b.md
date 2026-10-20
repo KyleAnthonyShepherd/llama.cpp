@@ -324,6 +324,40 @@ Effect: fixed n_max 4 went 101.1 -> **118.4 greedy**, 88.5 -> **95.6 sampled**; 
 
 While decoding: throttle reason `0x4` (SW power cap) the whole time, 61-65 W, SM 1280-1550 MHz of 2100, memory clock at max, memory controller busy ~60%. The verify reads run at ~183 GB/s, 64% of the 288 GB/s peak.
 
+### 5.10 Host gaps and small kernels, round one (2026-10-20)
+
+All A/Bs below are interleaved new/old/old/new (ABBA): the laptop slows ~1 t/s per run as it heats, and plain alternation credited that drift to whichever build ran first. n_max 4, trimmed head, `-bs`, 5 prompts, greedy and sampled.
+
+| change | where | greedy | sampled | output |
+|---|---|---|---|---|
+| user inputs copied async on the split backend, one sync per split instead of two per input | `ggml-backend.cpp` `compute_splits` | ~+1% | ~+0.5% | identical |
+| `llama_context::synchronize()` skips the backend sync when nothing was queued since the last one (the getters call it ~9 times per draft step) | `llama-context.cpp` | (in the row above) | | identical |
+| thin F32 matrices (<= 512 rows, e.g. `ssm_alpha`/`ssm_beta` 2560x32) keep `mul_mat_vec_f` up to 8 columns instead of 3 | `mmvf.cu` | +1.6% | +0.7% | changes (different kernel), deterministic |
+| the existing tiled `concat_dim0_transpose_u32` (conv state + transposed inputs) enabled on every CUDA device, not only GB10 | `concat.cu` | **+2.8%** | **+2.2%** | identical |
+| sm_86 MMVQ/MMQ table extended to every type `phase0/mmvq-table.sh` measures (Q3_K 1; Q2_K, Q5_K, Q6_K 2; Q4_K, Q5_1, Q8_0, MXFP4 3; IQ2_XS, IQ4_XS 4; Q4_0, Q4_1, Q5_0, IQ4_NL, IQ3_S 5) | `mmvq.cu` | (4B unchanged: only Q4_K/Q5_K/Q6_K matter there) | | 407/407 MUL_MAT tests |
+
+After these: **~122.8 greedy / ~98.2 sampled** at n_max 4 (was 118.4 / 95.6).
+
+Where the host time goes, from the server's own `DEBUG_TIMINGS` (temporarily enabled) on the code prompt, 139 t/s, 3.86 tokens per cycle:
+
+| phase | ms per cycle | GPU part (nsys) | host part |
+|---|---|---|---|
+| pre-decode: the 4 draft steps | 6.25 | ~4.3 | ~2.0, ~0.4-0.5 ms per draft step |
+| decode: verify + MTP catch-up | 21.4 | ~19 | ~2 |
+| post-decode: sample and accept | 0.07 | | |
+
+- the draft context reuses its graph for 3 of 5 decodes per cycle: the 5-token catch-up and the first 1-token draft step rebuild each cycle because the context keeps one previous graph. A rebuild of the MTP graph costs only ~0.11 ms (`LLAMA_GRAPH_REUSE_DISABLE=1` A/B), so a two-graph cache would buy ~1%. A rebuild of the verify graph costs ~1.1 ms, and that one is already reused every cycle.
+- the rest of the ~0.4 ms per draft step is the round trip itself: wait for the GPU, read the sampled token and the 10 KB hidden row, build the next batch, upload it, launch. It is paid four times per cycle, and WDDM makes each one dearer. Only drafting on the device removes it (next item).
+
+Still open, largest first:
+1. **Device-side draft chain.** Build the n_max MTP steps as one graph: argmax on the device, `get_rows` of the drafted token's embedding, the step's `h_nextn` fed straight into the next step, KV written at pos0 + i. Removes ~1.5-2 ms of host time per cycle (~6-8%), more on WDDM than on Linux. The gemma4 path (`is_mem_shared`) already runs several heads in one graph; the Qwen MTP head writes its own KV per step, which is what makes this harder.
+2. **MMQ at 5 columns**: 20-72 row tiles on 30 SMs, run as stream-k plus a fixup (~3 us per mat-mul, ~0.6 ms per cycle) at 64% of bandwidth. A smaller row tile for tiny batches would let plain tiling fill the SMs without the fixup. ~2-4%.
+3. GDN with rollback snapshots (~1.1 ms per cycle) and the snapshot `cpy_scalar`s.
+
+### 5.11 GGML_CUDA_MMVQ_MAX_COLS and phase0/mmvq-table.sh
+
+The knob now takes per-type values: `GGML_CUDA_MMVQ_MAX_COLS=q4_K=3,q6_K=2,default=8` (a bare `N` still sets every type). `phase0/mmvq-table.sh` times every type at 1-8 columns with the knob at 8 (MMVQ) and at 0 (MMQ or whatever path is next), picks each type's crossover, and prints the export line plus a C++ table entry. On Linux: `BIN_DIR=./build/bin ./phase0/mmvq-table.sh`. For the 1660 Ti the export route is the safe one: compute capability 7.5 is shared with the RTX 20 series, which has tensor cores, so a baked-in `cc == 750` entry would also change those cards.
+
 ---
 
 ## 6. The home server (GTX 1660 Ti, Turing sm_75, no tensor cores, 16 GB RAM)
