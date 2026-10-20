@@ -323,6 +323,16 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
     if (!ggml_is_quantized(type)) {
         return false;
     }
+    {
+        // tuning knob: largest batch that still takes mvq, for every quant type except PTQ1_0
+        static const int env_max = [] {
+            const char * s = getenv("GGML_CUDA_MMVQ_MAX_COLS");
+            return s ? atoi(s) : -1;
+        }();
+        if (env_max >= 0 && type != GGML_TYPE_PTQ1_0) {
+            return ne11 <= env_max;
+        }
+    }
 #if !defined(GGML_USE_HIP)
     if (type == GGML_TYPE_PTQ1_0 && GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_TURING) {
         return ne11 <= 7;
@@ -336,6 +346,17 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
                 return ne11 <= 4;
             case GGML_TYPE_Q3_K:
                 return ne11 <= 6;
+            default:
+                return ne11 <= MMVQ_MAX_BATCH_SIZE;
+        }
+    }
+    if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc == 860) {
+        switch (type) { // tuned on RTX 3060 Laptop (sm_86, 65 W cap: mvq turns ALU bound at 3 columns)
+            case GGML_TYPE_Q4_K:
+                return ne11 <= 3;
+            case GGML_TYPE_Q5_K:
+            case GGML_TYPE_Q6_K:
+                return ne11 <= 2;
             default:
                 return ne11 <= MMVQ_MAX_BATCH_SIZE;
         }
