@@ -1693,7 +1693,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             struct ggml_tensor * input = split->inputs[input_id];
             struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
 
-            if (input->flags & GGML_TENSOR_FLAG_INPUT) {
+            // a view of a user input (e.g. one row of it) is user data too
+            const bool user_input = (input->flags & GGML_TENSOR_FLAG_INPUT) ||
+                (input->view_src && (input->view_src->flags & GGML_TENSOR_FLAG_INPUT));
+
+            if (user_input) {
                 // inputs from the user must be copied before returning, to prevent the user overwriting the data before the copy is done
                 if (!user_inputs_waited) {
                     if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
