@@ -402,6 +402,56 @@ To run there, in order:
 
 ---
 
+### 6.1 Server result: `phase0/mmvq-table.sh` on the GTX 1660 Ti (2026-10-21)
+
+Turing without tensor cores: MMQ runs on dp4a and costs ~2.6x a 1-column mat-vec at every width (Q4_K 146 us at 1 column, MMQ 375-377 us at 1-8 columns; laptop MMQ was ~1.4x). Crossovers are at 5-8 columns:
+
+```
+export GGML_CUDA_MMVQ_MAX_COLS=q5_K=8,mxfp4=8,q5_1=5,iq4_nl=5,iq2_xs=8,q8_0=5,q3_K=5,iq4_xs=5,iq3_s=8,q6_K=5,q4_0=5,q4_K=5,q4_1=5,q2_K=5,q5_0=8,default=8
+```
+
+- Only 6-8 column batches change against the default, so MTP n_max <= 4 (verify <= 5 columns) is not affected. Safe to set.
+- A 5-column verify costs 2.2x a 1-column step there, so the server's best MTP depth is likely 2-3, not 4. Sweep before copying the laptop config.
+- Verifies above 8 columns (DFlash blocks) always take MMQ, at ~2.6x a single step.
+- During the run: SM 1455 MHz, memory 6000 MHz, ~21 W, no throttle flags. Not power capped like the laptop.
+
+The server build is `-DGGML_CUDA_FORCE_MMQ=ON -DCMAKE_CUDA_ARCHITECTURES=61-virtual` (PTX only, JIT-compiled with `__CUDA_ARCH__ = 610`), which is what ggml itself advises for GTX 16xx (`ggml-cuda.cu`: Turing without tensor cores). So this table is the Pascal dp4a code, not the Turing mma code.
+
+### 6.2 Small-batch dp4a MMQ (2026-10-21, laptop done, server to confirm)
+
+Why MMQ was flat at ~2.6x a mat-vec there: the dp4a config at J = 8 or 16 columns was 256 threads, occupancy 2, I = 64 rows, no stream-k, for every type (`mmq-config-pascal-dp4a.cuh`). A 4096-row matrix gave 64 blocks for 24 SMs x 2 slots (1.33 waves), and the tile load and unpack, not the columns, set the cost.
+
+Method: CUDA 13.3 cannot compile `compute_61`, so the laptop cannot build the server's flags. Instead a scratch worktree `../opt-llama-dp4a` (detached, not for commit) forces MMQ onto the dp4a config and data layout on sm_86 (`-DGGML_CUDA_MMQ_FORCE_DP4A`, a few `#undef`s in `mmq.cuh`; it breaks the mma-only PTQ1_0, harmless for tuning). It reproduces the server's problem: Q4_K dp4a MMQ 361 us flat at 1-8 columns against a 149 us mat-vec (2.4x; server 376 / 146).
+
+Variants, us at 1-8 columns (laptop, dp4a, 4096 x 14336):
+
+| config (threads, occupancy, I, stream-k) | Q4_K | Q5_K | Q6_K | Q8_0 |
+|---|---|---|---|---|
+| stock 256, 2, 64, no | 361 | 500 | 521 | 505 |
+| 256, 2, 64, stream-k | 324 | | | |
+| 256, 4, 64, no | | 504 | | |
+| 128, 4, 32, no | 287 | 372 | 397 | 395 |
+| 128, 4, 32, stream-k | | | 456 | 420 |
+| **64, 8, 32, no** | **255** | **330** | **371** | **366** |
+
+Occupancy 4 vs 8 is the same at 64 threads; 32 threads does not compile; `K_vram` 512 gives wrong results. Smaller blocks win: more independent blocks per SM for the tile loads.
+
+Applied to J = 8 and 16 of every standard type (Q4_0..Q8_0, K-quants, IQ types, MXFP4; not the fork's Q1_0/Q2_0/PQ2_0, not NVFP4). Laptop, all 18 types: 1-8 columns -20% to -45%, 16 columns -9% to -28%, no type slower; MUL_MAT tests 495/495 under the forced-dp4a build. J >= 24 (bigger batches, prompt processing) unchanged. Only builds whose highest compiled arch is below Volta use this table (the server's 61-virtual build, real Pascal cards).
+
+Server, to run (`phase0/sm75-dp4a-ab.sh`, A = the old binaries, B = the new build): MUL_MAT Q4_K/Q5_K/Q6_K/Q8_0 at 1-16 columns with MMVQ allowed and MMQ forced, `llama-bench` pp512/tg128, and with `SWEEP=1` the 5-prompt sweep (no spec, MTP 2/3, DFlash 3/7) in ABBA order.
+
+```
+cp -a build/bin bin-stock
+git pull && cmake --build build --config Release -j $(nproc) --target llama-server llama-bench test-backend-ops
+MODEL=<4B Q4_K_S> ./phase0/sm75-dp4a-ab.sh
+BIN_DIR=./build/bin ./phase0/mmvq-table.sh      # MMQ got cheaper: the MMVQ/MMQ crossovers move down
+SWEEP=1 DRAFT=<qwen35-4b-dflash-Q4_K_M.gguf> MODEL=<4B Q4_K_S> ./phase0/sm75-dp4a-ab.sh
+```
+
+Expect, if the laptop direction holds: Q4_K MMQ ~376 -> ~265 us, crossovers at 3-4 columns instead of 5, the DFlash block-8 verify ~30% cheaper. The `GGML_CUDA_MMVQ_MAX_COLS` export from 6.1 must be replaced by the new table's.
+
+DFlash for the 4B: see `PLAN-qwen35-4b-dflash.md`.
+
 ## 7. Order of work
 
 1. ~~Config from section 4~~, now with the trimmed head.
