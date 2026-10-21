@@ -323,7 +323,9 @@ llama_context::llama_context(
 
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
 
-    cparams.n_outputs_max = params.n_outputs_max == 0 || llama_model_has_encoder(&model) ? cparams.n_batch : params.n_outputs_max;
+    // DFlash has an encoder input but decodes with per-token outputs, so it keeps the caller's limit
+    const bool enc_outputs_all = llama_model_has_encoder(&model) && model.arch != LLM_ARCH_DFLASH;
+    cparams.n_outputs_max = params.n_outputs_max == 0 || enc_outputs_all ? cparams.n_batch : params.n_outputs_max;
     cparams.n_outputs_max_per_seq = params.n_outputs_max_per_seq == 0 ?
             cparams.n_outputs_max : std::min(params.n_outputs_max_per_seq, cparams.n_outputs_max);
 

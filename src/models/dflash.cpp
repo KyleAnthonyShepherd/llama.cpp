@@ -846,6 +846,11 @@ llama_model_dflash::graph<false>::graph(const llama_model & model, const llm_gra
         inpL = cur;
     }
 
+    // DFlash2 reads every row through its selector, plain DFlash only the output rows
+    if (!model.dflash_selector_hidden) {
+        inpL = ggml_get_rows(ctx0, inpL, build_inp_out_ids());
+    }
+
     ggml_tensor * cur = build_norm(inpL, model.output_norm, NULL, LLM_NORM_RMS, -1);
     cb(cur, "result_norm", -1);
 
