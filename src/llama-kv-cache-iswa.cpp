@@ -72,6 +72,8 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
     //       https://github.com/ggml-org/llama.cpp/issues/17037
     uint32_t size_swa = GGML_PAD(std::min(size_base, hparams.n_swa*(unified ? n_seq_max : 1) + n_ubatch), 256);
 
+    size_swa_max = swa_full ? UINT32_MAX : GGML_PAD(hparams.n_swa*(unified ? n_seq_max : 1) + n_ubatch, 256);
+
     // when using full-size SWA cache, we set the SWA cache size to be equal to the base cache size
     if (swa_full) {
         LLAMA_LOG_WARN("%s: using full-size SWA cache (ref: %s)\n",
@@ -148,14 +150,23 @@ llama_pos llama_kv_cache_iswa::seq_pos_max(llama_seq_id seq_id) const {
     return kv_swa->seq_pos_max(seq_id);
 }
 
+// the SWA cache was capped by the base size at construction, so it grows with the base up to size_swa_max (never shrinks)
+uint32_t llama_kv_cache_iswa::size_swa_for(uint32_t n_new) const {
+    const uint32_t n_swa = size_swa_max == UINT32_MAX ? n_new : std::min(GGML_PAD(n_new, 256), size_swa_max);
+    return std::max(n_swa, kv_swa->get_size());
+}
+
 bool llama_kv_cache_iswa::resize(uint32_t n_new) {
-    // the SWA cache is window-sized (or, with --swa-full, a one-time snapshot of the base
-    // size taken at construction) and does not need to track the base cache's size
+    const uint32_t n_swa = size_swa_for(n_new);
+    if (n_swa != kv_swa->get_size() && !kv_swa->resize(n_swa)) {
+        return false;
+    }
     return kv_base->resize(n_new);
 }
 
 size_t llama_kv_cache_iswa::resize_peak_bytes(uint32_t n_new) const {
-    return kv_base->resize_peak_bytes(n_new);
+    const uint32_t n_swa = size_swa_for(n_new);
+    return kv_base->resize_peak_bytes(n_new) + (n_swa != kv_swa->get_size() ? kv_swa->resize_peak_bytes(n_swa) : 0);
 }
 
 bool llama_kv_cache_iswa::spill_layers() {

@@ -102,6 +102,11 @@ public:
 private:
     const bool unified;
 
+    uint32_t size_swa_for(uint32_t n_new) const;
+
+    // what the SWA cache grows to when the base cache grows: the window plus a ubatch, or the base size with --swa-full
+    uint32_t size_swa_max = 0;
+
     std::unique_ptr<llama_kv_cache> kv_base;
     std::unique_ptr<llama_kv_cache> kv_swa;
 };
