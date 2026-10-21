@@ -333,6 +333,8 @@ struct common_params_speculative_draft {
     float p_split = 0.1f; // speculative decoding split probability
     float p_min   = 0.0f; // minimum speculative decoding probability (greedy)
 
+    bool    chain         = false; // MTP: draft all steps in one decode, see --spec-draft-chain
+
     int32_t vocab_dynamic = 0; // reduced draft LM head, see --spec-draft-vocab-dynamic (0 = off)
     int32_t vocab_rank    = 0; // rank of its scorer, see --spec-draft-vocab-rank (0 = default)
 

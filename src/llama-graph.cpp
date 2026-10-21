@@ -1320,6 +1320,7 @@ void llm_graph_result::reset() {
     t_embd        = nullptr;
     t_embd_pooled = nullptr;
     t_h_nextn     = nullptr;
+    t_chain       = nullptr;
 
     t_layer_inp.resize(LLAMA_MAX_LAYERS + 1);
     std::fill(t_layer_inp.begin(), t_layer_inp.end(), nullptr);
@@ -3042,6 +3043,109 @@ ggml_tensor * llm_graph_context::build_attn(
 
     if (wo_b) {
         cur = ggml_add(ctx0, cur, wo_b);
+    }
+
+    return cur;
+}
+
+ggml_tensor * llm_graph_context::build_lora_mm_argmax(
+          ggml_tensor * w,
+          ggml_tensor * cur,
+          ggml_tensor * w_s) const {
+    const bool rotated = hadamard_rotations && hadamard_rotations->find(w) != hadamard_rotations->end();
+
+    if (vsub == nullptr || rotated || w_s != nullptr || ggml_n_dims(cur) > 2 || cur->ne[1] != 1 || vsub->heads.count(w) == 0) {
+        return ggml_argmax(ctx0, build_lora_mm(w, cur, w_s));
+    }
+
+    const auto it = vsub->heads.find(w);
+
+    // same logits as the reduced head in build_lora_mm, kept compact: [lowest n_base ids, picked ids]
+    const llama_vocab_subset::head & head = it->second;
+
+    const int64_t n_embd  = w->ne[0];
+    const int64_t n_vocab = w->ne[1];
+    const int64_t n_base  = vsub->n_base;
+    const int64_t n_dyn   = vsub->n_dynamic;
+
+    ggml_tensor * base = ggml_mul_mat(ctx0, ggml_view_2d(ctx0, w, n_embd, n_base, w->nb[1], 0), cur);
+
+    ggml_tensor * scores = ggml_mul_mat(ctx0, head.scorer, ggml_mul_mat(ctx0, head.basis, cur));
+    scores = ggml_concat(ctx0, ggml_fill(ctx0, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_base, 1), -INFINITY), scores, 0);
+    if (vsub->eog != nullptr) {
+        const int64_t n_eog = vsub->eog->ne[0];
+        scores = ggml_set_rows(ctx0, ggml_reshape_3d(ctx0, scores, 1, n_vocab, 1),
+                ggml_fill(ctx0, ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 1, n_eog, 1), INFINITY),
+                ggml_reshape_3d(ctx0, vsub->eog, n_eog, 1, 1));
+    }
+
+    ggml_tensor * ids    = ggml_top_k(ctx0, ggml_reshape_1d(ctx0, scores, n_vocab), n_dyn);
+    ggml_tensor * picked = ggml_mul_mat_id(ctx0, ggml_reshape_3d(ctx0, w, n_embd, 1, n_vocab),
+            ggml_reshape_3d(ctx0, cur, n_embd, 1, 1), ggml_reshape_2d(ctx0, ids, n_dyn, 1));
+
+    ggml_tensor * logits = ggml_concat(ctx0, ggml_reshape_1d(ctx0, base, n_base), ggml_reshape_1d(ctx0, picked, n_dyn), 0);
+    ggml_tensor * idx    = ggml_argmax(ctx0, ggml_reshape_2d(ctx0, logits, n_base + n_dyn, 1));
+
+    // compact index -> token id
+    ggml_tensor * tok = ggml_concat(ctx0, ggml_cast(ctx0, ggml_arange(ctx0, 0.0f, (float) n_base, 1.0f), GGML_TYPE_I32), ids, 0);
+
+    return ggml_reshape_1d(ctx0, ggml_get_rows(ctx0, ggml_reshape_2d(ctx0, tok, 1, n_base + n_dyn), idx), 1);
+}
+
+ggml_tensor * llm_graph_context::build_attn_rows(
+        llm_graph_input_attn_kv * inp,
+        ggml_tensor * wo,
+        ggml_tensor * wo_s,
+        ggml_tensor * q_cur,
+        ggml_tensor * k_cur,
+        ggml_tensor * v_cur,
+            float     kq_scale,
+            int       il,
+          int64_t     row0,
+          int64_t     n_rows) const {
+    const auto * mctx_cur = inp->mctx;
+
+    ggml_tensor * k_idxs = inp->get_k_idxs();
+    ggml_tensor * v_idxs = inp->get_v_idxs();
+    ggml_tensor * kq_mask = inp->get_kq_mask();
+
+    // rows of the ubatch: needs one stream and a V cache that is not transposed (flash attention)
+    GGML_ASSERT(v_idxs->ne[0] == k_idxs->ne[0] && kq_mask->ne[3] == 1);
+    GGML_ASSERT(row0 >= 0 && n_rows > 0 && row0 + n_rows <= k_idxs->ne[0]);
+
+    if (inp->self_k_rot) {
+        q_cur = llama_mul_mat_hadamard(ctx0, q_cur, inp->self_k_rot);
+        k_cur = llama_mul_mat_hadamard(ctx0, k_cur, inp->self_k_rot);
+    }
+
+    if (inp->self_v_rot) {
+        v_cur = llama_mul_mat_hadamard(ctx0, v_cur, inp->self_v_rot);
+    }
+
+    ggml_build_forward_expand(gf, q_cur);
+    ggml_build_forward_expand(gf, v_cur);
+    ggml_build_forward_expand(gf, k_cur);
+
+    k_idxs = ggml_view_1d(ctx0, k_idxs, n_rows, row0*k_idxs->nb[0]);
+    v_idxs = ggml_view_1d(ctx0, v_idxs, n_rows, row0*v_idxs->nb[0]);
+
+    ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il));
+    ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
+
+    kq_mask = ggml_view_4d(ctx0, kq_mask, kq_mask->ne[0], n_rows, 1, 1, kq_mask->nb[1], kq_mask->nb[2], kq_mask->nb[3], row0*kq_mask->nb[1]);
+
+    ggml_tensor * k = mctx_cur->get_k(ctx0, il);
+    ggml_tensor * v = mctx_cur->get_v(ctx0, il);
+
+    ggml_tensor * cur = build_attn_mha(q_cur, k, v, nullptr, kq_mask, nullptr, nullptr, 0, kq_scale, il);
+    cb(cur, "kqv_out", il);
+
+    if (inp->self_v_rot) {
+        cur = llama_mul_mat_hadamard(ctx0, cur, inp->self_v_rot);
+    }
+
+    if (wo) {
+        cur = build_lora_mm(wo, cur, wo_s);
     }
 
     return cur;

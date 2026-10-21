@@ -1916,6 +1916,25 @@ void llama_context::set_nextn_layer_offset(int32_t offset) {
     cparams.nextn_layer_offset = offset;
 }
 
+bool llama_context::set_mtp_chain(int32_t n_chain) {
+    // the chain graph slices the ubatch by rows, which needs a V cache that is not transposed
+    if (n_chain > 0 && (cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP || !cparams.flash_attn || model.arch != LLM_ARCH_QWEN35)) {
+        return false;
+    }
+
+    cparams.mtp_chain = std::max(0, n_chain);
+
+    return true;
+}
+
+const llama_token * llama_context::get_mtp_chain(int32_t * n_tokens) {
+    synchronize();
+
+    *n_tokens = (int32_t) mtp_chain_out.size();
+
+    return mtp_chain_out.data();
+}
+
 void llama_context::set_causal_attn(bool value) {
     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
 
@@ -2504,6 +2523,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
     n_queued_tokens += n_tokens_all;
 
     output_swaps.clear();
+    mtp_chain_out.clear();
 
     sched_reserve();
 
@@ -2735,6 +2755,14 @@ int llama_context::decode(const llama_batch & batch_inp) {
         }
 
         extract_layer_inputs(res, n_tokens_prev, ubatch.n_tokens);
+
+        if (res->t_chain) {
+            ggml_backend_t backend_c = ggml_backend_sched_get_tensor_backend(sched.get(), res->t_chain);
+            GGML_ASSERT(backend_c != nullptr);
+
+            mtp_chain_out.resize(ggml_nelements(res->t_chain));
+            ggml_backend_tensor_get_async(backend_c, res->t_chain, mtp_chain_out.data(), 0, ggml_nbytes(res->t_chain));
+        }
 
         // extract nextn embeddings before
         // only meaningful in LLAMA_POOLING_TYPE_NONE (per-token); other pooling modes are ignored.
@@ -5014,6 +5042,14 @@ void llama_set_embeddings_layer_inp(llama_context * ctx, uint32_t lid, bool valu
 
 void llama_set_nextn_layer_offset(llama_context * ctx, int32_t offset) {
     ctx->set_nextn_layer_offset(offset);
+}
+
+bool llama_set_mtp_chain(llama_context * ctx, int32_t n_chain) {
+    return ctx->set_mtp_chain(n_chain);
+}
+
+const llama_token * llama_get_mtp_chain(llama_context * ctx, int32_t * n_tokens) {
+    return ctx->get_mtp_chain(n_tokens);
 }
 
 llama_memory_t llama_get_memory(const struct llama_context * ctx) {

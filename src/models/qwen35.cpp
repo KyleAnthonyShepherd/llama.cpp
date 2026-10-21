@@ -1,6 +1,8 @@
 #include "models.h"
 #include "llama-memory-recurrent.h"
 
+#include <cstring>
+
 void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
     ml.get_key_or_arr(LLM_KV_ROPE_DIMENSION_SECTIONS,    hparams.rope_sections, 4, true);
@@ -561,9 +563,6 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     GGML_ASSERT(layer.nextn.enorm   && "MTP block missing nextn.enorm");
     GGML_ASSERT(layer.nextn.hnorm   && "MTP block missing nextn.hnorm");
 
-    int sections[4];
-    std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
-
     // TODO: extract in a common llm_graph_context::build_inp_embd_h()
     auto inp = std::make_unique<llm_graph_input_embd_h>(hparams.n_embd);
 
@@ -593,10 +592,101 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
 
     res->add_input(std::move(inp));
 
+    ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
+    ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
+    GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
+
+    if (cparams.mtp_chain > 0) {
+        GGML_ASSERT(ubatch.token && ubatch.embd && "QWEN35 MTP chain needs token and embd rows");
+
+        const int64_t n_chain = cparams.mtp_chain;
+        const int64_t n_catch = n_tokens - n_chain;
+        GGML_ASSERT(n_catch >= 0 && "QWEN35 MTP chain longer than the ubatch");
+
+        ggml_tensor * inp_pos  = build_inp_pos();
+        auto        * inp_attn = build_attn_inp_kv();
+
+        // tied embeddings: read the drafted rows from the copy that sits with the head
+        ggml_tensor * embd_w = layer.nextn.embed_tokens ? layer.nextn.embed_tokens : model.tok_embd;
+        if (!layer.nextn.embed_tokens && model.output && strcmp(model.output->name, model.tok_embd->name) == 0) {
+            embd_w = model.output;
+        }
+
+        auto rows = [&](ggml_tensor * t, int64_t r0, int64_t nr) {
+            return ggml_view_2d(ctx0, t, t->ne[0], nr, t->nb[1], r0*t->nb[1]);
+        };
+
+        // the accepted tokens of the last verify: only their K/V is used, the rest of their block is pruned
+        if (n_catch > 0) {
+            build_step(model, inp_attn, rows(tok_embd, 0, n_catch), rows(h_embd, 0, n_catch), inp_pos, 0, n_catch);
+        }
+
+        ggml_tensor * e = rows(tok_embd, n_catch, 1);
+        ggml_tensor * h = rows(h_embd,   n_catch, 1);
+
+        ggml_tensor * ids = nullptr;
+        for (int64_t i = 0; i < n_chain; ++i) {
+            ggml_tensor * h_next = build_step(model, inp_attn, e, h, inp_pos, n_catch + i, 1);
+
+            ggml_tensor * id = build_lora_mm_argmax(head_w, h_next, head_s);
+            cb(id, "mtp_chain_id", -1);
+
+            ids = ids ? ggml_concat(ctx0, ids, id, 0) : id;
+
+            e = ggml_get_rows(ctx0, embd_w, id);
+            h = h_next;
+        }
+
+        res->t_chain = ids;
+        ggml_build_forward_expand(gf, ids);
+
+        return;
+    }
+
     ggml_tensor * inp_pos     = build_inp_pos();
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     auto * inp_attn = build_attn_inp_kv();
+
+    ggml_tensor * cur = build_step(model, inp_attn, tok_embd, h_embd, inp_pos, 0, -1);
+
+    cb(cur, "h_nextn", -1);
+    res->t_h_nextn = cur;
+
+    cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+    cb(cur, "mtp_shared_head_norm", -1);
+
+    cur = build_lora_mm(head_w, cur, head_s);
+    cb(cur, "result_output", -1);
+
+    res->t_logits = cur;
+    ggml_build_forward_expand(gf, cur);
+}
+
+// the MTP block up to the shared head norm; n_rows >= 0 runs it for ubatch rows [row0, row0 + n_rows) alone (draft chain)
+ggml_tensor * llama_model_qwen35::graph_mtp::build_step(
+        const llama_model & model,
+        llm_graph_input_attn_kv * inp_attn,
+        ggml_tensor * tok_embd,
+        ggml_tensor * h_embd,
+        ggml_tensor * inp_pos,
+        int64_t       row0,
+        int64_t       n_rows) {
+    const int64_t n_embd_head = hparams.n_embd_head_v();
+    const int64_t n_tok       = n_rows >= 0 ? n_rows : n_tokens;
+
+    const int il = hparams.n_layer();
+    const auto & layer = model.layers[il];
+
+    int sections[4];
+    std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
+
+    if (n_rows >= 0) {
+        // M-RoPE positions are stored section by section: take these rows from each one
+        const int64_t n_pos = inp_pos->ne[0] / n_tokens;
+        inp_pos = ggml_view_2d(ctx0, inp_pos, n_rows, n_pos, n_tokens*ggml_element_size(inp_pos), row0*ggml_element_size(inp_pos));
+        inp_pos = ggml_reshape_1d(ctx0, ggml_cont(ctx0, inp_pos), n_rows*n_pos);
+    }
 
     ggml_tensor * h_norm = build_norm(h_embd, layer.nextn.hnorm, nullptr, LLM_NORM_RMS, il);
     cb(h_norm, "mtp_hnorm", il);
@@ -623,7 +713,7 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cb(Qcur_full, "mtp_Qcur_full", il);
 
     ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full,
-            n_embd_head, n_head, n_tokens,
+            n_embd_head, n_head, n_tok,
             ggml_element_size(Qcur_full) * n_embd_head * 2,
             ggml_element_size(Qcur_full) * n_embd_head * 2 * n_head,
             0);
@@ -631,18 +721,18 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cb(Qcur, "mtp_Qcur_normed", il);
 
     ggml_tensor * gate = ggml_view_3d(ctx0, Qcur_full,
-            n_embd_head, n_head, n_tokens,
+            n_embd_head, n_head, n_tok,
             ggml_element_size(Qcur_full) * n_embd_head * 2,
             ggml_element_size(Qcur_full) * n_embd_head * 2 * n_head,
             ggml_element_size(Qcur_full) * n_embd_head);
-    gate = ggml_cont_2d(ctx0, gate, n_embd_head * n_head, n_tokens);
+    gate = ggml_cont_2d(ctx0, gate, n_embd_head * n_head, n_tok);
     cb(gate, "mtp_gate", il);
 
-    Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
+    Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tok);
     Kcur = build_norm(Kcur, layer.attn_k_norm, nullptr, LLM_NORM_RMS, il);
     cb(Kcur, "mtp_Kcur_normed", il);
 
-    Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
+    Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tok);
     cb(Vcur, "mtp_Vcur", il);
 
     Qcur = ggml_rope_multi(ctx0, Qcur, inp_pos, nullptr,
@@ -655,9 +745,13 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     const float kq_scale = hparams.f_attention_scale == 0.0f
             ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
 
-    cur = build_attn(inp_attn,
-            nullptr, nullptr, nullptr,
-            Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+    if (n_rows >= 0) {
+        cur = build_attn_rows(inp_attn, nullptr, nullptr, Qcur, Kcur, Vcur, kq_scale, il, row0, n_rows);
+    } else {
+        cur = build_attn(inp_attn,
+                nullptr, nullptr, nullptr,
+                Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+    }
     cb(cur, "mtp_attn_pregate", il);
 
     cur = ggml_mul(ctx0, cur, ggml_sigmoid(ctx0, gate));
@@ -686,20 +780,6 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
             ? layer.nextn.shared_head_norm
             : model.output_norm;
     GGML_ASSERT(head_norm_w && "QWEN35 MTP: missing both nextn.shared_head_norm and output_norm");
-    cur = build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
 
-    cb(cur, "h_nextn", -1);
-    res->t_h_nextn = cur;
-
-    cur = ggml_get_rows(ctx0, cur, inp_out_ids);
-    cb(cur, "mtp_shared_head_norm", -1);
-
-    ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
-    ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
-    GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
-    cur = build_lora_mm(head_w, cur, head_s);
-    cb(cur, "result_output", -1);
-
-    res->t_logits = cur;
-    ggml_build_forward_expand(gf, cur);
+    return build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
 }

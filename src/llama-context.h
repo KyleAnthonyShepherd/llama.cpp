@@ -149,6 +149,8 @@ struct llama_context {
     void set_embeddings_nextn(bool value, bool masked);
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
     void set_nextn_layer_offset(int32_t offset);
+    bool set_mtp_chain(int32_t n_chain);
+    const llama_token * get_mtp_chain(int32_t * n_tokens);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
 
@@ -341,6 +343,9 @@ private:
     // populated only when cparams.embeddings_nextn is enabled and the model graph
     // sets llm_graph_result::t_h_nextn
     buffer_view<float> embd_nextn = {nullptr, 0};
+
+    // tokens drafted by the last MTP chain decode (see set_mtp_chain)
+    std::vector<llama_token> mtp_chain_out;
 
     // host buffers for output layer input embeddings, per layer
     // populated when cparams.output_layer_inp[il] is true

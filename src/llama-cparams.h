@@ -23,6 +23,8 @@ struct llama_cparams {
 
     int32_t  nextn_layer_offset = 0;
 
+    int32_t  mtp_chain = 0;     // DECODER_MTP: the last mtp_chain ubatch rows run as a chain of draft steps
+
     float rope_freq_base;
     float rope_freq_scale;
 

@@ -938,6 +938,10 @@ struct llm_graph_params {
             return false;
         }
 
+        if (cparams.mtp_chain != other.cparams.mtp_chain) {
+            return false;
+        }
+
         return
             cparams.embeddings              == other.cparams.embeddings              &&
             cparams.embeddings_nextn        == other.cparams.embeddings_nextn        &&
@@ -1003,6 +1007,7 @@ public:
     ggml_tensor * t_embd        = nullptr;
     ggml_tensor * t_embd_pooled = nullptr;
     ggml_tensor * t_h_nextn     = nullptr; // [n_embd, n_outputs] hidden state before final output norm
+    ggml_tensor * t_chain       = nullptr; // I32 [n_tokens] tokens drafted by an MTP chain graph
 
     std::vector<ggml_tensor *> t_layer_inp;
 
@@ -1297,6 +1302,27 @@ struct llm_graph_context {
             ggml_tensor * v_mla, // [n_embd_head_v_mla, n_embd_head_v, n_head_v] // TODO: remove
                   float   kq_scale,
                     int   il) const;
+
+    // attention for rows [row0, row0 + n_rows) of the ubatch: stores their K/V and attends with their mask rows
+    // used to run parts of the ubatch one after another in one graph (MTP draft chain)
+    ggml_tensor * build_attn_rows(
+            llm_graph_input_attn_kv * inp,
+            ggml_tensor * wo,
+            ggml_tensor * wo_s,
+            ggml_tensor * q_cur, // [n_embd_head_q, n_head_q, n_rows]
+            ggml_tensor * k_cur, // [n_embd_head_k, n_head_k, n_rows]
+            ggml_tensor * v_cur, // [n_embd_head_v, n_head_v, n_rows]
+                  float   kq_scale,
+                    int   il,
+                int64_t   row0,
+                int64_t   n_rows) const;
+
+    // greedy token id of build_lora_mm(w, cur, w_s) for one row of cur; with a reduced draft head
+    // (vsub) the argmax runs over the scored ids only, not over the scattered full vocab
+    ggml_tensor * build_lora_mm_argmax(
+              ggml_tensor * w,
+              ggml_tensor * cur,
+              ggml_tensor * w_s) const;
 
     llm_graph_input_attn_k  * build_attn_inp_k() const;
 

@@ -150,6 +150,16 @@ LLAMA_API void llama_set_embeddings_nextn(struct llama_context * ctx, bool value
 // chain multiple trained NextN heads. Default 0 (first head).
 LLAMA_API void llama_set_nextn_layer_offset(struct llama_context * ctx, int32_t offset);
 
+// Run the next decodes of a DECODER_MTP context as a draft chain over the last n_chain ubatch rows
+// (0 = off): the earlier rows only write their K/V (the catch-up of accepted tokens), then the chain
+// rows are drafted one after another in one graph, the first from its token and embd, each later
+// one from the greedy token and hidden state of the row before. Returns false if the context or
+// model does not support it.
+LLAMA_API bool llama_set_mtp_chain(struct llama_context * ctx, int32_t n_chain);
+
+// Tokens drafted by the last chain decode, one per chain row
+LLAMA_API const llama_token * llama_get_mtp_chain(struct llama_context * ctx, int32_t * n_tokens);
+
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
 LLAMA_API float * llama_get_embeddings_nextn(struct llama_context * ctx);

@@ -2392,6 +2392,15 @@ struct llama_model_qwen35 : public llama_model_base {
 
     struct graph_mtp : public llm_graph_context {
         graph_mtp(const llama_model & model, const llm_graph_params & params);
+    private:
+        ggml_tensor * build_step(
+                const llama_model & model,
+          llm_graph_input_attn_kv * inp_attn,
+                      ggml_tensor * tok_embd,
+                      ggml_tensor * h_embd,
+                      ggml_tensor * inp_pos,
+                          int64_t   row0,
+                          int64_t   n_rows);
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
