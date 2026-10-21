@@ -3,6 +3,9 @@
     One change: a system or developer message after the top block is rendered as its own system turn, at its place.
     The source template drops such a message without an error. The loop guard puts a system note between two
     assistant messages, and the client sends it back at that place, so it has to render there.
+    Also for unsloth's Qwen3.5 GGUFs (4B MTP, 0.8B): their template is this one except that it ignores preserve_thinking
+    and drops reasoning before the last user message, so every follow-up re-processed the last reply. Here
+    --reasoning-preserve (on by default in this fork) keeps it, and follow-ups reuse the cache.
     Use: --chat-template-file models/templates/Qwen3.6-35B-A3B-unsloth-loop-guard.jinja -#}
 {%- set image_count = namespace(value=0) %}
 {%- set video_count = namespace(value=0) %}

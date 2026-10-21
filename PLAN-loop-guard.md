@@ -551,3 +551,11 @@ With plain sampling the model loops less, and when it does the guard gets it out
 `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` UD-Q4_K_S with `models/templates/Qwen3.6-35B-A3B-unsloth-loop-guard.jinja` (renamed from `Qwen3.6-35B-A3B-loop-guard.jinja`, so the file names the GGUF it belongs to), plain sampling, `reflect`, rig `srv35.sh` with `MODEL_NAME=unsloth`. The template probe passes, and the unsloth source already renders the empty thinking block, so the heretic fix is not needed here.
 
 8 runs (img_smudge, img_dots, contradiction, img_table, 2 seeds each): 4 tripped, reflected and ended with an answer; the follow-up request of all 8 reused the cache (prompt_n 22-23). The reflections were on point ("stop examining the column headers", "you reached 70 twice, give it").
+
+## 12. Qwen3.5-4B, 2026-10-20
+
+`unsloth/Qwen3.5-4B-MTP-GGUF` Q4_K_S on the GPU, plain sampling, MTP, `reflect`. Its template is the unsloth Qwen3.6 one except for one line: earlier reasoning is shown only after the last user message, `preserve_thinking` is ignored.
+
+- With a loop guard template cut from it as it is: all 12 runs tripped (15 reflections, on point), but every follow-up missed the cache from the start of the reply (prompt_n 275-3048), because the new user message makes the template drop the reply's reasoning. That is the stock behavior on every turn, guard or not.
+- With `Qwen3.6-35B-A3B-unsloth-loop-guard.jinja`, which keeps the reasoning under `--reasoning-preserve`: 8 runs, 6 ended with an answer (2 at the 6000-token cap, one after two notes), all 8 follow-ups reused the cache (prompt_n 22-24). So the unsloth Qwen3.6 loop guard template is the one for unsloth's Qwen3.5 GGUFs too; no separate file.
+- The 4B escapes less often than the 35B: after the note it sometimes loops again in the answer (a second trip in content in several runs).
