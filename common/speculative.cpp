@@ -1518,23 +1518,38 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         llama_batch_free(batch);
     }
 
+    // next position the draft cache expects for seq_id
+    llama_pos draft_pos_next(llama_seq_id seq_id) const {
+        return llama_memory_seq_pos_max(llama_get_memory(params.ctx_dft), seq_id) + 1;
+    }
+
     // write the kept catch-up rows of seq_id below pos_end with a plain catch-up decode, drop the rest
+    // rows the draft cache already holds, or that do not continue it, are stale (restored slot, context shift)
     bool flush_kept(llama_seq_id seq_id, llama_pos pos_end) {
         auto & kr = kept[seq_id];
 
-        size_t n = 0;
+        const llama_pos p_next = draft_pos_next(seq_id);
+
+        size_t i0 = 0;
+        while (i0 < kr.pos.size() && kr.pos[i0] < p_next) {
+            i0++;
+        }
+        size_t n = i0;
         while (n < kr.pos.size() && kr.pos[n] < pos_end) {
             n++;
         }
+        if (n > i0 && kr.pos[i0] != p_next) {
+            n = i0;
+        }
 
         bool ok = true;
-        if (n > 0) {
+        if (n > i0) {
             const size_t row_bytes = (size_t) n_embd * sizeof(float);
 
             common_batch_clear(batch);
-            for (size_t i = 0; i < n; ++i) {
+            for (size_t i = i0; i < n; ++i) {
                 common_batch_add(batch, kr.tok[i], kr.pos[i], { seq_id }, false);
-                std::memcpy(batch.embd + i*n_embd, kr.h.data() + i*n_embd, row_bytes);
+                std::memcpy(batch.embd + (i - i0)*n_embd, kr.h.data() + i*n_embd, row_bytes);
             }
 
             ok = llama_decode(params.ctx_dft, batch) == 0;
@@ -1782,7 +1797,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         // the kept catch-up goes in front, if it ends right before the first drafted position
         auto & kr = kept[seq];
         size_t n_catch = kr.pos.size();
-        if (n_catch > 0 && (kr.pos.back() + 1 != dp.pos0 || (int32_t) n_catch + n > (int32_t) llama_n_batch(params.ctx_dft))) {
+        if (n_catch > 0 && (kr.pos.back() + 1 != dp.pos0 || kr.pos.front() != draft_pos_next(seq) ||
+                            (int32_t) n_catch + n > (int32_t) llama_n_batch(params.ctx_dft))) {
             if (!flush_kept(seq, dp.pos0)) {
                 return true;
             }
