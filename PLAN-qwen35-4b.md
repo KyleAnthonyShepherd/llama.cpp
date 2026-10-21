@@ -368,6 +368,21 @@ One decode of an n-token ubatch (pos0..pos0+n-1) on the draft context through a 
 
 Check: greedy text identical to the loop on the 5 sweep prompts; ABBA t/s; nsys GPU idle per cycle (now ~3.8 ms). Expected +5-7% at n_max 4 on the laptop, nothing at n_max 1.
 
+**Result (2026-10-20, uncommitted): built, exact, +1%.** `--spec-draft-chain` (Qwen3.5 dense, flash attention, one sequence, p_min 0; anything else falls back to the loop).
+- greedy text identical to the loop on all 5 prompts in all 4 ABBA runs; acceptance identical, so the drafts are the same tokens
+- ABBA, n_max 4, trimmed head, `-bs`: chain 125.6 / 122.1, loop 123.0 / 122.2 greedy; sampled 98.9 / 94.9 against 96.1 / 95.8. **About +1.0% both ways.**
+- first build: each step's views of the host inputs (a 52 B position slice, two 8 B KV indices, a 1 KB mask row) went to the GPU as separate split inputs through the scheduler's slow cross-backend path, 3 syncs each (+48 syncs per cycle). Fixed in `ggml-backend.cpp`: a view of a user input now takes the batched user-input path. That fix is general, not chain specific.
+- nsys, code prompt: graph launches 626 -> 313, syncs 4800 -> 2928, GPU idle 280 -> 213 ms. But GPU busy rose ~0.15 ms per token, mostly four `argmax` over the full 248k scattered logits (+0.2 ms per cycle). Net ~0.5-0.7 ms per ~28 ms cycle.
+- why less than estimated: the four draft round trips cost less than the 0.4 ms per step guessed from the phase timers, and the host work that remains (~2.8 ms idle per cycle) is around the verify decode and the catch-up (51 KB of hidden rows out and back, input upload, launch), which the chain does not touch.
+- cheap follow-ups: argmax over the trimmed subset before the scatter (~0.2 ms per cycle); folding the catch-up into the chain decode (one decode and the 51 KB round trip less per cycle, ~1-2%).
+
+**Follow-ups done (2026-10-20, uncommitted): chain now +2.0%.**
+- `build_lora_mm_argmax` (`llama-graph.cpp`): with the reduced head, argmax over [lowest 32k logits, picked logits] and map the index back through [0..n_base) ++ picked ids, instead of argmax over the scattered 248k row. Falls back to the plain argmax whenever the reduced head does not apply.
+- catch-up folded into the chain decode: `process()` keeps a small one-sequence generation batch (tokens, positions, the h rows shifted by one) instead of decoding it, `accept()` trims it to the accepted rows, and the next chain draft puts those rows in front: `llama_set_mtp_chain(ctx, n)` now means "chain the last n rows". The kept rows only write K/V; their attention, FFN and head are pruned from the graph, so they cost less than the old full catch-up of all rows. Kept rows are flushed with a plain catch-up whenever anything else comes first (a prompt batch, a no-draft step, a replay, the step loop), without the rows the new batch writes again.
+- ABBA, n_max 4, trimmed head, `-bs`: chain 128.0 / 126.3, loop 124.8 / 124.2 greedy; sampled 101.9 / 99.5 against 100.0 / 97.6. **+2.1% greedy, +1.9% sampled.** Text identical to the loop on all 10 prompts x sampling in all 4 runs. Acceptance moves by +-0.01 (the catch-up K/V now comes from a batch of the accepted rows only, a different mat-mul shape).
+- nsys, code prompt: graph launches 626 (loop) -> 313 (chain) -> 185 (chain + fold), GPU busy back to 5.92 ms per token.
+- with `--spec-draft-p-min` the chain falls back to the loop after flushing the kept rows. There 2 of 5 greedy texts differ from the plain loop: the draft probabilities move by rounding, so p_min cuts at other depths, the verify widths change and the target takes other kernels. Acceptance within +-0.04. Same kind of difference as MTP against no MTP; the chain itself is exact when p_min is 0.
+
 ### 5.11 GGML_CUDA_MMVQ_MAX_COLS and phase0/mmvq-table.sh
 
 The knob now takes per-type values: `GGML_CUDA_MMVQ_MAX_COLS=q4_K=3,q6_K=2,default=8` (a bare `N` still sets every type). `phase0/mmvq-table.sh` times every type at 1-8 columns with the knob at 8 (MMVQ) and at 0 (MMQ or whatever path is next), picks each type's crossover, and prints the export line plus a C++ table entry. On Linux: `BIN_DIR=./build/bin ./phase0/mmvq-table.sh`. For the 1660 Ti the export route is the safe one: compute capability 7.5 is shared with the RTX 20 series, which has tensor cores, so a baked-in `cc == 750` entry would also change those cards.
