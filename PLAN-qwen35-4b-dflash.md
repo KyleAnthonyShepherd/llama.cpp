@@ -123,6 +123,38 @@ The hidden-state capture is async (`ggml_backend_tensor_get_async` in `extract_l
 4. **Drafter quant.** Q5_K_M vs Q8_0 vs Q4_K: acceptance against drafter cost.
 5. **Adaptive block size.** The DFlash driver ignores `dp.n_max`, so a per-step depth controller cannot help without first making it honour it. Only worth it if 5.2 shows the best block size differs a lot between prompts.
 
+### 6.1 Results (2026-10-21, laptop, ABBA, 5 prompts, greedy + Qwen sampling)
+
+Item 1, drafter head: the per-row picks (one top_k + MUL_MAT_ID per block row) cost more than the 32k base rows, so fewer dynamic rows win. No code. Means, greedy / sampled:
+
+| `--spec-draft-vocab-dynamic` (rank 128) | greedy | sampled | notes |
+|---|---|---|---|
+| none (full head) | 148.0 | 110.1 | |
+| 16384 | 149.8 | 111.6 | |
+| 4096 | 155.0 | 115.0 | |
+| **1024** | **155.9** | **116.8** | acceptance and greedy text unchanged |
+| 256 | 152.4 | 112.3 | second run, df7d1k there 154.1 / 112.9 |
+| 64 | 151.0 | 111.3 | acceptance -0.02 on code / reason |
+| 1024, rank 32 | 146.8 | 108.6 | the scorer misses: acceptance -0.03 |
+
+A shared pick per block (one top_k for all rows) does not map onto ggml: MUL_MAT_ID with the same ids in every column takes the slow multi-column path. Not needed after the above.
+
+Item 2, block size (all trimmed 16384): n_max 5 139.1 / 107.3, 6 147.6 / 108.5, **7 149.8 / 111.6**, 9 134.5 / 108.6, 11 132.5 / 107.6. n_max 7 = an 8-column verify, the widest that stays on the 8-column MMQ tile; 9 and 11 take the 16-column tile, cost more, and change the greedy text. Per prompt, prose and mixed prefer 5 (+5%), the rest 7: an adaptive block (item 5) would be worth ~2% on the mean. Not done.
+
+Item 3, host round trips: nsys idle per 28.9 ms cycle: verify -> inject decode 1.00 ms, draft -> verify 0.81, inject -> draft 0.47. Built and measured a fold of the inject decode into the noise-block decode (`llama_set_dflash_inject`: the accepted rows go first in the draft ubatch, their K/V from the fused features, attention over all rows, residual/FFN on the block rows only). Exact (greedy text identical, acceptance +-0.01), but **slower: -2% greedy, -6% sampled**, and reverted (patch kept outside the repo). Why: today `process()` launches the inject decode right after the verify, and the GPU runs it while the host samples and accepts; the fold moves that work and the feature upload onto the critical path. Also found on the way: the CUDA graph key (`nodes[0]` only) collides for graphs that differ only in the middle (the fold's varying row count ran eager until the key covered every node's shape). A real gain here needs the features to stay on the device and the noise block to start without a host round trip (device-side sampling of the verify), a much larger change.
+
+Item 4, drafter quant: not run yet (needs another download, Q5_K_M / Q8_0 from the same repo).
+
+**Best laptop config (2026-10-21): 155.9 t/s greedy, 116.8 sampled; MTP baseline 125.2 / 101.8 (+25% / +15%).** VRAM 5258 MiB of 6144 at `-c 32768` (desktop included).
+
+```
+llama-server -m Qwen3.5-4B-Q4_K_S.gguf -md qwen35-4b-dflash-Q4_K_M.gguf -ngl 99 -ngld 99 -fa on -c 32768 -np 1 \
+  --spec-type draft-dflash --spec-draft-n-max 7 -bs \
+  --spec-draft-vocab-dynamic 1024 --spec-draft-vocab-rank 128
+```
+
+Where it loses: prose and mixed (block acceptance .20-.25): 85 / 97 t/s greedy against MTP's 90 / 98. On code, extraction and reasoning it is +38-42% over MTP greedy.
+
 ## 7. Phase 4 - server (GTX 1660 Ti, Ubuntu)
 
 Kyle runs these (SSH needs his password; code arrives by `git push` + pull). Prepare exact commands for him.

@@ -131,10 +131,20 @@ Cause: the CUDA graph cache is keyed by `cgraph->nodes[0]` (`ggml/src/ggml-cuda/
 
 ## 4. Recommended configuration today (no code)
 
+Laptop, best measured (2026-10-21): the z-lab DFlash drafter, 155.9 t/s greedy / 116.8 sampled against 125.2 / 101.8 for MTP below (`PLAN-qwen35-4b-dflash.md` 6.1). Needs the drafter GGUF (`Anbeeld/Qwen3.5-4B-DFlash-GGUF`, Q4_K_M) and commit 7e816e155 (draft output buffer; without it the drafter takes ~400 MiB more VRAM). On mostly-prose work MTP is still a little faster.
+
+```
+llama-server -m Qwen3.5-4B-Q4_K_S.gguf -md qwen35-4b-dflash-Q4_K_M.gguf -ngl 99 -ngld 99 -fa on -c 32768 -np 1 \
+  --spec-type draft-dflash --spec-draft-n-max 7 -bs \
+  --spec-draft-vocab-dynamic 1024 --spec-draft-vocab-rank 128
+```
+
+MTP (no second model):
+
 ```
 llama-server -m Qwen3.5-4B-Q4_K_S.gguf -ngl 99 -fa on -c 32768 -np 1 \
   --spec-type draft-mtp --spec-draft-n-max 4 -bs \
-  --spec-draft-vocab-dynamic 16384 --spec-draft-vocab-rank 128
+  --spec-draft-vocab-dynamic 16384 --spec-draft-vocab-rank 128 --spec-draft-chain
 ```
 
 - n_max 4 needs the sm_86 MMQ table (5.8); on a build without it, use n_max 2
