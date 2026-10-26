@@ -448,6 +448,14 @@ extern "C" {
         // [EXPERIMENTAL] draft contexts: compute only the lowest token ids plus this many best-scoring others per output (0 = full LM head)
         uint32_t n_vocab_dynamic;
         uint32_t n_vocab_rank; // rank of the scorer that picks those ids (0 = default)
+
+        // [EXPERIMENTAL] staging slots for uploading host MoE expert weights of large batches one split ahead,
+        // on a second stream of the GPU, while the previous split computes (0 = off, 2 = one split ahead)
+        int32_t  n_expert_prefetch;
+
+        // [EXPERIMENTAL] adaptive micro-batch: the compute buffers are sized for this n_ubatch, and a batch larger
+        // than it switches them to n_ubatch until the next generation step (0 = off)
+        uint32_t n_ubatch_gen;
     };
 
     struct llama_model_tensor_override {

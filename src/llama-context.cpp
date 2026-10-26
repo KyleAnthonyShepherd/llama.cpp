@@ -219,6 +219,9 @@ llama_context::llama_context(
 
     cparams.ctx_other = nullptr;
 
+    // a draft context borrows VRAM from the hot store of its target, see set_n_ubatch()
+    ctx_sibling = params.ctx_other;
+
     // TODO: more generic
     if (model.arch == LLM_ARCH_GEMMA4_ASSISTANT) {
         if (params.ctx_other == nullptr) {
@@ -323,6 +326,14 @@ llama_context::llama_context(
 
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
 
+    // non-causal attention needs the whole batch in one ubatch, so it keeps a fixed size
+    cparams.n_ubatch_max = cparams.n_ubatch;
+    cparams.n_ubatch_gen = 0;
+    if (params.n_ubatch_gen > 0 && params.n_ubatch_gen < cparams.n_ubatch && cparams.causal_attn) {
+        cparams.n_ubatch_gen = params.n_ubatch_gen;
+        cparams.n_ubatch     = params.n_ubatch_gen;
+    }
+
     // DFlash has an encoder input but decodes with per-token outputs, so it keeps the caller's limit
     const bool enc_outputs_all = llama_model_has_encoder(&model) && model.arch != LLM_ARCH_DFLASH;
     cparams.n_outputs_max = params.n_outputs_max == 0 || enc_outputs_all ? cparams.n_batch : params.n_outputs_max;
@@ -350,6 +361,8 @@ llama_context::llama_context(
 
     cparams.op_offload = params.op_offload;
     cparams.kv_unified = params.kv_unified;
+
+    cparams.n_expert_prefetch = params.op_offload ? std::max(params.n_expert_prefetch, 0) : 0;
 
     // initialized later
     cparams.pipeline_parallel = false;
@@ -396,7 +409,10 @@ llama_context::llama_context(
     LLAMA_LOG_INFO("%s: n_ctx_seq             = %u\n",   __func__, cparams.n_ctx_seq);
     LLAMA_LOG_INFO("%s: n_ctx_max             = %u\n",   __func__, cparams.n_ctx_max);
     LLAMA_LOG_INFO("%s: n_batch               = %u\n",   __func__, cparams.n_batch);
-    LLAMA_LOG_INFO("%s: n_ubatch              = %u\n",   __func__, cparams.n_ubatch);
+    LLAMA_LOG_INFO("%s: n_ubatch              = %u\n",   __func__, cparams.n_ubatch_max);
+    if (cparams.n_ubatch_gen > 0) {
+        LLAMA_LOG_INFO("%s: n_ubatch_gen          = %u\n",   __func__, cparams.n_ubatch_gen);
+    }
     LLAMA_LOG_INFO("%s: causal_attn           = %d\n",   __func__, cparams.causal_attn);
     LLAMA_LOG_INFO("%s: flash_attn            = %s\n",   __func__, llama_flash_attn_type_name(params.flash_attn_type));
     LLAMA_LOG_INFO("%s: kv_unified            = %s\n",   __func__, cparams.kv_unified ? "true" : "false");
@@ -588,6 +604,36 @@ llama_context::llama_context(
             LLAMA_LOG_INFO("%s: pipeline parallelism enabled\n", __func__);
         }
 
+        // the expert prefetch uploads on a second instance of the GPU backend, for its own stream
+        if (cparams.n_expert_prefetch > 0 && !cparams.pipeline_parallel) {
+            ggml_backend_dev_t dev_pf = nullptr;
+            int n_gpu = 0;
+            for (auto & backend : backends) {
+                ggml_backend_dev_t dev = ggml_backend_get_device(backend.get());
+                if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                    dev_pf = dev;
+                    n_gpu++;
+                }
+            }
+
+            ggml_backend_dev_props props;
+            if (n_gpu == 1) {
+                ggml_backend_dev_get_props(dev_pf, &props);
+            }
+
+            if (n_gpu == 1 && props.caps.async && props.caps.events) {
+                backend_pf.reset(ggml_backend_dev_init(dev_pf, nullptr));
+            }
+
+            if (backend_pf) {
+                LLAMA_LOG_INFO("%s: expert prefetch: %d slots, uploads on a second %s stream\n", __func__,
+                        cparams.n_expert_prefetch, ggml_backend_dev_name(dev_pf));
+            } else {
+                LLAMA_LOG_WARN("%s: expert prefetch needs exactly one GPU with async uploads and events, disabled\n", __func__);
+                cparams.n_expert_prefetch = 0;
+            }
+        }
+
         sched_reserve();
 
         if (!cparams.flash_attn) {
@@ -637,6 +683,7 @@ llama_context::llama_context(
                 break;
             }
             expert_hotstore_buft = ggml_backend_get_default_buffer_type(backend.get());
+            expert_hotstore->upload_backend = backend.get();
             cache_enabled = expert_hotstore->allocate(expert_hotstore_buft);
             break;
         }
@@ -680,6 +727,12 @@ llama_context::~llama_context() {
             }
         }
     }
+
+    // the prefetch slots are freed through the backends, which go before the scheduler
+    if (sched) {
+        ggml_backend_sched_set_prefetch(sched.get(), nullptr, 0);
+    }
+
     ggml_opt_free(opt_ctx);
 }
 
@@ -787,6 +840,10 @@ void llama_context::sched_reserve() {
     gf_res_prev_active = nullptr;
 
     sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, cparams.pipeline_parallel, cparams.op_offload));
+
+    if (prefetch_active()) {
+        ggml_backend_sched_set_prefetch(sched.get(), backend_pf.get(), cparams.n_expert_prefetch);
+    }
 
     llama_memory_context_ptr mctx;
     if (memory) {
@@ -963,8 +1020,9 @@ uint32_t llama_context::n_batch() const {
     return cparams.n_batch;
 }
 
+// the largest micro-batch: with an adaptive ubatch, cparams.n_ubatch is only the size of the current compute buffers
 uint32_t llama_context::n_ubatch() const {
-    return cparams.n_ubatch;
+    return cparams.n_ubatch_max;
 }
 
 uint32_t llama_context::n_seq_max() const {
@@ -1515,6 +1573,133 @@ size_t llama_context::compute_growth_bytes() {
     }
 
     return want > have ? want - have : 0;
+}
+
+size_t llama_context::compute_bytes_at(uint32_t n_ubatch_new) {
+    if (model.hparams.no_alloc || backend_ptrs.empty() || !memory) {
+        return 0;
+    }
+
+    const uint32_t n_ubatch_old = cparams.n_ubatch;
+    cparams.n_ubatch = n_ubatch_new;
+
+    const uint32_t n_seqs        = cparams.n_seq_max;
+    const uint32_t n_tokens      = std::min(cparams.n_ctx, n_ubatch_new);
+    const uint32_t n_outputs_max = std::min(n_tokens, cparams.n_outputs_max);
+    const size_t   max_nodes     = graph_max_nodes(n_tokens);
+
+    // measure on a scratch scheduler, so the real one keeps its buffers
+    ggml_backend_sched_ptr sched_tmp(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, cparams.op_offload));
+    if (prefetch_active()) {
+        ggml_backend_sched_set_prefetch(sched_tmp.get(), backend_pf.get(), cparams.n_expert_prefetch);
+    }
+    llm_graph_result_ptr res_tmp(new llm_graph_result(max_nodes));
+
+    std::swap(sched, sched_tmp);
+    std::swap(gf_res_reserve, res_tmp);
+
+    std::vector<size_t> sizes(backend_ptrs.size(), 0);
+
+    const auto mctx = memory->init_full();
+    const bool ok = mctx && graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get(), true, sizes.data()) != nullptr;
+
+    std::swap(sched, sched_tmp);
+    std::swap(gf_res_reserve, res_tmp);
+
+    cparams.n_ubatch = n_ubatch_old;
+
+    size_t res = 0;
+    for (size_t i = 0; ok && i < backend_ptrs.size(); ++i) {
+        if (ggml_backend_dev_type(ggml_backend_get_device(backend_ptrs[i])) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+            res += sizes[i];
+        }
+    }
+
+    return res;
+}
+
+bool llama_context::set_n_ubatch(uint32_t n_ubatch_new) {
+    const uint32_t n_ubatch_old = cparams.n_ubatch;
+    const bool     grow         = n_ubatch_new > n_ubatch_old;
+    const int64_t  t_start_us   = ggml_time_us();
+
+    synchronize();
+
+    // the store that lends the VRAM: this context's own, or the target's for a draft context
+    llama_context * store_ctx = expert_hotstore ? this : nullptr;
+    if (!store_ctx && ctx_sibling && ctx_sibling->expert_hotstore) {
+        store_ctx = ctx_sibling;
+    }
+
+    // make room before the reserve: on Windows an oversubscribed cudaMalloc lands in host memory instead of failing
+    if (grow && store_ctx) {
+        size_t have = 0;
+        for (auto * backend : backend_ptrs) {
+            if (ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                have += ggml_backend_sched_get_buffer_size(sched.get(), backend);
+            }
+        }
+
+        const size_t need = compute_bytes_at(n_ubatch_new);
+        if (need > have) {
+            const int hot_s_before = store_ctx->expert_hotstore->hot_s;
+
+            store_ctx->free_expert_hotstore_bytes(need - have + model.kv_spill_margin());
+
+            // the other context's reserved graph points into the store that was just re-slotted
+            if (store_ctx != this && store_ctx->expert_hotstore->hot_s != hot_s_before) {
+                store_ctx->reserve_worst_case_graph();
+            }
+        }
+    }
+
+    cparams.n_ubatch = n_ubatch_new;
+
+    ggml_backend_set_vram_strict(grow);
+
+    bool ok = false;
+    for (int i = 0; ; ++i) {
+        sched_need_reserve = true;
+        try {
+            sched_reserve();
+            ok = true;
+        } catch (const std::exception & e) {
+            LLAMA_LOG_WARN("%s: %s\n", __func__, e.what());
+        }
+
+        if (ok || !grow || i >= 4 || !store_ctx || !store_ctx->drop_expert_hotstore_slots(1 << i)) {
+            break;
+        }
+
+        if (store_ctx != this) {
+            store_ctx->reserve_worst_case_graph();
+        }
+    }
+
+    ggml_backend_set_vram_strict(false);
+
+    if (!ok) {
+        LLAMA_LOG_WARN("%s: no room for the compute buffers of n_ubatch = %u, staying at %u\n", __func__, n_ubatch_new, n_ubatch_old);
+
+        cparams.n_ubatch   = n_ubatch_old;
+        sched_need_reserve = true;
+        sched_reserve();
+
+        return false;
+    }
+
+    // the compute buffers gave VRAM back, take it into the hot store - unless the store owner still holds its large
+    // buffers: it refits when it shrinks too, and each refit re-plants the store from host
+    const bool owner_large = store_ctx && store_ctx != this && store_ctx->cparams.n_ubatch_gen > 0 &&
+        store_ctx->cparams.n_ubatch != store_ctx->cparams.n_ubatch_gen;
+    if (!grow && store_ctx && !owner_large) {
+        store_ctx->refit_expert_hotstore(true);
+    }
+
+    LLAMA_LOG_INFO("%s: n_ubatch %u -> %u in %.1f ms, %d hot expert slots\n", __func__, n_ubatch_old, n_ubatch_new,
+            (ggml_time_us() - t_start_us)/1000.0, store_ctx ? store_ctx->expert_hotstore->hot_s : 0);
+
+    return true;
 }
 
 int32_t llama_context::refit_expert_hotstore(bool reserve) {
@@ -2509,6 +2694,16 @@ int llama_context::decode(const llama_batch & batch_inp) {
     }
 
     GGML_ASSERT(n_tokens_all <= cparams.n_batch);
+
+    // adaptive ubatch: a large batch runs with the large ubatch, and the next generation step - every token an
+    // output - goes back to the small one. Prompt tails and image batches output at most one token, so they keep it
+    if (cparams.n_ubatch_gen > 0) {
+        if (n_tokens_all > cparams.n_ubatch_gen && cparams.n_ubatch != cparams.n_ubatch_max) {
+            set_n_ubatch(cparams.n_ubatch_max);
+        } else if (n_tokens_all <= cparams.n_ubatch_gen && n_outputs_all == n_tokens_all && cparams.n_ubatch != cparams.n_ubatch_gen) {
+            set_n_ubatch(cparams.n_ubatch_gen);
+        }
+    }
 
     GGML_ASSERT((cparams.causal_attn || cparams.n_ubatch >= n_tokens_all) && "non-causal attention requires n_ubatch >= n_tokens");
 
@@ -4783,6 +4978,8 @@ llama_context_params llama_context_default_params() {
         /*.ctx_grow_factor             =*/ 1.5f,
         /*.n_vocab_dynamic             =*/ 0,
         /*.n_vocab_rank                =*/ 0,
+        /*.n_expert_prefetch           =*/ 0,
+        /*.n_ubatch_gen                =*/ 0,
     };
 
     return result;

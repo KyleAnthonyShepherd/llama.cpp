@@ -73,6 +73,10 @@ struct llama_expert_hotstore {
     ggml_context_ptr        ctx;
     ggml_backend_buffer_ptr buf;
 
+    // optional backend of the store's device: copy_top_s() queues its uploads on it and waits once,
+    // instead of waiting for each slice
+    ggml_backend_t upload_backend = nullptr;
+
     // VRAM one slot costs across every layer
     size_t bytes_per_slot_total() const;
 

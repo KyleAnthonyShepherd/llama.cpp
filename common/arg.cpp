@@ -1850,6 +1850,30 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_UBATCH"));
     add_opt(common_arg(
+        {"-ubg", "--ubatch-gen"}, "N",
+        "physical batch size outside large batches: the compute buffers stay this small during generation, which leaves "
+        "the VRAM to the expert hot store, and a batch larger than N switches them to --ubatch-size until the next "
+        "generation step (default: 0 = always --ubatch-size)",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.n_ubatch_gen = value;
+        }
+    ).set_env("LLAMA_ARG_UBATCH_GEN"));
+    add_opt(common_arg(
+        {"-epf", "--expert-prefetch"}, "N",
+        "MoE experts in host memory: upload the weights of large batches one split ahead on a second GPU stream, "
+        "so the upload runs while the GPU computes. N staging slots, each the size of the largest expert tensor "
+        "(default: 0 = off, 2 = one split ahead). faster with pinned weights (--load-mode none)",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.n_expert_prefetch = value;
+        }
+    ).set_env("LLAMA_ARG_EXPERT_PREFETCH"));
+    add_opt(common_arg(
         {"--keep"}, "N",
         string_format("number of tokens to keep from the initial prompt (default: %d, -1 = all)", params.n_keep),
         [](common_params & params, int value) {

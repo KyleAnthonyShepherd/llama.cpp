@@ -13,7 +13,10 @@ struct llama_cparams {
     uint32_t n_ctx_max;       // upper bound for automatic KV cache growth (see llama_set_n_ctx()); 0 = disabled
     float    ctx_grow_factor; // growth multiplier used by automatic growth inside llama_decode()
     uint32_t n_batch;
-    uint32_t n_ubatch;
+    uint32_t n_ubatch;        // micro-batch the compute buffers are sized for now
+    uint32_t n_ubatch_max;    // largest micro-batch, used for large batches
+    uint32_t n_ubatch_gen;    // micro-batch outside large batches, 0 = always n_ubatch_max
+    int32_t  n_expert_prefetch;
     uint32_t n_seq_max;
     uint32_t n_rs_seq;        // number of recurrent-state snapshots per seq for rollback
     uint32_t n_outputs_max;   // max outputs supported by the context

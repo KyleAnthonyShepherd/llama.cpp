@@ -362,6 +362,11 @@ extern "C" {
     // Set a callback to be called for each resulting node during graph compute
     GGML_API void                 ggml_backend_sched_set_eval_callback(ggml_backend_sched_t sched, ggml_backend_sched_eval_callback callback, void * user_data);
 
+    // Upload host MoE expert weights of large batches whole, on copy_backend (a second backend of the same device),
+    // one split ahead of their use, so the upload runs while the previous split computes.
+    // Call before reserve: the n_slots staging buffers are allocated with the compute buffers. n_slots = 0 disables it.
+    GGML_API void                 ggml_backend_sched_set_prefetch(ggml_backend_sched_t sched, ggml_backend_t copy_backend, int n_slots);
+
     //
     // Meta backend
     //

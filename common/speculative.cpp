@@ -2780,6 +2780,10 @@ common_params common_base_params_to_speculative(const common_params & params) {
     // (per-head/channel K layout); the draft model has a different K
     // geometry, so it must not inherit the bias
     result.kv_mean_center_path.clear();
+
+    // the draft runs one layer, so a prefetch would save little for the VRAM of its slots
+    result.n_expert_prefetch = 0;
+
     result.n_outputs_max = params.n_parallel;
     result.n_outputs_max_per_seq = 1;
 

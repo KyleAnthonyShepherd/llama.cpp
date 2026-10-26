@@ -174,10 +174,18 @@ void llama_expert_hotstore::copy_top_s(const llama_expert_heatmap & heatmap) {
                 if (ex < 0) {
                     continue;
                 }
-                ggml_backend_tensor_set(e->dst, src + (size_t) ex * slot, (size_t) p * slot, slot);
+                if (upload_backend) {
+                    ggml_backend_tensor_set_async(upload_backend, e->dst, src + (size_t) ex * slot, (size_t) p * slot, slot);
+                } else {
+                    ggml_backend_tensor_set(e->dst, src + (size_t) ex * slot, (size_t) p * slot, slot);
+                }
                 planted += slot;
             }
         }
+    }
+
+    if (upload_backend) {
+        ggml_backend_synchronize(upload_backend);
     }
 
     last_sync_tokens = heatmap.tokens_total;

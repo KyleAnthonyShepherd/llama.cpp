@@ -89,6 +89,13 @@ struct llama_context {
 
     size_t compute_growth_bytes();
 
+    // GPU bytes the compute buffers would hold at n_ubatch_new, measured without allocating
+    size_t compute_bytes_at(uint32_t n_ubatch_new);
+
+    // size the compute buffers for n_ubatch_new; a growth takes VRAM from the expert hot store first, a shrink
+    // gives it back. false when the buffers stay at the old size
+    bool set_n_ubatch(uint32_t n_ubatch_new);
+
     // smallest free memory of the GPUs this context uses, SIZE_MAX without a GPU
     size_t vram_free() const;
 
@@ -394,6 +401,17 @@ private:
 
     ggml_backend_t backend_cpu = nullptr;
     std::vector<ggml_backend_ptr> backends;
+
+    // second instance of the GPU backend, its stream uploads prefetched expert weights
+    ggml_backend_ptr backend_pf;
+
+    // the context passed as ctx_other, whatever the arch does with it
+    llama_context * ctx_sibling = nullptr;
+
+    // the prefetch slots exist only while the compute buffers are sized for the large ubatch
+    bool prefetch_active() const {
+        return backend_pf && cparams.n_expert_prefetch > 0 && cparams.n_ubatch == cparams.n_ubatch_max;
+    }
 
     // training
     ggml_opt_context_t opt_ctx = nullptr;
