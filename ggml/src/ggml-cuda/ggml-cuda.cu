@@ -710,6 +710,12 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
     bool grow(size_t reserve_size) {
         GGML_ASSERT(pool_size + reserve_size <= CUDA_POOL_VMM_MAX_SIZE);
 
+        // a caller that can make room asked for an honest answer, see ggml_cuda_fits_in_vram()
+        if (ggml_backend_get_vram_strict() && getenv("GGML_CUDA_SYSMEM_FALLBACK") == nullptr && reserve_size > ggml_cuda_free_vram(device)) {
+            GGML_LOG_DEBUG(GGML_CUDA_NAME " pool[%d]: %.2f MiB does not fit in the free VRAM\n", device, reserve_size/1024.0/1024.0);
+            return false;
+        }
+
         // allocate more physical memory
         CUmemAllocationProp prop = {};
         prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;

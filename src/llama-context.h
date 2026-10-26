@@ -89,8 +89,13 @@ struct llama_context {
 
     size_t compute_growth_bytes();
 
-    // GPU bytes the compute buffers would hold at n_ubatch_new, measured without allocating
-    size_t compute_bytes_at(uint32_t n_ubatch_new);
+    // GPU bytes the compute buffers would hold at n_ubatch_new, measured without allocating. scratch, if set,
+    // gets what the largest GPU op of that graph takes from the backend's scratch pool
+    size_t compute_bytes_at(uint32_t n_ubatch_new, size_t * scratch = nullptr);
+
+    // the GPU backend of this context and the scratch the large ubatch was measured to want, see set_n_ubatch()
+    ggml_backend_t backend_gpu() const;
+    size_t scratch_large = 0;
 
     // size the compute buffers for n_ubatch_new; a growth takes VRAM from the expert hot store first, a shrink
     // gives it back. false when the buffers stay at the old size

@@ -1575,7 +1575,75 @@ size_t llama_context::compute_growth_bytes() {
     return want > have ? want - have : 0;
 }
 
-size_t llama_context::compute_bytes_at(uint32_t n_ubatch_new) {
+// scratch one op takes from the backend pool (CUDA) outside the compute buffers. The pool hands it back after the op,
+// so the largest op sets the pool size. Counts what grows with the batch; small temporaries go into the margin
+static size_t llama_op_scratch(const ggml_tensor * node) {
+    switch (node->op) {
+        case GGML_OP_MUL_MAT:
+        case GGML_OP_MUL_MAT_ID:
+            {
+                const ggml_tensor * a = node->src[0];
+                const ggml_tensor * b = node->src[1];
+                const bool    ids  = node->op == GGML_OP_MUL_MAT_ID;
+                const int64_t rows = ids ? node->ne[1]*node->ne[2] : ggml_nrows(b);
+                if (ggml_is_quantized(a->type)) {
+                    // MMQ: b quantized to q8_1 (36 bytes per 32 values), plus the id tables of an expert matmul
+                    return (size_t) (rows*GGML_PAD(b->ne[0], 512)*9/8 + (ids ? rows*3*sizeof(int32_t) : 0));
+                }
+                if (a->type == GGML_TYPE_F32) {
+                    return b->type == GGML_TYPE_F32 ? 0 : (size_t) ggml_nelements(b)*sizeof(float);
+                }
+                // cuBLAS in half precision converts b and keeps the output
+                return (size_t) (rows*b->ne[0] + ggml_nelements(node))*sizeof(ggml_fp16_t);
+            }
+        case GGML_OP_FLASH_ATTN_EXT:
+            {
+                // a quantized cache is converted to F16 first
+                const ggml_tensor * k = node->src[1];
+                const ggml_tensor * v = node->src[2];
+                return (size_t) ((k->type == GGML_TYPE_F16 ? 0 : ggml_nelements(k)) + (v->type == GGML_TYPE_F16 ? 0 : ggml_nelements(v)))*sizeof(ggml_fp16_t);
+            }
+        default:
+            return 0;
+    }
+}
+
+// the scratch pool of a backend, through the CUDA backend's procs; 0 / true for a backend without them
+static size_t llama_backend_pool_mapped(ggml_backend_t backend, size_t * peak = nullptr) {
+    typedef void (*pool_stats_t)(ggml_backend_t backend, size_t * mapped, size_t * used, size_t * peak);
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(backend));
+    auto fn = reg ? (pool_stats_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_pool_stats") : nullptr;
+    size_t mapped = 0, used = 0, p = 0;
+    if (fn) {
+        fn(backend, &mapped, &used, &p);
+    }
+    if (peak) {
+        *peak = p;
+    }
+    return mapped;
+}
+
+ggml_backend_t llama_context::backend_gpu() const {
+    for (auto * backend : backend_ptrs) {
+        if (ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+            return backend;
+        }
+    }
+    return nullptr;
+}
+
+static bool llama_backend_pool_reserve(ggml_backend_t backend, size_t size) {
+    typedef bool (*pool_reserve_t)(ggml_backend_t backend, size_t size);
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(backend));
+    auto fn = reg ? (pool_reserve_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_pool_reserve") : nullptr;
+    return fn ? fn(backend, size) : true;
+}
+
+size_t llama_context::compute_bytes_at(uint32_t n_ubatch_new, size_t * scratch) {
+    if (scratch) {
+        *scratch = 0;
+    }
+
     if (model.hparams.no_alloc || backend_ptrs.empty() || !memory) {
         return 0;
     }
@@ -1601,7 +1669,16 @@ size_t llama_context::compute_bytes_at(uint32_t n_ubatch_new) {
     std::vector<size_t> sizes(backend_ptrs.size(), 0);
 
     const auto mctx = memory->init_full();
-    const bool ok = mctx && graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get(), true, sizes.data()) != nullptr;
+    ggml_cgraph * gf = mctx ? graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get(), true, sizes.data()) : nullptr;
+    const bool    ok = gf != nullptr;
+
+    for (int i = 0; ok && scratch && i < ggml_graph_n_nodes(gf); i++) {
+        ggml_tensor * node = ggml_graph_node(gf, i);
+        ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(sched.get(), node);
+        if (backend && ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+            *scratch = std::max(*scratch, llama_op_scratch(node));
+        }
+    }
 
     std::swap(sched, sched_tmp);
     std::swap(gf_res_reserve, res_tmp);
@@ -1631,6 +1708,22 @@ bool llama_context::set_n_ubatch(uint32_t n_ubatch_new) {
         store_ctx = ctx_sibling;
     }
 
+    ggml_backend_t gpu = backend_gpu();
+
+    // the large ops also take scratch from the backend pool, outside the compute buffers. It is reserved below with the
+    // buffers: a pool that grows mid-graph has no way back from an out of memory (Linux), or pages to host (Windows)
+    size_t scratch     = 0;
+    size_t need        = 0;
+    size_t pool_mapped = 0;
+    if (grow) {
+        need        = compute_bytes_at(n_ubatch_new, &scratch);
+        pool_mapped = gpu ? llama_backend_pool_mapped(gpu) : 0;
+
+        // small temporaries of the same ops, e.g. the MMQ stream-k fixup
+        scratch_large = scratch > 0 ? scratch + 8*1024*1024 : 0;
+    }
+    const size_t pool_grow = scratch_large > pool_mapped ? scratch_large - pool_mapped : 0;
+
     // make room before the reserve: on Windows an oversubscribed cudaMalloc lands in host memory instead of failing
     if (grow && store_ctx) {
         size_t have = 0;
@@ -1640,11 +1733,10 @@ bool llama_context::set_n_ubatch(uint32_t n_ubatch_new) {
             }
         }
 
-        const size_t need = compute_bytes_at(n_ubatch_new);
-        if (need > have) {
+        if (need + pool_grow > have) {
             const int hot_s_before = store_ctx->expert_hotstore->hot_s;
 
-            store_ctx->free_expert_hotstore_bytes(need - have + model.kv_spill_margin());
+            store_ctx->free_expert_hotstore_bytes(need + pool_grow - have + model.kv_spill_margin());
 
             // the other context's reserved graph points into the store that was just re-slotted
             if (store_ctx != this && store_ctx->expert_hotstore->hot_s != hot_s_before) {
@@ -1665,6 +1757,11 @@ bool llama_context::set_n_ubatch(uint32_t n_ubatch_new) {
             ok = true;
         } catch (const std::exception & e) {
             LLAMA_LOG_WARN("%s: %s\n", __func__, e.what());
+        }
+
+        if (ok && pool_grow > 0 && !llama_backend_pool_reserve(gpu, scratch_large)) {
+            LLAMA_LOG_WARN("%s: no room for %.1f MiB of scratch at n_ubatch = %u\n", __func__, scratch_large/1024.0/1024.0, n_ubatch_new);
+            ok = false;
         }
 
         if (ok || !grow || i >= 4 || !store_ctx || !store_ctx->drop_expert_hotstore_slots(1 << i)) {
@@ -1696,8 +1793,12 @@ bool llama_context::set_n_ubatch(uint32_t n_ubatch_new) {
         store_ctx->refit_expert_hotstore(true);
     }
 
-    LLAMA_LOG_INFO("%s: n_ubatch %u -> %u in %.1f ms, %d hot expert slots\n", __func__, n_ubatch_old, n_ubatch_new,
-            (ggml_time_us() - t_start_us)/1000.0, store_ctx ? store_ctx->expert_hotstore->hot_s : 0);
+    size_t pool_peak = 0;
+    const size_t pool_now = gpu ? llama_backend_pool_mapped(gpu, &pool_peak) : 0;
+
+    LLAMA_LOG_INFO("%s: n_ubatch %u -> %u in %.1f ms, %d hot expert slots, scratch pool %.1f MiB (want %.1f, peak use %.1f)\n",
+            __func__, n_ubatch_old, n_ubatch_new, (ggml_time_us() - t_start_us)/1000.0, store_ctx ? store_ctx->expert_hotstore->hot_s : 0,
+            pool_now/1024.0/1024.0, scratch_large/1024.0/1024.0, pool_peak/1024.0/1024.0);
 
     return true;
 }
