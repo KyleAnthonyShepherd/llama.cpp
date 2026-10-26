@@ -195,3 +195,8 @@ LLAMA_API bool            llama_model_has_dspark_markov_head(const struct llama_
 // if out is nullptr, returns the number of tokens without writing to out
 // caller must allocate enough memory for out before calling
 LLAMA_API uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out);
+
+// the input embeddings of n tokens as F32, n_embd_inp floats per token (zero past n_embd), the same values the
+// token path of the graph reads. returns false if that path transforms the rows (Hadamard-latent table, embedding
+// scale). A model graph can still treat token input differently after the lookup (Gemma scales it), check the arch
+LLAMA_API bool llama_model_get_tok_embd_rows(const struct llama_model * model, const llama_token * tokens, int32_t n, float * out);

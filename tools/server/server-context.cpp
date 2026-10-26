@@ -1334,6 +1334,201 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
     return try_decode();
 }
 
+// end of a run of image chunks from idx, with only text between them, that fits in n_max tokens.
+// returns idx when the run has fewer than two images. The text after the last image is not part of a run
+static size_t find_mtmd_run(const server_slot & slot, size_t idx, size_t n_max) {
+    const auto & input_tokens = slot.task->tokens;
+    const size_t n_all = slot.task->n_tokens();
+
+    size_t i       = idx;
+    size_t end     = idx;
+    int    n_media = 0;
+    while (i < n_all) {
+        const bool is_media = input_tokens[i] == LLAMA_TOKEN_NULL;
+        size_t next = i;
+        if (is_media) {
+            const auto & chunk = input_tokens.find_chunk(i);
+            if (mtmd_input_chunk_get_type(chunk.get()) != MTMD_INPUT_CHUNK_TYPE_IMAGE || mtmd_decode_use_non_causal(slot.mctx, chunk.get())) {
+                break;
+            }
+            next += mtmd_input_chunk_get_n_tokens(chunk.get());
+        } else {
+            while (next < n_all && input_tokens[next] != LLAMA_TOKEN_NULL) {
+                next++;
+            }
+            if (next == n_all) {
+                break;
+            }
+        }
+        if (next - idx > n_max) {
+            break;
+        }
+        if (is_media) {
+            end = next;
+            n_media++;
+        }
+        i = next;
+    }
+
+    return n_media >= 2 ? end : idx;
+}
+
+// encode the images in [idx, idx_end) with one round of making room, then decode the range, the text between the
+// images included, as one batch of embeddings. Text rows come from the token embedding table, so they are the same
+// rows the token path reads. returns 0 on success
+static int process_mtmd_run(const server_slot & slot, size_t idx, size_t idx_end, size_t vram_keep) {
+    mtmd_context * mctx = slot.mctx;
+    const auto & input_tokens = slot.task->tokens;
+    const llama_model * model = llama_get_model(slot.ctx_tgt);
+    const size_t n_embd = llama_model_n_embd_inp(model);
+    const bool   mrope  = mtmd_decode_use_mrope(mctx);
+    const size_t n_pos_per_embd = mrope ? 4 : 1;
+
+    std::vector<mtmd::batch_ptr> mbatches;
+    std::vector<const mtmd_input_chunk *> chunks;
+    size_t need = 0;
+    for (size_t i = idx; i < idx_end; ) {
+        if (input_tokens[i] != LLAMA_TOKEN_NULL) {
+            i++;
+            continue;
+        }
+        const auto & chunk = input_tokens.find_chunk(i);
+        mbatches.emplace_back(mtmd_batch_init(mctx));
+        if (mtmd_batch_add_chunk(mbatches.back().get(), chunk.get()) != 0) {
+            return -1;
+        }
+        need = std::max(need, mtmd_batch_encode_vram_need(mbatches.back().get()));
+        chunks.push_back(chunk.get());
+        i += mtmd_input_chunk_get_n_tokens(chunk.get());
+    }
+
+    // make room once for the largest encode of the run, see process_mtmd_chunk()
+    const int64_t t_room = ggml_time_us();
+    const size_t vram_free_0 = need > 0 ? llama_vram_free(slot.ctx_tgt) : 0;
+    const size_t room = need + vram_keep;
+    const int  n_hot_room = need > 0 ? llama_expert_hotstore_free_bytes(slot.ctx_tgt, room) : -1;
+    const bool kv_spilled = need > 0 && llama_kv_spill(slot.ctx_tgt, room);
+
+    const int64_t t_encode = ggml_time_us();
+    int32_t res = 0;
+    size_t used = 0;
+    bool on_cpu = false;
+    for (auto & mb : mbatches) {
+        res = mtmd_batch_encode(mb.get());
+        bool cpu = false;
+        used = std::max(used, mtmd_batch_encode_vram_used(mb.get(), &cpu));
+        on_cpu = on_cpu || cpu;
+        if (res != 0) {
+            break;
+        }
+    }
+
+    const int64_t t_restore = ggml_time_us();
+    const bool kv_back = kv_spilled && llama_kv_unspill(slot.ctx_tgt, true);
+    const int  n_hot   = n_hot_room >= 0 ? llama_expert_hotstore_refit(slot.ctx_tgt) : -1;
+    const int64_t t_decode = ggml_time_us();
+
+    if (res != 0) {
+        SLT_ERR(slot, "failed to encode an image of the run idx = [%zu, %zu), res = %d\n", idx, idx_end, res);
+        return -1;
+    }
+
+    const size_t n = idx_end - idx;
+    std::vector<float>       embd(n * n_embd);
+    std::vector<llama_pos>   pos(n * n_pos_per_embd);
+    std::vector<llama_token> text;
+    std::vector<size_t>      text_rows;
+
+    llama_pos p = slot.prompt.tokens.pos_next();
+    size_t ic = 0;
+    for (size_t i = idx; i < idx_end; ) {
+        const size_t row = i - idx;
+        if (input_tokens[i] != LLAMA_TOKEN_NULL) {
+            text.push_back(input_tokens[i]);
+            text_rows.push_back(row);
+            // a text token takes the same position in every M-RoPE section, as in llama_batch_allocr
+            for (size_t j = 0; j < n_pos_per_embd; j++) {
+                pos[j*n + row] = p;
+            }
+            p++;
+            i++;
+            continue;
+        }
+
+        const mtmd_input_chunk * chunk = chunks[ic];
+        const size_t nt = mtmd_input_chunk_get_n_tokens(chunk);
+        const float * out = mtmd_batch_get_output_embd(mbatches[ic].get(), chunk);
+        if (out == nullptr) {
+            return -1;
+        }
+        std::memcpy(embd.data() + row*n_embd, out, nt*n_embd*sizeof(float));
+
+        if (mrope) {
+            std::vector<mtmd_decoder_pos> rel(nt);
+            mtmd_helper_image_get_decoder_pos(mtmd_input_chunk_get_tokens_image(chunk), p, rel.data());
+            for (size_t k = 0; k < nt; k++) {
+                pos[0*n + row + k] = rel[k].t;
+                pos[1*n + row + k] = rel[k].y;
+                pos[2*n + row + k] = rel[k].x;
+                pos[3*n + row + k] = rel[k].z;
+            }
+        } else {
+            for (size_t k = 0; k < nt; k++) {
+                pos[row + k] = p + (llama_pos) k;
+            }
+        }
+        p += mtmd_input_chunk_get_n_pos(chunk);
+        i += nt;
+        ic++;
+    }
+
+    if (!text.empty()) {
+        std::vector<float> rows(text.size() * n_embd);
+        if (!llama_model_get_tok_embd_rows(model, text.data(), (int32_t) text.size(), rows.data())) {
+            SLT_ERR(slot, "%s", "failed to read the token embeddings for the text of a media run\n");
+            return -1;
+        }
+        for (size_t k = 0; k < text.size(); k++) {
+            std::memcpy(embd.data() + text_rows[k]*n_embd, rows.data() + k*n_embd, n_embd*sizeof(float));
+        }
+    }
+
+    llama_seq_id seq_id = slot.id;
+    std::vector<int32_t>        n_seq_id(n, 1);
+    std::vector<llama_seq_id *> seq_ids(n + 1, &seq_id);
+    std::vector<int8_t>         logits(n, 0);
+    seq_ids[n] = nullptr;
+
+    const llama_batch batch = {
+        /*n_tokens =*/ (int32_t) n,
+        /*token    =*/ nullptr,
+        /*embd     =*/ embd.data(),
+        /*pos      =*/ pos.data(),
+        /*n_seq_id =*/ n_seq_id.data(),
+        /*seq_id   =*/ seq_ids.data(),
+        /*logits   =*/ logits.data(),
+    };
+
+    res = llama_decode(slot.ctx_tgt, batch);
+    if (res != 0) {
+        SLT_ERR(slot, "failed to decode the media run idx = [%zu, %zu), res = %d\n", idx, idx_end, res);
+        return -1;
+    }
+    if (!common_speculative_process(slot.spec, batch)) {
+        SLT_ERR(slot, "%s", "failed to process the media run in the draft\n");
+        return -1;
+    }
+
+    SLT_INF(slot, "media run: %zu images + %zu text tokens = %zu tokens, VRAM %zu of %zu MiB asked for, free %zu MiB%s%s%s, room %.1f ms, encode %.1f ms, restore %.1f ms, decode %.1f ms\n",
+            chunks.size(), text.size(), n, used / (1024*1024), need / (1024*1024), vram_free_0 / (1024*1024),
+            on_cpu ? ", on the CPU" : "",
+            !kv_spilled ? "" : kv_back ? ", KV cache moved out and back" : ", KV cache moved out and NOT back",
+            n_hot == n_hot_room ? "" : ", hot store refit",
+            (t_encode - t_room) / 1000.0, (t_restore - t_encode) / 1000.0, (t_decode - t_restore) / 1000.0, (ggml_time_us() - t_decode) / 1000.0);
+
+    return 0;
+}
+
 //
 // server_context_impl (private implementation)
 //
@@ -1448,6 +1643,9 @@ private:
     std::set<std::string> model_tags;    // informational tags
 
     bool sleeping = false;
+
+    // --mtmd-pack, and the model can give its token embeddings as rows
+    bool mtmd_pack = false;
 
     int64_t t_last_load_progress_ms = 0;
 
@@ -1705,6 +1903,21 @@ private:
                 return false;
             }
             SRV_INF("loaded multimodal model, '%s'\n", mmproj_path.c_str());
+
+            if (params_base.mtmd_pack) {
+                // only for models whose graph takes the text embedding as the plain table row (Gemma, for example,
+                // scales token input but not embedding input)
+                char arch[64] = {};
+                llama_model_meta_val_str(model_tgt, "general.architecture", arch, sizeof(arch));
+                static const std::set<std::string> plain_embd = { "qwen2vl", "qwen3vl", "qwen3vlmoe", "qwen35", "qwen35moe" };
+
+                const llama_token tok = 0;
+                std::vector<float> row(llama_model_n_embd_inp(model_tgt));
+                mtmd_pack = plain_embd.count(arch) > 0 && llama_model_get_tok_embd_rows(model_tgt, &tok, 1, row.data());
+                if (!mtmd_pack) {
+                    SRV_WRN("--mtmd-pack is off: not supported for architecture '%s'\n", arch);
+                }
+            }
 
             if (params_base.mmproj_vram_reserve != 0) {
                 const size_t reserve = params_base.mmproj_vram_reserve < 0
@@ -5170,6 +5383,45 @@ private:
                         // note: it submits its own decode, potentially be async
                         //       so the timing is queued and flushed on the next sync
                         metrics_pre_decode();
+
+                        // a run of images with short text between them: one encode round and one decode for all of it
+                        if (mtmd_pack && lora_get_enabled_ids(slot.lora).empty()) {
+                            size_t n_max = (size_t) n_batch;
+                            if (n_ctx_limit > 0) {
+                                n_max = std::min(n_max, (size_t) std::max(0, n_ctx_limit - (int32_t) cur_token_idx));
+                            }
+                            const size_t idx_end = find_mtmd_run(slot, cur_token_idx, n_max);
+                            if (idx_end > cur_token_idx) {
+                                int32_t res = 0;
+                                queue_tasks.yield_to_queue([&]() {
+                                    res = process_mtmd_run(slot, cur_token_idx, idx_end, (size_t) params_base.kv_spill_margin * 1024 * 1024);
+                                });
+
+                                if (res != 0) {
+                                    send_error(slot, "failed to process a run of mtmd chunks", ERROR_TYPE_SERVER);
+                                    slot.release();
+                                    return;
+                                }
+
+                                metrics_queue_prompt(idx_end - cur_token_idx);
+                                slot.stats.n_prompt_processed += idx_end - cur_token_idx;
+                                slot.stats.update_prompt_last();
+
+                                for (size_t i = cur_token_idx; i < idx_end; ) {
+                                    if (input_tokens[i] != LLAMA_TOKEN_NULL) {
+                                        slot.prompt.tokens.push_back(input_tokens[i]);
+                                        i++;
+                                    } else {
+                                        const auto & chunk = input_tokens.find_chunk(i);
+                                        slot.prompt.tokens.push_back_placeholder(chunk.get());
+                                        i += mtmd_input_chunk_get_n_tokens(chunk.get());
+                                    }
+                                }
+
+                                has_mtmd = true;
+                                continue;
+                            }
+                        }
 
                         // encode on the worker thread, so we can still handle metrics tasks
                         size_t n_tokens_out = 0;

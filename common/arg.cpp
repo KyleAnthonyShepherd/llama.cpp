@@ -2916,6 +2916,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MTMD_BATCH_MAX_TOKENS"));
     add_opt(common_arg(
+        {"--mtmd-pack"},
+        {"--no-mtmd-pack"},
+        string_format("encode a run of images in one go and decode it, with the text between the images, as one batch of up to "
+                      "--batch-size tokens, instead of one decode per image (default: %s)", params.mtmd_pack ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.mtmd_pack = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MTMD_PACK"));
+    add_opt(common_arg(
         {"--video-fps"}, "N",
         string_format("target video frame rate (default: %.1f)", params.video_fps),
         [](common_params & params, const std::string & value) {

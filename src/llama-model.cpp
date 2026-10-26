@@ -3637,6 +3637,38 @@ bool llama_model_has_dspark_markov_head(const struct llama_model * model) {
     return model->dspark_markov_w1 != nullptr;
 }
 
+bool llama_model_get_tok_embd_rows(const struct llama_model * model, const llama_token * tokens, int32_t n, float * out) {
+    const ggml_tensor * tensor = model->tok_embd;
+    if (tensor == nullptr || model->hadamard_inverses.count(tensor) > 0 || model->hparams.f_embedding_scale != 0.0f) {
+        return false;
+    }
+
+    const int64_t n_embd     = tensor->ne[0];
+    const int64_t n_embd_inp = model->hparams.n_embd_inp();
+    const int64_t n_vocab    = tensor->ne[1];
+    const ggml_type_traits * traits = ggml_get_type_traits(tensor->type);
+    if (tensor->type != GGML_TYPE_F32 && traits->to_float == nullptr) {
+        return false;
+    }
+
+    std::vector<uint8_t> row(tensor->nb[1]);
+    for (int32_t i = 0; i < n; i++) {
+        float * dst = out + (size_t) i * n_embd_inp;
+        if (tokens[i] < 0 || tokens[i] >= n_vocab) {
+            return false;
+        }
+        ggml_backend_tensor_get(tensor, row.data(), (size_t) tokens[i] * tensor->nb[1], tensor->nb[1]);
+        if (tensor->type == GGML_TYPE_F32) {
+            memcpy(dst, row.data(), n_embd * sizeof(float));
+        } else {
+            traits->to_float(row.data(), dst, n_embd);
+        }
+        std::fill(dst + n_embd, dst + n_embd_inp, 0.0f);
+    }
+
+    return true;
+}
+
 uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out) {
     if (model->vocab.n_tokens() == 0 || model->tok_embd == nullptr) {
         return 0;
