@@ -2722,6 +2722,13 @@ private:
         const bool think_on = guard_think_after(slot);
         const std::string & generation_prompt = think_on ? guard_tmpl.gen_on : guard_tmpl.gen_off;
 
+        // the grammar of the request (e.g. a JSON schema) has to start again with the new reply, same as the parser
+        if (!common_sampler_restart_grammar(slot.smpl.get(), vocab, generation_prompt)) {
+            send_error(slot, "loop guard: the grammar of the request does not accept the reply after the note", ERROR_TYPE_SERVER);
+            slot.release();
+            return;
+        }
+
         server_task next(SERVER_TASK_TYPE_COMPLETION);
 
         next.id      = slot.task->id;

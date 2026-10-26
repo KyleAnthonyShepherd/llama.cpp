@@ -184,6 +184,25 @@ std::string common_params_sampling::print() const {
     return std::string(result);
 }
 
+// tokens of the generation prompt, which the template already placed in the prompt
+static std::vector<llama_token> prefill_tokens_of(const llama_vocab * vocab, const std::string & generation_prompt) {
+    std::vector<llama_token> prefill_tokens;
+    if (!generation_prompt.empty()) {
+        GGML_ASSERT(vocab != nullptr);
+        auto tokens = common_tokenize(vocab, generation_prompt, false, true);
+        for (size_t i = 0; i < tokens.size(); i++) {
+            std::string piece = common_token_to_piece(vocab, tokens[i], true);
+            if (i == 0 && std::isspace(piece[0]) && !std::isspace(generation_prompt[0])) {
+                // Some tokenizers will add a space before the first special token, need to exclude
+                continue;
+            }
+            LOG_DBG("%s: prefill token: %d = %s\n", __func__, tokens[i], piece.c_str());
+            prefill_tokens.push_back(tokens[i]);
+        }
+    }
+    return prefill_tokens;
+}
+
 struct common_sampler * common_sampler_init(
         const struct llama_model * model,
         struct common_params_sampling & params) {
@@ -275,21 +294,7 @@ struct common_sampler * common_sampler_init(
         throw std::runtime_error("failed to parse grammar");
     }
 
-    // Compute prefill tokens from the generation prompt
-    std::vector<llama_token> prefill_tokens;
-    if (!params.generation_prompt.empty()) {
-        GGML_ASSERT(vocab != nullptr);
-        auto tokens = common_tokenize(vocab, params.generation_prompt, false, true);
-        for (size_t i = 0; i < tokens.size(); i++) {
-            std::string piece = common_token_to_piece(vocab, tokens[i], true);
-            if (i == 0 && std::isspace(piece[0]) && !std::isspace(params.generation_prompt[0])) {
-                // Some tokenizers will add a space before the first special token, need to exclude
-                continue;
-            }
-            LOG_DBG("%s: prefill token: %d = %s\n", __func__, tokens[i], piece.c_str());
-            prefill_tokens.push_back(tokens[i]);
-        }
-    }
+    const std::vector<llama_token> prefill_tokens = prefill_tokens_of(vocab, params.generation_prompt);
 
     // Feed generation prompt tokens to the grammar sampler so it advances past
     // tokens the template already placed in the prompt.
@@ -804,6 +809,31 @@ void common_sampler_accept_prompt(struct common_sampler * gsmpl, llama_token tok
     if (gsmpl && gsmpl->rbudget) {
         llama_sampler_accept(gsmpl->rbudget, token);
     }
+}
+
+bool common_sampler_restart_grammar(struct common_sampler * gsmpl, const struct llama_vocab * vocab, const std::string & generation_prompt) {
+    // a lazy grammar starts on its trigger, not on the generation prompt
+    if (!gsmpl || !gsmpl->grmr || gsmpl->params.grammar_lazy) {
+        return true;
+    }
+
+    llama_sampler_reset(gsmpl->grmr);
+
+    // same as common_sampler_init: a user grammar is not prefilled
+    if (!common_grammar_needs_prefill(gsmpl->params.grammar)) {
+        return true;
+    }
+
+    try {
+        for (const auto & token : prefill_tokens_of(vocab, generation_prompt)) {
+            llama_sampler_accept(gsmpl->grmr, token);
+        }
+    } catch (const std::exception & e) {
+        LOG_ERR("%s: the grammar does not accept the generation prompt '%s': %s\n", __func__, generation_prompt.c_str(), e.what());
+        return false;
+    }
+
+    return true;
 }
 
 // helpers

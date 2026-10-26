@@ -415,6 +415,7 @@ The 0.8B does not stop looping because of a note. That says nothing about the 35
 - `/v1/responses`, `/v1/messages`, `/completion` and requests with `n > 1` are only watched.
 - A request whose template did not pass the probe is only watched, also when it asks for `note` itself.
 - Toolbag and other harnesses have to follow 3.9, or they pay one reprocess per intervention.
+- Fixed 2026-10-26: a JSON schema (any non-lazy output-format grammar) with thinking on failed with HTTP 500 "peg-native" after a note with `think_after` off, because the grammar still thought it was inside the closed thinking block. `guard_inject()` now restarts the grammar with the new reply's generation prompt (`common_sampler_restart_grammar`). See `PLAN-loop-guard-json-schema.md`. With `think_after` on, a third trip in the new thinking block still ends the request with no answer (the normal stop after two notes).
 
 ### 8.6 How to rerun the tests
 

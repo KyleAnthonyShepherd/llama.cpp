@@ -111,6 +111,10 @@ void common_sampler_set_rep_off(struct common_sampler * gsmpl, bool off);
 // so that it follows a thinking block that the caller opened or closed
 void common_sampler_accept_prompt(struct common_sampler * gsmpl, llama_token token);
 
+// start the grammar again for a new reply that opens with `generation_prompt`, as common_sampler_init does.
+// a lazy grammar is left as it is. Returns false if the grammar does not accept the generation prompt
+bool common_sampler_restart_grammar(struct common_sampler * gsmpl, const struct llama_vocab * vocab, const std::string & generation_prompt);
+
 // helpers
 
 // access the internal list of current candidate tokens
