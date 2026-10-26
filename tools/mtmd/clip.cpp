@@ -6438,6 +6438,12 @@ const clip_hparams * clip_get_hparams(const struct clip_ctx * ctx) {
 std::map<ggml_backend_dev_t, size_t> clip_get_mem_usage(const struct clip_ctx * ctx) {
     std::map<ggml_backend_dev_t, size_t> result = ctx->mem_usage;
     for (auto & [dev, size] : ctx->mem_compute) {
+        // a lazy encoder frees its device buffers after each encode and the server makes room before the next one,
+        // so only the backend context (cuBLAS handle and workspace, about 18 MiB) stays
+        if (ctx->compute_lazy && ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+            result[dev] += std::min(size, (size_t) 32*1024*1024);
+            continue;
+        }
         result[dev] += size;
     }
     return result;
