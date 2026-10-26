@@ -180,6 +180,12 @@ struct clip_ctx {
 
     // run an encode on the CPU when the device does not have the VRAM for it. Needs weights_host
     bool cpu_fallback = false;
+    // the encode in progress runs on the CPU scheduler
+    bool encode_on_cpu = false;
+
+    // zero-pad attention head size 72 to 80: the device runs flash attention on its MMA kernel, which has no
+    // head size 72, and takes the much slower tile kernel for it. MTMD_FA_PAD=0/1 forces it off/on
+    bool fa_pad_72 = false;
 
     // worst ratio seen of backend scratch used to scratch estimated, see clip_estimate_vram()
     float scratch_ratio_max = 0.0f;
@@ -253,6 +259,8 @@ struct clip_ctx {
         // a CPU scheduler cannot read weights that live on the device
         cpu_fallback = ctx_params.cpu_fallback && weights_host && gpu_dev != nullptr;
 
+        fa_pad_72 = probe_fa_pad_72();
+
         sched_create();
 
         debug_output_embeddings = std::getenv("MTMD_DEBUG_EMBEDDINGS") != nullptr;
@@ -290,6 +298,29 @@ struct clip_ctx {
     void * gpu_proc(const char * name) const {
         ggml_backend_reg_t reg = gpu_dev ? ggml_backend_dev_backend_reg(gpu_dev) : nullptr;
         return reg ? ggml_backend_reg_get_proc_address(reg, name) : nullptr;
+    }
+
+    bool probe_fa_pad_72() const {
+        if (const char * env = std::getenv("MTMD_FA_PAD")) {
+            return atoi(env) != 0;
+        }
+
+        typedef bool (*uses_mma_t)(ggml_backend_dev_t dev, const ggml_tensor * op);
+        auto uses_mma = (uses_mma_t) gpu_proc("ggml_backend_cuda_fattn_uses_mma");
+        if (!uses_mma) {
+            return false;
+        }
+
+        // the padded op of a vision encoder: head size 80, 1024 patches, 16 heads, no mask
+        ggml_init_params params = { 8*ggml_tensor_overhead(), nullptr, true };
+        ggml_context_ptr c(ggml_init(params));
+        ggml_tensor * q = ggml_new_tensor_3d(c.get(), GGML_TYPE_F32, 80, 1024, 16);
+        ggml_tensor * k = ggml_new_tensor_3d(c.get(), GGML_TYPE_F16, 80, 1024, 16);
+        ggml_tensor * v = ggml_new_tensor_3d(c.get(), GGML_TYPE_F16, 80, 1024, 16);
+        ggml_tensor * fa = ggml_flash_attn_ext(c.get(), q, k, v, nullptr, 1.0f, 0.0f, 0.0f);
+        ggml_prec_set_acc(fa, GGML_PREC_F32);
+
+        return uses_mma(gpu_dev, fa);
     }
 
     size_t vram_free() const {
@@ -365,7 +396,8 @@ clip_graph::clip_graph(clip_ctx * ctx, const clip_image_f32 & img) :
         n_mmproj_embd(clip_n_mmproj_embd(ctx)),
         eps(hparams.eps),
         kq_scale(d_head > 0 ? 1.0f / sqrtf((float)d_head) : 0.0f),
-        flash_attn_type(ctx->flash_attn_type) {
+        flash_attn_type(ctx->flash_attn_type),
+        fa_pad_72(ctx->fa_pad_72 && !ctx->encode_on_cpu) {
     struct ggml_init_params params = {
         /*.mem_size   =*/ ctx->buf_compute_meta.size(),
         /*.mem_buffer =*/ ctx->buf_compute_meta.data(),
@@ -393,7 +425,8 @@ clip_graph::clip_graph(const clip_graph & parent) :
         n_mmproj_embd(parent.n_mmproj_embd),
         eps(parent.eps),
         kq_scale(parent.kq_scale),
-        flash_attn_type(parent.flash_attn_type) {
+        flash_attn_type(parent.flash_attn_type),
+        fa_pad_72(parent.fa_pad_72) {
     // reuse from parent
     ctx0 = parent.ctx0;
     gf   = parent.gf;
@@ -876,6 +909,15 @@ ggml_tensor * clip_graph::build_attn(
     if (flash_attn_type == CLIP_FLASH_ATTN_TYPE_ENABLED) {
         ggml_tensor * v = ggml_permute(ctx0, v_cur, 0, 2, 1, 3);
 
+        // the zeros change neither KQ nor the first 72 output columns, and kq_scale stays 1/sqrt(72)
+        const int64_t d_head_v = v->ne[0];
+        const bool    pad_72   = fa_pad_72 && q->ne[0] == 72 && k->ne[0] == 72 && d_head_v == 72;
+        if (pad_72) {
+            q = ggml_pad(ctx0, q, 8, 0, 0, 0);
+            k = ggml_pad(ctx0, k, 8, 0, 0, 0);
+            v = ggml_pad(ctx0, v, 8, 0, 0, 0);
+        }
+
         k = ggml_cast(ctx0, k, GGML_TYPE_F16);
         v = ggml_cast(ctx0, v, GGML_TYPE_F16);
         if (kq_mask) {
@@ -886,6 +928,11 @@ ggml_tensor * clip_graph::build_attn(
         ggml_prec_set_acc(cur, GGML_PREC_F32);
         if (sinks != nullptr) {
             ggml_flash_attn_ext_add_sinks(cur, sinks);
+        }
+
+        if (pad_72) {
+            cur = ggml_view_3d(ctx0, cur, d_head_v, cur->ne[1], cur->ne[2], cur->nb[1], cur->nb[2], 0);
+            cur = ggml_cont(ctx0, cur);
         }
 
         cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*cur->ne[1], cur->ne[2]*cur->ne[3]);
@@ -3835,8 +3882,12 @@ struct clip_model_loader {
 
         ctx_clip.is_allocated = true; // mark buffers as allocated
 
-        LOG_INF("%s: flash attention is %s\n", __func__,
-            (ctx_clip.flash_attn_type == CLIP_FLASH_ATTN_TYPE_ENABLED) ? "enabled" : "disabled");
+        const auto & hp = ctx_clip.model.hparams;
+        const int d_head = hp.n_embd_head > 0 ? hp.n_embd_head : (hp.n_head > 0 ? hp.n_embd / hp.n_head : 0);
+        const bool padded = ctx_clip.flash_attn_type == CLIP_FLASH_ATTN_TYPE_ENABLED && ctx_clip.fa_pad_72 && d_head == 72;
+        LOG_INF("%s: flash attention is %s%s\n", __func__,
+            (ctx_clip.flash_attn_type == CLIP_FLASH_ATTN_TYPE_ENABLED) ? "enabled" : "disabled",
+            padded ? ", head size 72 padded to 80 for the MMA kernel" : "");
 
         // print ops that are not supported by the GPU backend (if there is one)
         if (ctx_clip.backend && ctx_clip.backend != ctx_clip.backend_cpu) {
@@ -4677,8 +4728,10 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
                 sched_gpu = std::move(ctx->sched);
             }
             ctx->sched_create(true);
+            ctx->encode_on_cpu = true;
         }
         ~compute_guard() {
+            ctx->encode_on_cpu = false;
             if (sched_gpu) {
                 ctx->sched = std::move(sched_gpu);
             } else {

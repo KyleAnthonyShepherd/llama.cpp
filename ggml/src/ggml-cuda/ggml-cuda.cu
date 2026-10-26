@@ -6253,10 +6253,21 @@ static void ggml_backend_cuda_pool_trim(ggml_backend_t backend) {
     }
 }
 
+// true if the device runs this FLASH_ATTN_EXT op on the MMA kernel. Only the shapes and types are read,
+// so a caller can describe an op it is going to build
+static bool ggml_backend_cuda_fattn_uses_mma(ggml_backend_dev_t dev, const ggml_tensor * op) {
+    ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *) dev->context;
+
+    return op->op == GGML_OP_FLASH_ATTN_EXT && ggml_cuda_flash_attn_ext_uses_mma(ctx->device, op);
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
     if (strcmp(name, "ggml_backend_dev_free_vram") == 0) {
         return (void *)ggml_backend_cuda_device_free_vram;
+    }
+    if (strcmp(name, "ggml_backend_cuda_fattn_uses_mma") == 0) {
+        return (void *)ggml_backend_cuda_fattn_uses_mma;
     }
     if (strcmp(name, "ggml_backend_cuda_pool_stats") == 0) {
         return (void *)ggml_backend_cuda_pool_stats;

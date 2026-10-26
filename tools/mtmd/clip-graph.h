@@ -44,6 +44,7 @@ struct clip_graph {
     const float eps;
     float kq_scale; // TODO: maybe move this to hparams
     const clip_flash_attn_type flash_attn_type;
+    const bool fa_pad_72; // see clip_ctx::fa_pad_72
 
     // TODO [QWEN_VIDEO]: improve this in the future
     int n_batch = 1;
