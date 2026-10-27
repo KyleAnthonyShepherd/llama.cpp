@@ -107,6 +107,13 @@ LLAMA_API bool llama_expert_cold_last(const struct llama_context * ctx, int32_t 
 // Returns the resident slot count, or -1 when the context has no hot store.
 LLAMA_API int32_t llama_expert_hotstore_refit(struct llama_context * ctx);
 
+// Adaptive ubatch (n_ubatch_gen > 0): drop the large ubatch's compute buffers to the small ubatch's
+// size, so that something else can have the VRAM for a while (an image encode). The hot store does
+// not take the VRAM back. Pair it with llama_ubatch_restore(), before llama_expert_hotstore_refit().
+// Release a draft context before its target, restore it after. Returns whether the size changed.
+LLAMA_API bool llama_ubatch_release(struct llama_context * ctx);
+LLAMA_API bool llama_ubatch_restore(struct llama_context * ctx);
+
 // Move KV layers that a growing cache spilled to host memory (see llama_model_params::kv_spill_margin)
 // back to the GPU while they fit, at the current size. A shrink does this already; call it when
 // idle to pick up VRAM freed elsewhere. Not within 60 s of a spill, and only with room to spare,

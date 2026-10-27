@@ -98,8 +98,12 @@ struct llama_context {
     size_t scratch_large = 0;
 
     // size the compute buffers for n_ubatch_new; a growth takes VRAM from the expert hot store first, a shrink
-    // gives it back. false when the buffers stay at the old size
-    bool set_n_ubatch(uint32_t n_ubatch_new);
+    // gives it back unless refit is false. false when the buffers stay at the old size
+    bool set_n_ubatch(uint32_t n_ubatch_new, bool refit = true);
+
+    // adaptive ubatch: drop the large ubatch's compute buffers for a while and take them back, see llama_ubatch_release()
+    bool release_ubatch();
+    bool restore_ubatch();
 
     // smallest free memory of the GPUs this context uses, SIZE_MAX without a GPU
     size_t vram_free() const;

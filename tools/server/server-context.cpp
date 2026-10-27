@@ -1211,6 +1211,40 @@ struct server_slot {
 // note: this is not a member of server_slot because we want to run it inside yield_to_queue
 //       slot is passed as const to avoid accidental modification of the slot state
 //       some pointers are allowed to be used, they are not used by to_json()
+// The large ubatch of the adaptive mechanism holds its compute buffers between batches, and on a long context they
+// can take more than the whole hot store (1.8 GiB for the target and 0.8 GiB for the MTP draft at -ub 4096 and 34k
+// cells, 6 GB card). When the device is short of room for an encode, they go back to the small ubatch's size
+// first and come back after it, before the hot store refits. The draft borrows from the target's store, so it
+// steps aside first and comes back last
+struct ubatch_step_aside {
+    llama_context * tgt;
+    llama_context * dft;
+    bool tgt_released = false;
+    bool dft_released = false;
+
+    ubatch_step_aside(const server_slot & slot) : tgt(slot.ctx_tgt), dft(slot.ctx_dft != slot.ctx_tgt ? slot.ctx_dft : nullptr) {}
+
+    // when fewer than n_bytes are free
+    void release(size_t n_bytes) {
+        if (n_bytes == 0 || llama_vram_free(tgt) >= n_bytes) {
+            return;
+        }
+        dft_released = dft && llama_ubatch_release(dft);
+        tgt_released = llama_ubatch_release(tgt);
+    }
+
+    void restore() {
+        if (tgt_released) {
+            llama_ubatch_restore(tgt);
+        }
+        if (dft_released) {
+            llama_ubatch_restore(dft);
+        }
+    }
+
+    bool released() const { return tgt_released || dft_released; }
+};
+
 static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch, size_t idx, size_t & n_tokens_out, size_t vram_keep) {
     GGML_ASSERT(slot.mctx);
     const auto & mctx = slot.mctx;
@@ -1300,7 +1334,11 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
     // vram_keep stays free during the encode, as it does when the KV cache grows
     const size_t room = need + vram_keep;
 
-    // the hot store goes first: its slots are back in a fraction of a second, a long KV cache takes seconds.
+    // the large ubatch's buffers go first, see ubatch_step_aside
+    ubatch_step_aside ubatch(slot);
+    ubatch.release(need > 0 ? room : 0);
+
+    // then the hot store: its slots are back in a fraction of a second, a long KV cache takes seconds.
     // It is asked every time, because it also counts on the driver's budget and that can be used up
     // while the device still reports free memory
     const int  n_hot_room = need > 0 ? llama_expert_hotstore_free_bytes(slot.ctx_tgt, room) : -1;
@@ -1315,12 +1353,14 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
 
     const int64_t t_restore = ggml_time_us();
     const bool kv_back = kv_spilled && llama_kv_unspill(slot.ctx_tgt, true);
+    ubatch.restore();
     const int  n_hot   = n_hot_room >= 0 ? llama_expert_hotstore_refit(slot.ctx_tgt) : -1;
 
     if (need > 0) {
-        SLT_INF(slot, "media encode took %zu MiB of VRAM, %zu MiB asked for, free %zu -> %zu MiB%s%s%s, room %.1f ms, encode %.1f ms, restore %.1f ms\n",
+        SLT_INF(slot, "media encode took %zu MiB of VRAM, %zu MiB asked for, free %zu -> %zu MiB%s%s%s%s, room %.1f ms, encode %.1f ms, restore %.1f ms\n",
                 used / (1024*1024), need / (1024*1024), vram_free_0 / (1024*1024), vram_free / (1024*1024),
                 on_cpu ? ", on the CPU" : "",
+                ubatch.released() ? ", large ubatch released and back" : "",
                 !kv_spilled ? "" : kv_back ? ", KV cache moved out and back" : ", KV cache moved out and NOT back",
                 n_hot == n_hot_room ? "" : ", hot store refit",
                 (t_encode - t_room) / 1000.0, (t_restore - t_encode) / 1000.0, (ggml_time_us() - t_restore) / 1000.0);
@@ -1426,6 +1466,11 @@ static int process_mtmd_run(const server_slot & slot, size_t idx, size_t idx_end
     const int64_t t_room = ggml_time_us();
     const size_t vram_free_0 = need > 0 ? llama_vram_free(slot.ctx_tgt) : 0;
     const size_t room = need + w_bytes + vram_keep;
+
+    // the large ubatch steps aside when the encode itself is short of room; the weights alone do not ask for it
+    ubatch_step_aside ubatch(slot);
+    ubatch.release(need > 0 ? need + vram_keep : 0);
+
     const int  n_hot_room = need > 0 ? llama_expert_hotstore_free_bytes(slot.ctx_tgt, room) : -1;
     const bool kv_spilled = need > 0 && llama_kv_spill(slot.ctx_tgt, room);
 
@@ -1451,6 +1496,7 @@ static int process_mtmd_run(const server_slot & slot, size_t idx, size_t idx_end
 
     const int64_t t_restore = ggml_time_us();
     const bool kv_back = kv_spilled && llama_kv_unspill(slot.ctx_tgt, true);
+    ubatch.restore();
     const int  n_hot   = n_hot_room >= 0 ? llama_expert_hotstore_refit(slot.ctx_tgt) : -1;
     const int64_t t_decode = ggml_time_us();
 
@@ -1545,10 +1591,11 @@ static int process_mtmd_run(const server_slot & slot, size_t idx, size_t idx_end
         return -1;
     }
 
-    SLT_INF(slot, "media run: %zu images + %zu text tokens = %zu tokens, VRAM %zu of %zu MiB asked for, free %zu MiB%s%s%s%s, room %.1f ms, encode %.1f ms, restore %.1f ms, decode %.1f ms\n",
+    SLT_INF(slot, "media run: %zu images + %zu text tokens = %zu tokens, VRAM %zu of %zu MiB asked for, free %zu MiB%s%s%s%s%s, room %.1f ms, encode %.1f ms, restore %.1f ms, decode %.1f ms\n",
             chunks.size(), text.size(), n, used / (1024*1024), need / (1024*1024), vram_free_0 / (1024*1024),
             on_device ? ", weights on the device" : "",
             on_cpu ? ", on the CPU" : "",
+            ubatch.released() ? ", large ubatch released and back" : "",
             !kv_spilled ? "" : kv_back ? ", KV cache moved out and back" : ", KV cache moved out and NOT back",
             n_hot == n_hot_room ? "" : ", hot store refit",
             (t_encode - t_room) / 1000.0, (t_restore - t_encode) / 1000.0, (t_decode - t_restore) / 1000.0, (ggml_time_us() - t_decode) / 1000.0);

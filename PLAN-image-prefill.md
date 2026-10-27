@@ -308,6 +308,24 @@ nsys timeline of the pinned encodes (`-b 8192 -ub 4096`):
 - **GPU use during the LLM decode of an 8-page run** (same nsys trace): 7.58 s window, kernels running 67% of it, host-to-device expert uploads 51%, either 89%. So the SMs wait 2.5 s per 8 pages (1.7 s on uploads alone, 0.8 s fully idle). Overlapping the next run's encode with that would save at most about 2.5 s per extra 8-page run, but needs the encode's VRAM while the large-ubatch buffers are held (not there on 6 GB) and two contexts computing at once. Not on this card.
 - **Pinned host experts (`-lm none`) with `-epf 2`**: no gain. 16 pages 25.4-26.5 vs 25.7-25.8 s (mmap), 8 pages 13.3 vs 12.9-13.2 s, text 7.4-7.5 vs 7.1-7.3 s.
 
+### 10.7 Home server: long prompts encode on the CPU; the large ubatch now steps aside (2026-10-27)
+
+Kyle's server run (GTX 1660 Ti, Kyle's flags with `-b 8192 -ub 4096 --mtmd-pack`, a 32k prompt of text then 2528x1632 pages of about 4000 tokens each) encoded a page on the CPU: "the encode needs 855 MiB of VRAM, 776 MiB are free". With `-lv 4` the cause was plain:
+
+| step | hot slots |
+|---|---|
+| load fit | 32 (2184 MiB) |
+| KV cache grows 4096 -> 34304 cells (80 MiB free) | 32 |
+| target to ubatch 4096: compute buffers 1818 MiB | 10 |
+| MTP draft to ubatch 4096: compute buffers 792 MiB | 0, store disabled |
+| encode: nothing left in the store, KV moved to host, 776 MiB free | 0 |
+
+At 34k cells the two large-ubatch buffers hold 2.6 GB for the whole prefill, and the encode's room-making (hot store, then KV) never asked them. Fix: `llama_ubatch_release()` / `llama_ubatch_restore()` (llama-ext.h) drop a context's buffers to the small ubatch's size without a hot store refit, and take them back. The server's `ubatch_step_aside` (server-context.cpp) releases the draft then the target when free VRAM is short of the encode's need plus the keep, before the hot store and the KV are asked, and restores target then draft after the KV comes back and before the hot store refits. Both encode paths (`process_mtmd_chunk`, `process_mtmd_run`); the log lines say "large ubatch released and back".
+
+Laptop repro (`p0/repro_long.py`: 3 copies of text.txt, then two pages upscaled to 2528x1632, 30226 prompt tokens, same flags as the server): the same state (0 hot slots after the draft grows), and with the fix both runs encode on the GPU: room 74-82 ms, encode 7.99-8.04 s, restore 170 ms, decode 11.2-11.4 s, prompt 49.0-49.1 s (616 tok/s). No CPU encode. The old binary was not rerun on the laptop; the server log is the before.
+
+Still open on the server: the BF16 mmproj runs as F32 cuBLAS on Turing (no BF16 hardware; use `mmproj-F16.gguf`, which `-hf` does not pick because it ties with BF16 on bits and BF16 lists first), 4000-token pages (`--image-max-tokens`), the pad on TU116 (`MTMD_FA_PAD=0` A/B), and the prefill itself runs with 0 hot slots once both contexts hold ubatch 4096 at 34k cells (`--spec-draft-ubatch 512`, or `-ub 2048`).
+
 ## 11. Sources
 
 - ggml-org/llama.cpp#29385 `llama_batch_ext` (mixed token/embedding batches), merged 2026-09-28.

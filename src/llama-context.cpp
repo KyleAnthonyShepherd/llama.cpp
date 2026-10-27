@@ -1697,7 +1697,7 @@ size_t llama_context::compute_bytes_at(uint32_t n_ubatch_new, size_t * scratch) 
     return res;
 }
 
-bool llama_context::set_n_ubatch(uint32_t n_ubatch_new) {
+bool llama_context::set_n_ubatch(uint32_t n_ubatch_new, bool refit) {
     const uint32_t n_ubatch_old = cparams.n_ubatch;
     const bool     grow         = n_ubatch_new > n_ubatch_old;
     const int64_t  t_start_us   = ggml_time_us();
@@ -1791,7 +1791,7 @@ bool llama_context::set_n_ubatch(uint32_t n_ubatch_new) {
     // buffers: it refits when it shrinks too, and each refit re-plants the store from host
     const bool owner_large = store_ctx && store_ctx != this && store_ctx->cparams.n_ubatch_gen > 0 &&
         store_ctx->cparams.n_ubatch != store_ctx->cparams.n_ubatch_gen;
-    if (!grow && store_ctx && !owner_large) {
+    if (!grow && refit && store_ctx && !owner_large) {
         store_ctx->refit_expert_hotstore(true);
     }
 
@@ -1803,6 +1803,20 @@ bool llama_context::set_n_ubatch(uint32_t n_ubatch_new) {
             pool_now/1024.0/1024.0, scratch_large/1024.0/1024.0, pool_peak/1024.0/1024.0);
 
     return true;
+}
+
+bool llama_context::release_ubatch() {
+    if (cparams.n_ubatch_gen == 0 || cparams.n_ubatch == cparams.n_ubatch_gen) {
+        return false;
+    }
+    return set_n_ubatch(cparams.n_ubatch_gen, false);
+}
+
+bool llama_context::restore_ubatch() {
+    if (cparams.n_ubatch_gen == 0 || cparams.n_ubatch == cparams.n_ubatch_max) {
+        return false;
+    }
+    return set_n_ubatch(cparams.n_ubatch_max);
 }
 
 int32_t llama_context::refit_expert_hotstore(bool reserve) {
@@ -5796,6 +5810,14 @@ bool llama_expert_cold_last(const struct llama_context * ctx, int32_t * cold_dis
 
 int32_t llama_expert_hotstore_refit(struct llama_context * ctx) {
     return ctx->refit_expert_hotstore(true);
+}
+
+bool llama_ubatch_release(struct llama_context * ctx) {
+    return ctx->release_ubatch();
+}
+
+bool llama_ubatch_restore(struct llama_context * ctx) {
+    return ctx->restore_ubatch();
 }
 
 bool llama_kv_spill(struct llama_context * ctx, size_t need_bytes) {
