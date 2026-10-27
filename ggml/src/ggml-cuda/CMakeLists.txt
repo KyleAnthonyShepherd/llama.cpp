@@ -128,6 +128,10 @@ if (CUDAToolkit_FOUND)
         add_compile_definitions(GGML_CUDA_FORCE_MMQ)
     endif()
 
+    if (GGML_CUDA_NO_MMA)
+        add_compile_definitions(GGML_CUDA_NO_MMA)
+    endif()
+
     if (GGML_CUDA_HOPPER_Q1)
         # opt-in Hopper (sm_90a) wgmma path for Q1_0/PQ2_0 prefill; needs CUTLASS headers (CuTe)
         if (NOT GGML_CUDA_CUTLASS_DIR)

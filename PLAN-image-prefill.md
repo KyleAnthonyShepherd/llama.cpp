@@ -324,6 +324,16 @@ At 34k cells the two large-ubatch buffers hold 2.6 GB for the whole prefill, and
 
 Laptop repro (`p0/repro_long.py`: 3 copies of text.txt, then two pages upscaled to 2528x1632, 30226 prompt tokens, same flags as the server): the same state (0 hot slots after the draft grows), and with the fix both runs encode on the GPU: room 74-82 ms, encode 7.99-8.04 s, restore 170 ms, decode 11.2-11.4 s, prompt 49.0-49.1 s (616 tok/s). No CPU encode. The old binary was not rerun on the laptop; the server log is the before.
 
+### 10.8 `GGML_CUDA_NO_MMA`: Turing code without the tensor-core kernels (2026-10-27)
+
+The server is built with `-DCMAKE_CUDA_ARCHITECTURES="61-virtual" -DGGML_CUDA_FORCE_MMQ=ON`, ggml's advice for GTX 16xx (no tensor cores; ggml's Turing MMA kernels run but slowly there). That code has no fast FP16: `FAST_FP16_AVAILABLE` is off for `__CUDA_ARCH__ == 610`, because consumer Pascal runs FP16 at 1/64 rate. So the vision attention (tile kernel, head size 72) does its math in FP32, while TU116 runs FP16 at twice the FP32 rate. The pad was never on there (no Turing MMA compiled, the probe says no). Measured on the server: 2 pages of ~4000 tokens encode in 55.5 s with the BF16 mmproj (FP32 cuBLAS) and 83.7 s with the F16 mmproj (cuBLAS picks its own sm_75 FP16 kernels, slow on this card), so BF16 stays.
+
+New CMake option `GGML_CUDA_NO_MMA` (`common.cuh`): leaves out the Volta/Turing/Ampere/Blackwell MMA availability macros and makes `volta/turing/ampere/blackwell_mma_available()` and `fp16/bf16_mma_hardware_available()` (NVIDIA) return false, so every kernel choice takes the non-tensor-core path. Built for 75 that keeps fast FP16. The startup hint for GTX 16xx / MX450 / MX550 now points at it, and `system_info` lists `NO_MMA = 1`.
+
+Laptop check (`build-nomma`, arch 86, the 3060 has tensor cores so speed says nothing about TU116): test-backend-ops MUL_MAT 1391/1391, MUL_MAT_ID 1063/1063, FLASH_ATTN_EXT 3979/3979, OUT_PROD 71/71 against the CPU. Two 4000-token pages, 3 reps each (`p0/cmp_nomma.py`): identical transcription on both builds; encode 21.4-21.6 s without MMA vs 7.9-8.0 s with it (Ampere's non-tensor FP16 runs at the FP32 rate, so this is the tensor cores' worth, not a TU116 forecast), decode 9.1-10.7 vs 6.6-8.1 s.
+
+Server build to compare against the 61 one: `cmake -B build-75 -DCMAKE_CUDA_ARCHITECTURES=75 -DGGML_CUDA_NO_MMA=ON -DGGML_CUDA_FORCE_MMQ=ON`. Expected: the encode's attention up to 2x faster (attention is most of the 55 s); the LLM side gets FP16 kernels too, so check text prefill and generation speed as well.
+
 Still open on the server: the BF16 mmproj runs as F32 cuBLAS on Turing (no BF16 hardware; use `mmproj-F16.gguf`, which `-hf` does not pick because it ties with BF16 on bits and BF16 lists first), 4000-token pages (`--image-max-tokens`), the pad on TU116 (`MTMD_FA_PAD=0` A/B), and the prefill itself runs with 0 hot slots once both contexts hold ubatch 4096 at 34k cells (`--spec-draft-ubatch 512`, or `-ub 2048`).
 
 ## 11. Sources
