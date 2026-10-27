@@ -303,6 +303,11 @@ nsys timeline of the pinned encodes (`-b 8192 -ub 4096`):
 3. Encode: try the other MMA FA configs for D=80 with 16 heads and no mask (the encode uses ncols 64); fuse the bias adds into the GEMMs where ggml-cuda can; pad the qkv/o weights instead of the activations (removes `pad_f32`, 4.4%, but needs the RoPE check of 7.3).
 4. Home server validation (section 9 item 1) still open.
 
+### 10.6 Two more measurements
+
+- **GPU use during the LLM decode of an 8-page run** (same nsys trace): 7.58 s window, kernels running 67% of it, host-to-device expert uploads 51%, either 89%. So the SMs wait 2.5 s per 8 pages (1.7 s on uploads alone, 0.8 s fully idle). Overlapping the next run's encode with that would save at most about 2.5 s per extra 8-page run, but needs the encode's VRAM while the large-ubatch buffers are held (not there on 6 GB) and two contexts computing at once. Not on this card.
+- **Pinned host experts (`-lm none`) with `-epf 2`**: no gain. 16 pages 25.4-26.5 vs 25.7-25.8 s (mmap), 8 pages 13.3 vs 12.9-13.2 s, text 7.4-7.5 vs 7.1-7.3 s.
+
 ## 11. Sources
 
 - ggml-org/llama.cpp#29385 `llama_batch_ext` (mixed token/embedding batches), merged 2026-09-28.
