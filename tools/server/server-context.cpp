@@ -1334,6 +1334,21 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
     return try_decode();
 }
 
+// free VRAM that an allocation can take without paging: the device figure, and on Windows the driver's budget,
+// which can be lower
+static size_t vram_free_usable(llama_context * ctx) {
+    size_t res = llama_vram_free(ctx);
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+            size_t free = 0, total = 0;
+            ggml_backend_dev_memory(dev, &free, &total);
+            res = std::min(res, free);
+        }
+    }
+    return res;
+}
+
 // end of a run of image chunks from idx, with only text between them, that fits in n_max tokens.
 // returns idx when the run has fewer than two images. The text after the last image is not part of a run
 static size_t find_mtmd_run(const server_slot & slot, size_t idx, size_t n_max) {
@@ -1402,14 +1417,22 @@ static int process_mtmd_run(const server_slot & slot, size_t idx, size_t idx_end
         i += mtmd_input_chunk_get_n_tokens(chunk.get());
     }
 
+    // with the vision weights in host memory, every encode streams them to the device again. The run copies them
+    // once instead, when there is room for them next to the largest encode. MTMD_PIN_WEIGHTS=0 turns this off
+    static const bool pin_weights = !getenv("MTMD_PIN_WEIGHTS") || atoi(getenv("MTMD_PIN_WEIGHTS")) != 0;
+    const size_t w_bytes = need > 0 && pin_weights ? mtmd_weights_device_bytes(mctx) : 0;
+
     // make room once for the largest encode of the run, see process_mtmd_chunk()
     const int64_t t_room = ggml_time_us();
     const size_t vram_free_0 = need > 0 ? llama_vram_free(slot.ctx_tgt) : 0;
-    const size_t room = need + vram_keep;
+    const size_t room = need + w_bytes + vram_keep;
     const int  n_hot_room = need > 0 ? llama_expert_hotstore_free_bytes(slot.ctx_tgt, room) : -1;
     const bool kv_spilled = need > 0 && llama_kv_spill(slot.ctx_tgt, room);
 
     const int64_t t_encode = ggml_time_us();
+    // a copy that does not fit pages on Windows, and can push the encode itself to the CPU
+    const bool on_device = w_bytes > 0 && vram_free_usable(slot.ctx_tgt) >= need + w_bytes + vram_keep && mtmd_weights_to_device(mctx);
+
     int32_t res = 0;
     size_t used = 0;
     bool on_cpu = false;
@@ -1421,6 +1444,9 @@ static int process_mtmd_run(const server_slot & slot, size_t idx, size_t idx_end
         if (res != 0) {
             break;
         }
+    }
+    if (on_device) {
+        mtmd_weights_to_host(mctx);
     }
 
     const int64_t t_restore = ggml_time_us();
@@ -1519,8 +1545,9 @@ static int process_mtmd_run(const server_slot & slot, size_t idx, size_t idx_end
         return -1;
     }
 
-    SLT_INF(slot, "media run: %zu images + %zu text tokens = %zu tokens, VRAM %zu of %zu MiB asked for, free %zu MiB%s%s%s, room %.1f ms, encode %.1f ms, restore %.1f ms, decode %.1f ms\n",
+    SLT_INF(slot, "media run: %zu images + %zu text tokens = %zu tokens, VRAM %zu of %zu MiB asked for, free %zu MiB%s%s%s%s, room %.1f ms, encode %.1f ms, restore %.1f ms, decode %.1f ms\n",
             chunks.size(), text.size(), n, used / (1024*1024), need / (1024*1024), vram_free_0 / (1024*1024),
+            on_device ? ", weights on the device" : "",
             on_cpu ? ", on the CPU" : "",
             !kv_spilled ? "" : kv_back ? ", KV cache moved out and back" : ", KV cache moved out and NOT back",
             n_hot == n_hot_room ? "" : ", hot store refit",

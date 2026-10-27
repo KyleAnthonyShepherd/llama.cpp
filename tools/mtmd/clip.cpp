@@ -361,7 +361,70 @@ struct clip_ctx {
         }
     }
 
+    // weights_host: a copy of the weights on the device for a run of encodes, so each encode does not stream
+    // them from host memory again. The weight tensors point into it until weights_to_host()
+    ggml_backend_buffer_ptr buf_device;
+    std::vector<std::pair<ggml_tensor *, void *>> host_data;
+
+    size_t weights_device_bytes() const {
+        if (!weights_host || backend == backend_cpu || !ctx_data) {
+            return 0;
+        }
+        ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(backend);
+        const size_t align = ggml_backend_buft_get_alignment(buft);
+        size_t total = 0;
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx_data.get()); t; t = ggml_get_next_tensor(ctx_data.get(), t)) {
+            total += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), align);
+        }
+        return total;
+    }
+
+    bool weights_to_device() {
+        if (buf_device) {
+            return true;
+        }
+        const size_t total = weights_device_bytes();
+        if (total == 0) {
+            return false;
+        }
+        ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(backend);
+        ggml_backend_buffer_t buffer = ggml_backend_buft_alloc_buffer(buft, total);
+        if (!buffer) {
+            return false;
+        }
+        ggml_backend_buffer_set_usage(buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        buf_device.reset(buffer);
+
+        const size_t align = ggml_backend_buft_get_alignment(buft);
+        char * base = (char *) ggml_backend_buffer_get_base(buffer);
+        size_t offset = 0;
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx_data.get()); t; t = ggml_get_next_tensor(ctx_data.get(), t)) {
+            void * src = t->data;
+            host_data.emplace_back(t, src);
+            t->buffer = nullptr;
+            t->data   = nullptr;
+            ggml_backend_tensor_alloc(buffer, t, base + offset);
+            ggml_backend_tensor_set(t, src, 0, ggml_nbytes(t));
+            offset += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), align);
+        }
+        return true;
+    }
+
+    void weights_to_host() {
+        if (!buf_device) {
+            return;
+        }
+        ggml_backend_synchronize(backend);
+        for (auto & [t, src] : host_data) {
+            t->buffer = buf.get();
+            t->data   = src;
+        }
+        host_data.clear();
+        buf_device.reset();
+    }
+
     ~clip_ctx() {
+        weights_to_host();
         sched.reset();
         if (backend != nullptr && backend != backend_cpu) {
             ggml_backend_free(backend);
@@ -4724,6 +4787,8 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
         clip_ctx * ctx;
         ggml_backend_sched_ptr sched_gpu;
         void to_cpu() {
+            // the CPU scheduler reads the weights from host memory
+            ctx->weights_to_host();
             if (!ctx->compute_lazy && !sched_gpu) {
                 sched_gpu = std::move(ctx->sched);
             }
@@ -6433,6 +6498,18 @@ projector_type clip_get_projector_type(const struct clip_ctx * ctx) {
 
 const clip_hparams * clip_get_hparams(const struct clip_ctx * ctx) {
     return &ctx->model.hparams;
+}
+
+size_t clip_weights_device_bytes(const struct clip_ctx * ctx) {
+    return ctx->weights_device_bytes();
+}
+
+bool clip_weights_to_device(struct clip_ctx * ctx) {
+    return ctx->weights_to_device();
+}
+
+void clip_weights_to_host(struct clip_ctx * ctx) {
+    ctx->weights_to_host();
 }
 
 std::map<ggml_backend_dev_t, size_t> clip_get_mem_usage(const struct clip_ctx * ctx) {

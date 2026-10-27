@@ -2196,6 +2196,26 @@ size_t mtmd_encode_vram_need_max(mtmd_context * ctx) {
     }
 }
 
+size_t mtmd_weights_device_bytes(mtmd_context * ctx) {
+    return ctx->ctx_v ? clip_weights_device_bytes(ctx->ctx_v) : 0;
+}
+
+bool mtmd_weights_to_device(mtmd_context * ctx) {
+    try {
+        return ctx->ctx_v && clip_weights_to_device(ctx->ctx_v);
+    } catch (const std::exception & e) {
+        LOG_ERR("%s: error: %s\n", __func__, e.what());
+        clip_weights_to_host(ctx->ctx_v);
+        return false;
+    }
+}
+
+void mtmd_weights_to_host(mtmd_context * ctx) {
+    if (ctx->ctx_v) {
+        clip_weights_to_host(ctx->ctx_v);
+    }
+}
+
 size_t mtmd_batch_encode_vram_used(mtmd_batch * batch, bool * on_cpu) {
     const clip_ctx * ctx = batch->entries.empty() ? nullptr : batch->ctx->get_clip_ctx(batch->entries[0]);
     const clip_encode_stats stats = ctx ? clip_get_encode_stats(ctx) : clip_encode_stats{};

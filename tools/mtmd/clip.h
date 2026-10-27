@@ -130,6 +130,12 @@ size_t clip_encode_vram_need(struct clip_ctx * ctx, const struct clip_image_f32_
 // the same for the largest input ctx accepts
 size_t clip_encode_vram_need_max(struct clip_ctx * ctx);
 
+// weights in host memory (weights_host): copy them to the device for a run of encodes, and back.
+// clip_weights_device_bytes() is what the copy takes, 0 when there is nothing to copy
+size_t clip_weights_device_bytes(const struct clip_ctx * ctx);
+bool   clip_weights_to_device(struct clip_ctx * ctx);
+void   clip_weights_to_host(struct clip_ctx * ctx);
+
 // what the last clip_encode() took from the device over what ctx held before
 struct clip_encode_stats {
     size_t graph;           // compute buffers

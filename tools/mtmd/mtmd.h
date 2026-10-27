@@ -369,6 +369,13 @@ MTMD_API size_t mtmd_batch_encode_vram_used(mtmd_batch * batch, bool * on_cpu);
 // mtmd_batch_encode_vram_need() of the largest image, or audio clip, the encoder accepts
 MTMD_API size_t mtmd_encode_vram_need_max(mtmd_context * ctx);
 
+// with the vision weights in host memory (mtmd_context_params::weights_host), every encode streams them to the
+// device again. For a run of image encodes, copy them to the device once and back after the run.
+// mtmd_weights_device_bytes() is what that copy takes, 0 when there is nothing to copy
+MTMD_API size_t mtmd_weights_device_bytes(mtmd_context * ctx);
+MTMD_API bool   mtmd_weights_to_device(mtmd_context * ctx);
+MTMD_API void   mtmd_weights_to_host(mtmd_context * ctx);
+
 
 // Set callback for all future logging events.
 // If this is not called, or NULL is supplied, everything is output on stderr.
