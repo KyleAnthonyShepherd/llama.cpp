@@ -252,7 +252,58 @@ In order:
 7. **One encode graph per run with per-image attention**: the matmuls of all images of a run in one batch (weights read once, larger GEMMs), the attention, RoPE and merges per image. Would make item 3 unnecessary, but it is a real change to `qwen3vl.cpp` and the encode estimate. Only if 3 and 5 leave the encode as the larger half.
 8. **Soak** as in the lazy-vram plan (mixed text and image turns, context growth), then consider upstreaming the pad (a small, self-contained change; #16837 left head size 72 as a TODO).
 
-## 10. Sources
+## 10. Larger ubatches, weights per run, batched encode (2026-10-26, laptop)
+
+All with `--mtmd-pack`, lazy mmproj, host weights, `-ubg 512 -epf 2`, MTP n_max 1, `-c 4096 --ctx-max 262144`, 2-3 reps. Requests: 16 pages (16286 tokens), 8 pages, 12 small images, 7.4k text, 400-token generation.
+
+### 10.1 `n_batch` no longer capped by the starting `-c`
+
+`llama_context` capped `n_batch` at the starting `n_ctx`, so `-b` above `-c` was silently ignored under `--ctx-max`. decode() already grows the KV cache when a batch does not fit, so with growth on (one sequence) the cap is now `n_ctx_max` (`src/llama-context.cpp`). Checked: `-c 4096 -b 8192` gives `n_batch = 8192`, and packing builds runs of 8 (and 12) pages.
+
+### 10.2 Ubatch sweep
+
+| config | 16 pages s | 8 pages s | 12 small s | text s | hot slots large mode |
+|---|---|---|---|---|---|
+| `-b 4096 -ub 4096` | 25.4-26.6 | 12.8-13.8 | 5.1-6.3 | 6.9-8.7 | 0-15 |
+| **`-b 8192 -ub 4096`** | **24.2-25.0** | **12.4-12.8** | **5.0-5.5** | 6.9-7.1 | 1-15 |
+| `-ub 6144` (MTP draft too) | 30.9-31.7 | 13.5-13.8 | 5.8 | 10.5 | 0-3, draft switch fails |
+| `-ub 6144 --spec-draft-ubatch 2048` | 30.9-31.4 | 12.9-13.5 | 4.9-5.0 | 9.5-9.8 | 0-14 |
+| `-ub 8192 --spec-draft-ubatch 1024/2048` | 130-172 | 14.5-15.1 | 4.9-5.0 | 8.5-9.1 | 0-14 |
+| `-ub 12288` | 88-89 | 16.1-16.8 | 6.2-6.5 | 9.9-10.4 | switch fails |
+| MTP off, `-ub 4096 / 6144 / 8192` | 29.0 / 27.8-32.5 / 32.7-33.4 | 14.5-16.0 / 14.6-15.7 / 13.0-13.8 | | 7.8 / 8.2 / 6.6 | 13-17 / 4-8 / 0-2 |
+
+- Target compute buffers: 1678 MiB at ub 4096, 2226 at 6144, 2582 at 8192. Above 4096 the hot store is empty during the batch, and the card is at its edge: on Windows that pages, so 8k-token decodes are bimodal (7.0 s or 10.5-11 s per 8106-token run), and some runs collapse.
+- The MTP draft context switched with the target and wanted another 1131-1436 MiB at 6144 (its one layer's activations and expert staging, its outputs are already capped at 1). At 6144 that failed and the draft stayed at ub 512. New flag `--spec-draft-ubatch N` (`common/arg.cpp`, `common/speculative.cpp`) caps only the draft's large ubatch. It removes the failed switches, but 6144 is still slower than 4096 on this card.
+- **On a 6 GB card the useful maximum is ub 4096. The win is `-b 8192 -ub 4096`:** runs of 8 pages, one round of making room and one switch per 8 pages instead of per 4. About 3-5% on pages; `--spec-draft-ubatch` stays for larger cards.
+
+### 10.3 Vision weights on the device for a packed run
+
+- `clip_ctx::weights_to_device()` / `weights_to_host()` (`tools/mtmd/clip.cpp`), exposed as `mtmd_weights_device_bytes()`, `mtmd_weights_to_device()`, `mtmd_weights_to_host()` (`tools/mtmd/mtmd.h`): one device buffer, every weight tensor re-homed into it with `ggml_backend_tensor_alloc` + a copy, pointers restored after. The scheduler places ops by the tensor's buffer, so the encodes stop streaming the weights. A CPU fallback encode moves them back first.
+- `process_mtmd_run()` asks for room for the weights too, and copies them only if the smaller of NVML free and the driver's budget (`ggml_backend_dev_memory`) covers encode + weights + `--kv-spill-margin`. The first version checked NVML only: on the second run of a 16-page request (large-ubatch buffers still held) the copy oversubscribed and the encode paged (19 s) or fell to the CPU (102-110 s). With the stricter check those runs stream as before (9 of 12 runs copied in the 16/8-page tests). `MTMD_PIN_WEIGHTS=0` turns it off.
+- Output: logprobs identical to the unpinned run (max difference 0.0).
+- `-b 8192 -ub 4096`, pinned / not pinned: 16 pages 24.2-25.0 / 24.9-25.6 s, 8 pages 12.4-12.8 / 12.6-13.4 s, **12 small images 5.0-5.5 / 5.8-6.0 s**. Encode of the 12-image run 1.16 / 2.26 s, of an 8-page run 4.32 / 4.83 s. Generation after: 33.4-35.1 / 29.3-33.1 tok/s.
+
+### 10.4 One encode graph per run with per-image attention: not worth it
+
+nsys timeline of the pinned encodes (`-b 8192 -ub 4096`):
+
+| run | span | GPU busy | gaps between images | GEMM | flash attention | elementwise and copies |
+|---|---|---|---|---|---|---|
+| 12 small images | 1021 ms | 89% | 11 x 7.8 ms = 86 ms | 415 ms | 99 ms | about 400 ms |
+| 8 pages | 4129 ms | 97% | 7 x 17 ms = 118 ms | 1292 ms | 1326 ms | about 1370 ms |
+
+- The GEMMs are near the card's BF16 peak already (8 pages: about 26 TFLOP in 1.29 s, 20 TFLOPS), and only 15% dearer per patch on small images (46 vs 40 us per patch).
+- One graph per run would save the gaps (the per-encode graph build, allocation and sync) and part of the small-image GEMM gap: about 160 ms on the 12-image request (3%) and 120 ms on 8 pages (1%). Attention stays per image. Not worth a rewrite of `qwen3vl.cpp`.
+- Where the page encode goes instead: flash attention 33% (D=80 MMA, about 62% of peak), GEMM 32%, bias and residual adds (`k_bin_bcast`) 12%, the head pad (`pad_f32`) 4.4%, RoPE 4.3%, casts 4%, norms 3.5%, GELU 2.8%, copies 3%.
+
+### 10.5 Next
+
+1. Commit 10.1-10.3 and use `-b 8192 -ub 4096` with `--mtmd-pack`.
+2. The LLM decode is still about half of every image request (7 of 12.4 s for 8 pages). Its cost per ubatch is the expert upload pass; that is the 35B prefill plan's territory (hot store sizing during prefill, pinned host experts for faster DMA).
+3. Encode: try the other MMA FA configs for D=80 with 16 heads and no mask (the encode uses ncols 64); fuse the bias adds into the GEMMs where ggml-cuda can; pad the qkv/o weights instead of the activations (removes `pad_f32`, 4.4%, but needs the RoPE check of 7.3).
+4. Home server validation (section 9 item 1) still open.
+
+## 11. Sources
 
 - ggml-org/llama.cpp#29385 `llama_batch_ext` (mixed token/embedding batches), merged 2026-09-28.
 - ggml-org/llama.cpp#16837 clip FA (head size 72 left as TODO); #30241 cast the mask once.
