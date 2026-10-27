@@ -321,8 +321,10 @@ llama_context::llama_context(
     cparams.fused_dsv4_hc_post = true;
     cparams.auto_fhc           = true;
 
-    // with causal attention, the batch size is limited by the context size
-    cparams.n_batch = cparams.causal_attn ? std::min(cparams.n_ctx, params.n_batch) : params.n_batch;
+    // with causal attention, the batch size is limited by the context size. Automatic growth makes room for a
+    // batch in decode(), so then the limit is the growth bound
+    const uint32_t n_ctx_batch = params.n_ctx_max > cparams.n_ctx && params.n_seq_max == 1 ? params.n_ctx_max : cparams.n_ctx;
+    cparams.n_batch = cparams.causal_attn ? std::min(n_ctx_batch, params.n_batch) : params.n_batch;
 
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
 
