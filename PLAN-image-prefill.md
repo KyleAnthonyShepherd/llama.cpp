@@ -334,6 +334,8 @@ Laptop check (`build-nomma`, arch 86, the 3060 has tensor cores so speed says no
 
 Server build to compare against the 61 one: `cmake -B build-75 -DCMAKE_CUDA_ARCHITECTURES=75 -DGGML_CUDA_NO_MMA=ON -DGGML_CUDA_FORCE_MMQ=ON`. Expected: the encode's attention up to 2x faster (attention is most of the 55 s); the LLM side gets FP16 kernels too, so check text prefill and generation speed as well.
 
+First server run with the 75 + NO_MMA build aborted in prefill: the MTP draft's attention (tile kernel, D=256, ubatch 4096) split the KV over ~3 parallel blocks, each an F32 copy of the output (64 MiB) from the VMM pool mid-graph, 128 MiB past the reserve: `cuMemCreate ... out of memory`. With MMA that path is stream-k and needs no copies, so the reserve's formula never counted them. Fix (2d37de8ae, `fattn-common.cuh`): the non-stream-k launch keeps one block per tile when the output tiles fill 8+ waves on their own (a split adds no parallelism there). Laptop no-MMA build: FA tests 3979/3979, pool stays at the 82 MiB reserve where the old code grew it to 130 MiB, encode 21.3-21.8 s and decode 9.3-11.2 s (unchanged). Kyle's hunch from the server: generation ~33 vs ~36 tok/s with the earlier 61 build; not measured.
+
 Still open on the server: the BF16 mmproj runs as F32 cuBLAS on Turing (no BF16 hardware; use `mmproj-F16.gguf`, which `-hf` does not pick because it ties with BF16 on bits and BF16 lists first), 4000-token pages (`--image-max-tokens`), the pad on TU116 (`MTMD_FA_PAD=0` A/B), and the prefill itself runs with 0 hot slots once both contexts hold ubatch 4096 at 34k cells (`--spec-draft-ubatch 512`, or `-ub 2048`).
 
 ## 11. Sources
