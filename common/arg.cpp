@@ -4516,6 +4516,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MAX"));
     add_opt(common_arg(
+        {"--spec-draft-ubatch"}, "N",
+        "physical batch size of the draft context for large batches, at most -ub. A smaller one leaves VRAM to the "
+        "target's large ubatch, at the price of more passes of the draft over a prompt (default: 0 = -ub)",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.speculative.draft.n_ubatch = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SPEC_DRAFT_UBATCH"));
+    add_opt(common_arg(
         {"--spec-adaptive-width"},
         string_format("adapt the draft per step. with the expert hot store: compute --spec-draft-p-min, a draft token is "
             "kept only when its confidence beats what the cold experts it pulls cost to verify. without it: pick the "
