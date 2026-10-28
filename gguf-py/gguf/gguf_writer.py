@@ -1375,6 +1375,9 @@ class GGUFWriter:
     def add_vision_max_pixels(self, value: int) -> None:
         self.add_uint32(Keys.ClipVision.IMAGE_MAX_PIXELS, value)
 
+    def add_vision_image_resize_algo(self, value: str) -> None:
+        self.add_string(Keys.ClipVision.IMAGE_RESIZE_ALGO, value)
+
     def add_vision_min_pixels(self, value: int) -> None:
         self.add_uint32(Keys.ClipVision.IMAGE_MIN_PIXELS, value)
 

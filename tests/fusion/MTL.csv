@@ -79,6 +79,7 @@ kimi-linear         ,0   ,any     ,GATED_DELTA_NET+CPY         ,      1
 kimi-linear         ,0   ,any     ,RMS_NORM+MUL                ,      7
 lfm2                ,0   ,any     ,RMS_NORM+MUL                ,      7
 lfm2moe             ,1   ,any     ,RMS_NORM+MUL                ,      7
+lfm3                ,0   ,any     ,RMS_NORM+MUL                ,     17
 llada               ,0   ,any     ,RMS_NORM+MUL                ,      5
 llada-moe           ,1   ,any     ,RMS_NORM+MUL                ,      9
 llama               ,0   ,any     ,RMS_NORM+MUL                ,      5
