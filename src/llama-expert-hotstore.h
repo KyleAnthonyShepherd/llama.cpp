@@ -1,8 +1,11 @@
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "ggml-cpp.h"
@@ -178,8 +181,38 @@ llama_expert_hotstore(const llama_model * model, int n_layers,
     // shared mode: one line per group with the hot experts of each layer
     void log_pool(const char * tag) const;
 
+    // resync swaps so far: count, bytes, decode time they blocked (decisions, LUT upload, copies
+    // unless they run in the background), and the background copy time
+    int64_t              swap_n     = 0;
+    size_t               swap_bytes = 0;
+    int64_t              swap_us    = 0;
+    std::atomic<int64_t> swap_bg_us{0};
+
+    // Background swaps (default, LLAMA_EXPERT_SWAP=bg): a worker thread copies the slots of a resync
+    // while decode goes on. Until poll_swaps() sees the copies done, those slots stay cold in the
+    // LUTs, so no graph reads a slot that is being written. LLAMA_EXPERT_SWAP=batch queues the copies
+    // on upload_backend and waits once; LLAMA_EXPERT_SWAP=sync is the old blocking copy per slice.
+    // Call only after the decode's graph is done: it may upload the LUTs.
+    void poll_swaps(bool wait, bool publish = true);
+
 private:
-    // shared mode: copy expert ex of layer il into slot p of its group's banks, returns bytes copied
-    size_t set_pool_slot(int il, int ex, int p, ggml_backend_t backend);
+    // copy expert ex of layer il into slot p of its hot tensors (the group's banks in shared mode),
+    // queued on `backend` when given, else blocking. Returns bytes copied.
+    size_t set_slot(int il, int ex, int p, ggml_backend_t backend);
     void   resync_pool(const llama_expert_heatmap & heatmap);
+
+    enum swap_mode_t { SWAP_SYNC, SWAP_BATCH, SWAP_BG };
+    swap_mode_t swap_mode = SWAP_BG;
+
+    // backend for queued copies and LUT uploads, nullptr in sync mode (blocking copies)
+    ggml_backend_t swap_backend() const;
+    // copy (or queue) one resync swap, returns its bytes
+    size_t queue_swap(int il, int ex, int p);
+    // end of a resync with swaps: wait for or start the copies, upload the LUTs
+    void swap_finish();
+
+    std::thread                     swap_thread;
+    std::atomic<bool>               swap_done{true};
+    std::vector<std::array<int, 3>> swap_pending; // (layer, expert, slot) being copied
+    std::vector<uint8_t>            pending_map;  // [il * n_experts + e] = 1 while its copy is in flight
 };

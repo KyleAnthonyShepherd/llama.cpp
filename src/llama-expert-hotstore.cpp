@@ -36,6 +36,11 @@ llama_expert_hotstore::llama_expert_hotstore(
         return;
     }
 
+    if (const char * m = getenv("LLAMA_EXPERT_SWAP")) {
+        swap_mode = strcmp(m, "sync") == 0 ? SWAP_SYNC : strcmp(m, "batch") == 0 ? SWAP_BATCH : SWAP_BG;
+    }
+    pending_map.assign((size_t) n_layers * n_experts, 0);
+
     for (const auto & [name, tensor] : llama_internal_get_tensor_map(model)) {
         std::smatch m;
         if (std::regex_search(name, m, g_re_exps_weight)) {
@@ -183,10 +188,67 @@ bool llama_expert_hotstore::allocate(ggml_backend_buffer_type_t gpu_buft) {
 }
 
 llama_expert_hotstore::~llama_expert_hotstore() {
+    // the backends may be gone already, so only wait for the copies
+    poll_swaps(true, false);
     if (shared && is_filled) {
         log_pool("final");
     }
+    if (swap_n > 0) {
+        LLAMA_LOG("expert hot store: %lld swaps, %.1f MiB, %.1f ms blocking decode (%.3f ms per swap), %.1f ms of background copies\n",
+                (long long) swap_n, swap_bytes / (1024.0 * 1024.0), swap_us / 1e3, swap_us / 1e3 / swap_n, swap_bg_us.load() / 1e3);
+    }
     llama_expert_tier_clear();
+}
+
+ggml_backend_t llama_expert_hotstore::swap_backend() const {
+    return swap_mode == SWAP_SYNC ? nullptr : upload_backend;
+}
+
+size_t llama_expert_hotstore::queue_swap(int il, int ex, int p) {
+    if (swap_mode == SWAP_BG && upload_backend) {
+        swap_pending.push_back({il, ex, p});
+        pending_map[(size_t) il * n_experts + ex] = 1;
+        return bytes_per_slot[il];
+    }
+    return set_slot(il, ex, p, swap_backend());
+}
+
+void llama_expert_hotstore::swap_finish() {
+    if (swap_pending.empty()) {
+        if (swap_backend()) {
+            ggml_backend_synchronize(swap_backend());
+        }
+        update_luts();
+        return;
+    }
+
+    // the LUTs go up first with the new slots still cold, so the next graphs never read them
+    update_luts();
+
+    // blocking copies on the worker's own CUDA stream run beside the compute stream
+    swap_done = false;
+    swap_thread = std::thread([this, jobs = swap_pending]() {
+        const int64_t t0 = ggml_time_us();
+        for (const auto & j : jobs) {
+            set_slot(j[0], j[1], j[2], nullptr);
+        }
+        swap_bg_us += ggml_time_us() - t0;
+        swap_done = true;
+    });
+}
+
+void llama_expert_hotstore::poll_swaps(bool wait, bool publish) {
+    if (!swap_thread.joinable() || (!wait && !swap_done.load())) {
+        return;
+    }
+    swap_thread.join();
+    for (const auto & j : swap_pending) {
+        pending_map[(size_t) j[0] * n_experts + j[1]] = 0;
+    }
+    swap_pending.clear();
+    if (publish) {
+        update_luts();
+    }
 }
 
 // The group's top n (layer, expert) pairs by heat, hottest first. Every layer takes n_expert_used
@@ -220,7 +282,7 @@ static std::vector<std::pair<int, int>> pool_top(const llama_expert_heatmap & he
     return top;
 }
 
-size_t llama_expert_hotstore::set_pool_slot(int il, int ex, int p, ggml_backend_t backend) {
+size_t llama_expert_hotstore::set_slot(int il, int ex, int p, ggml_backend_t backend) {
     size_t n = 0;
     for (entry * e : entries_by_layer[il]) {
         const size_t slot = ggml_nbytes(e->src) / (size_t) e->src->ne[2];
@@ -258,7 +320,7 @@ void llama_expert_hotstore::copy_top_s(const llama_expert_heatmap & heatmap) {
                 g.owner_expert[p] = ex;
                 g.dwell_count[p]  = dwell;
                 slot_map[(size_t) il * n_experts + ex] = p;
-                planted += set_pool_slot(il, ex, p, upload_backend);
+                planted += set_slot(il, ex, p, upload_backend);
             }
         }
         if (upload_backend) {
@@ -373,6 +435,9 @@ size_t llama_expert_hotstore::resize(int new_hot_s, const llama_expert_heatmap &
 
     const size_t released = buf ? ggml_backend_buffer_get_size(buf.get()) : 0;
 
+    // the copies in flight write into the buffer about to go
+    poll_swaps(true, false);
+
     // the graph holds pointers to dst/LUT tensors, so drop the registrations with them
     llama_expert_tier_clear();
     buf.reset();
@@ -452,7 +517,7 @@ void llama_expert_hotstore::plant_static() {
                     g.owner_layer[p]  = il;
                     g.owner_expert[p] = ex;
                     slot_map[(size_t) il * n_experts + ex] = p;
-                    set_pool_slot(il, ex, p, nullptr);
+                    set_slot(il, ex, p, nullptr);
                 }
             }
         }
@@ -528,7 +593,7 @@ void llama_expert_hotstore::resync_pool(const llama_expert_heatmap & heatmap) {
             if (g.owner_layer[p] >= 0) {
                 slot_map[(size_t) g.owner_layer[p] * n_experts + g.owner_expert[p]] = -1;
             }
-            set_pool_slot(il, ex, p, nullptr);
+            swap_bytes += queue_swap(il, ex, p);
             g.owner_layer[p]  = il;
             g.owner_expert[p] = ex;
             g.dwell_count[p]  = (int) -elapsed; // fresh dwell: aging below brings it to 0
@@ -544,12 +609,9 @@ void llama_expert_hotstore::resync_pool(const llama_expert_heatmap & heatmap) {
     }
 
     last_sync_tokens = heatmap.tokens_total;
+    swap_n += swapped;
     if (swapped > 0) {
-        update_luts();
-    }
-    if (getenv("LLAMA_EXPERT_DEBUG")) {
-        LLAMA_LOG("=== Expert hot store: re-sync swapped %d expert slots ===\n", swapped);
-        log_pool("resync");
+        swap_finish();
     }
 }
 
@@ -656,14 +718,7 @@ void llama_expert_hotstore::resync_top_s(const llama_expert_heatmap & heatmap) {
             if (p < 0) {
                 break; // no slot free or displaceable under the gate
             }
-            for (entry * ent : entries_by_layer[il]) {
-                const size_t slot = ggml_nbytes(ent->src) / (size_t) ent->src->ne[2];
-                const char * src = ent->src->data ? (const char *) ggml_get_data(ent->src) : nullptr;
-                if (!src) {
-                    continue;
-                }
-                ggml_backend_tensor_set(ent->dst, src + (size_t) e_cold * slot, (size_t) p * slot, slot);
-            }
+            swap_bytes += queue_swap(il, e_cold, p);
             ste[p] = e_cold;
             dc[p]  = -elapsed; // fresh dwell: aging below brings it to 0
             swapped++;
@@ -677,11 +732,9 @@ void llama_expert_hotstore::resync_top_s(const llama_expert_heatmap & heatmap) {
     }
 
     last_sync_tokens = heatmap.tokens_total;
+    swap_n += swapped;
     if (swapped > 0) {
-        update_luts();
-        if (getenv("LLAMA_EXPERT_DEBUG")) {
-            LLAMA_LOG("=== Expert hot store: re-sync swapped %d expert slots ===\n", swapped);
-        }
+        swap_finish();
     }
 }
 
@@ -690,14 +743,37 @@ void llama_expert_hotstore::maybe_resync(const llama_expert_heatmap & heatmap, b
     if (multi_slot || sync_period <= 0 || heatmap.tokens_total <= 0) {
         return;
     }
+    // the decode batches that get here have synchronized, so the LUTs can go up
+    poll_swaps(false);
     if (heatmap.tokens_total / sync_period > last_sync_tokens / sync_period) {
+        const int64_t t0 = ggml_time_us();
+        const int64_t n0 = swap_n;
+        const size_t  b0 = swap_bytes;
+
+        // the ranking must see every earlier swap landed
+        poll_swaps(true);
         resync_top_s(heatmap);
+
+        const int64_t dt = ggml_time_us() - t0;
+        swap_us += dt;
+        if (getenv("LLAMA_EXPERT_DEBUG")) {
+            const size_t b = swap_bytes - b0;
+            LLAMA_LOG("=== Expert hot store: re-sync swapped %d expert slots, %.1f MiB in %.2f ms (%.2f GiB/s), background copies %.1f ms so far ===\n",
+                    (int) (swap_n - n0), b / (1024.0 * 1024.0), dt / 1e3, dt > 0 ? b / (1024.0 * 1024.0 * 1024.0) / (dt / 1e6) : 0.0,
+                    swap_bg_us.load() / 1e3);
+            if (shared) {
+                log_pool("resync");
+            }
+        }
     }
 }
 
 int llama_expert_hotstore::slot_of(int layer_idx, int expert_id) const {
     if (layer_idx < 0 || layer_idx >= n_layers || hot_s <= 0) {
         return -1;
+    }
+    if (expert_id >= 0 && expert_id < n_experts && pending_map[(size_t) layer_idx * n_experts + expert_id]) {
+        return -1; // its copy is still in flight, the graph treats it as cold
     }
     if (shared) {
         return expert_id >= 0 && expert_id < n_experts && !slot_map.empty() ? slot_map[(size_t) layer_idx * n_experts + expert_id] : -1;
@@ -716,8 +792,9 @@ void llama_expert_hotstore::update_luts() {
         return;
     }
 
-    std::vector<float> hot_lut_h(n_experts);
-    std::vector<float> cold_mask_h(n_experts);
+    // every layer's tables are kept until the queued copies are done, then waited for once
+    std::vector<float> all_h((size_t) n_layers * n_experts * 2);
+    ggml_backend_t backend = swap_backend();
 
     // diagnostic: keep every expert cold, so the whole MoE runs through mul_mat_id_cold and the
     // hot path contributes only zeros. Whatever still differs from stock is then the cold kernel
@@ -725,6 +802,9 @@ void llama_expert_hotstore::update_luts() {
     const bool cold_only = getenv("LLAMA_EXPERT_TIER_COLD_ONLY") != nullptr;
 
     for (int il = 0; il < n_layers; il++) {
+        float * hot_lut_h   = all_h.data() + (size_t) il * n_experts * 2;
+        float * cold_mask_h = hot_lut_h + n_experts;
+
         // defaults: everyone cold. 0 is the pad base; the graph adds the draw position to it,
         // so each cold draw of a token ends up on a different pad slot.
         for (int e = 0; e < n_experts; e++) {
@@ -736,7 +816,7 @@ void llama_expert_hotstore::update_luts() {
             // bank slot; f32 is exact for any bank size here
             for (int e = 0; e < n_experts && !cold_only; e++) {
                 const int p = slot_map[(size_t) il * n_experts + e];
-                if (p >= 0) {
+                if (p >= 0 && !pending_map[(size_t) il * n_experts + e]) {
                     hot_lut_h[e]   = (float) p;
                     cold_mask_h[e] = 0.0f;
                 }
@@ -747,7 +827,7 @@ void llama_expert_hotstore::update_luts() {
             // residents override
             for (int p = 0; p < hot_s && !cold_only; p++) {
                 const int e = ste[p];
-                if (e < 0) {
+                if (e < 0 || pending_map[(size_t) il * n_experts + e]) {
                     continue;
                 }
                 hot_lut_h[e]   = (float) p; // its slot
@@ -756,8 +836,16 @@ void llama_expert_hotstore::update_luts() {
         }
 
         const size_t bytes_f32 = n_experts * sizeof(float);
-        ggml_backend_tensor_set(luts[il].hot_lut,   hot_lut_h.data(),   0, bytes_f32);
-        ggml_backend_tensor_set(luts[il].cold_mask, cold_mask_h.data(), 0, bytes_f32);
+        if (backend) {
+            ggml_backend_tensor_set_async(backend, luts[il].hot_lut,   hot_lut_h,   0, bytes_f32);
+            ggml_backend_tensor_set_async(backend, luts[il].cold_mask, cold_mask_h, 0, bytes_f32);
+        } else {
+            ggml_backend_tensor_set(luts[il].hot_lut,   hot_lut_h,   0, bytes_f32);
+            ggml_backend_tensor_set(luts[il].cold_mask, cold_mask_h, 0, bytes_f32);
+        }
+    }
+    if (backend) {
+        ggml_backend_synchronize(backend);
     }
 
     luts_version++;
