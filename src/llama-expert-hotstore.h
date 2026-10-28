@@ -41,12 +41,32 @@ struct llama_expert_hotstore {
     struct entry {
         int          layer_idx;
         ggml_tensor* src; // model tensor holding all n_experts slices
-        ggml_tensor* dst; // hot tensor holding hot_s slots
+        ggml_tensor* dst; // hot tensor holding hot_s slots, or its group's bank in shared mode
+        int          bank = 0; // index into its group's banks (shared mode)
     };
     std::vector<entry> entries;
 
     // per-layer index into entries (built once in ctor, entries stable after)
     std::vector<std::vector<entry *>> entries_by_layer;
+
+    // shared mode (--expert-pool shared): the layers whose expert tensors have the same types and
+    // shapes form a layout group. The group has one bank of hot_s x n_layers_in_group slots per
+    // expert tensor, and the bank holds the group's hottest (layer, expert) pairs.
+    // hot_s stays the per-layer unit, so the sizing and the VRAM lending code see no change.
+    bool shared = false;
+
+    struct pool_group {
+        std::vector<int>           layers;
+        int                        n_slots = 0;
+        std::vector<ggml_tensor *> banks;        // same order as entries_by_layer of each layer
+        std::vector<int>           owner_layer;  // per bank slot, -1 = empty
+        std::vector<int>           owner_expert;
+        std::vector<int>           dwell_count;
+    };
+    std::vector<pool_group> groups;
+
+    // slot_map[il * n_experts + e] = bank slot of expert e of layer il, -1 = cold (shared mode)
+    std::vector<int> slot_map;
 
     // slot_to_expert[il][p] = expert id held in slot p of layer il, or -1 if empty.
     // stable across re-syncs: an expert that stays hot keeps its slot.
@@ -111,7 +131,7 @@ struct llama_expert_hotstore {
 
 llama_expert_hotstore(const llama_model * model, int n_layers,
                       int n_experts, int n_expert_used, int hot_s, int sync_period = 0,
-                      float hyst = 0.0f, int dwell = 0);
+                      float hyst = 0.0f, int dwell = 0, bool shared = false);
 
     ~llama_expert_hotstore();
 
@@ -154,4 +174,12 @@ llama_expert_hotstore(const llama_model * model, int n_layers,
     void update_luts();
 
     void log() const;
+
+    // shared mode: one line per group with the hot experts of each layer
+    void log_pool(const char * tag) const;
+
+private:
+    // shared mode: copy expert ex of layer il into slot p of its group's banks, returns bytes copied
+    size_t set_pool_slot(int il, int ex, int p, ggml_backend_t backend);
+    void   resync_pool(const llama_expert_heatmap & heatmap);
 };

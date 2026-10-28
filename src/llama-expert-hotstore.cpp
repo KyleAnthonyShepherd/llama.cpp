@@ -8,7 +8,10 @@
 #include "ggml-backend.h"
 
 #include <algorithm>
+#include <cstring>
+#include <map>
 #include <regex>
+#include <string>
 
 // matches the weight tensor of an expert tensor, e.g.:
 //   blk.0.ffn_gate_exps.weight
@@ -18,13 +21,14 @@ static const std::regex g_re_exps_weight("blk\\.(\\d+)\\.ffn_(up|down|gate|gate_
 
 llama_expert_hotstore::llama_expert_hotstore(
         const llama_model * model, int n_layers, int n_experts, int n_expert_used, int hot_s,
-        int sync_period, float hyst, int dwell) :
+        int sync_period, float hyst, int dwell, bool shared) :
     n_layers(n_layers),
     n_experts(n_experts),
     hot_s(hot_s),
     hot_s_max(hot_s),
     n_expert_used(n_expert_used),
     bytes_per_slot(n_layers, 0),
+    shared(shared),
     sync_period(sync_period),
     hyst(hyst),
     dwell(dwell) {
@@ -51,7 +55,32 @@ llama_expert_hotstore::llama_expert_hotstore(
         entries_by_layer[e.layer_idx].push_back(&e);
     }
 
-    if (this->hot_s > 0) {
+    if (shared) {
+        // a layer's layout: its expert tensors by name (without the blk.N. prefix), with type and shape
+        std::map<std::string, int> group_of_layout;
+        for (int il = 0; il < n_layers; il++) {
+            auto & es = entries_by_layer[il];
+            if (es.empty()) {
+                continue;
+            }
+            std::sort(es.begin(), es.end(), [](const entry * a, const entry * b) {
+                return strcmp(a->src->name, b->src->name) < 0;
+            });
+            std::string layout;
+            for (size_t i = 0; i < es.size(); i++) {
+                const char * name = strchr(es[i]->src->name + 4, '.'); // skip "blk.N"
+                layout += format("%s:%s:%lld:%lld;", name ? name : "", ggml_type_name(es[i]->src->type),
+                        (long long) es[i]->src->ne[0], (long long) es[i]->src->ne[1]);
+                es[i]->bank = (int) i;
+            }
+            auto it = group_of_layout.find(layout);
+            if (it == group_of_layout.end()) {
+                it = group_of_layout.emplace(layout, (int) groups.size()).first;
+                groups.emplace_back();
+            }
+            groups[it->second].layers.push_back(il);
+        }
+    } else if (this->hot_s > 0) {
         slot_to_expert.assign(n_layers, std::vector<int>(this->hot_s, -1));
         dwell_count.assign(n_layers, std::vector<int>(this->hot_s, 0));
     }
@@ -81,8 +110,27 @@ bool llama_expert_hotstore::allocate(ggml_backend_buffer_type_t gpu_buft) {
 
     // one hot tensor per model expert tensor, hot_s resident slots and nothing reserved -
     // a cold draw's contribution is masked away at the tier output (see the header)
-    for (auto & e : entries) {
-        e.dst = ggml_new_tensor_3d(ctx.get(), e.src->type, e.src->ne[0], e.src->ne[1], hot_s);
+    if (shared) {
+        for (auto & g : groups) {
+            g.n_slots = hot_s * (int) g.layers.size();
+            g.banks.clear();
+            for (const entry * e : entries_by_layer[g.layers[0]]) {
+                g.banks.push_back(ggml_new_tensor_3d(ctx.get(), e->src->type, e->src->ne[0], e->src->ne[1], g.n_slots));
+            }
+            for (int il : g.layers) {
+                for (entry * e : entries_by_layer[il]) {
+                    e->dst = g.banks[e->bank];
+                }
+            }
+            g.owner_layer.assign(g.n_slots, -1);
+            g.owner_expert.assign(g.n_slots, -1);
+            g.dwell_count.assign(g.n_slots, 0);
+        }
+        slot_map.assign((size_t) n_layers * n_experts, -1);
+    } else {
+        for (auto & e : entries) {
+            e.dst = ggml_new_tensor_3d(ctx.get(), e.src->type, e.src->ne[0], e.src->ne[1], hot_s);
+        }
     }
 
     // per-layer LUTs and masks for in-graph routing (oldtricks Trick 4).
@@ -135,11 +183,99 @@ bool llama_expert_hotstore::allocate(ggml_backend_buffer_type_t gpu_buft) {
 }
 
 llama_expert_hotstore::~llama_expert_hotstore() {
+    if (shared && is_filled) {
+        log_pool("final");
+    }
     llama_expert_tier_clear();
+}
+
+// The group's top n (layer, expert) pairs by heat, hottest first. Every layer takes n_expert_used
+// draws per token, so heat compares across layers. Ties go to the lower expert id, then the lower
+// layer, so an empty heatmap spreads the slots evenly over the layers.
+static std::vector<std::pair<int, int>> pool_top(const llama_expert_heatmap & heatmap,
+        const std::vector<int> & layers, int n_experts, int n) {
+    struct cand {
+        float h;
+        int   il;
+        int   e;
+    };
+    std::vector<cand> all;
+    all.reserve(layers.size() * n_experts);
+    for (int il : layers) {
+        for (int e = 0; e < n_experts; e++) {
+            all.push_back({heatmap.get_score(il, e), il, e});
+        }
+    }
+    n = std::min(n, (int) all.size());
+    std::partial_sort(all.begin(), all.begin() + n, all.end(), [](const cand & a, const cand & b) {
+        if (a.h != b.h) {
+            return a.h > b.h;
+        }
+        return a.e != b.e ? a.e < b.e : a.il < b.il;
+    });
+    std::vector<std::pair<int, int>> top(n);
+    for (int i = 0; i < n; i++) {
+        top[i] = {all[i].il, all[i].e};
+    }
+    return top;
+}
+
+size_t llama_expert_hotstore::set_pool_slot(int il, int ex, int p, ggml_backend_t backend) {
+    size_t n = 0;
+    for (entry * e : entries_by_layer[il]) {
+        const size_t slot = ggml_nbytes(e->src) / (size_t) e->src->ne[2];
+        const char * src = e->src->data ? (const char *) ggml_get_data(e->src) : nullptr;
+        if (!src) {
+            continue;
+        }
+        if (backend) {
+            ggml_backend_tensor_set_async(backend, e->dst, src + (size_t) ex * slot, (size_t) p * slot, slot);
+        } else {
+            ggml_backend_tensor_set(e->dst, src + (size_t) ex * slot, (size_t) p * slot, slot);
+        }
+        n += slot;
+    }
+    return n;
 }
 
 void llama_expert_hotstore::copy_top_s(const llama_expert_heatmap & heatmap) {
     if (is_filled || hot_s <= 0 || entries.empty() || !buf) {
+        return;
+    }
+
+    if (shared) {
+        const int64_t t_plant_us = ggml_time_us();
+        size_t        planted    = 0;
+
+        std::fill(slot_map.begin(), slot_map.end(), -1);
+        for (auto & g : groups) {
+            const auto top = pool_top(heatmap, g.layers, n_experts, g.n_slots);
+            std::fill(g.owner_layer.begin(), g.owner_layer.end(), -1);
+            std::fill(g.owner_expert.begin(), g.owner_expert.end(), -1);
+            for (int p = 0; p < (int) top.size(); p++) {
+                const auto [il, ex] = top[p];
+                g.owner_layer[p]  = il;
+                g.owner_expert[p] = ex;
+                g.dwell_count[p]  = dwell;
+                slot_map[(size_t) il * n_experts + ex] = p;
+                planted += set_pool_slot(il, ex, p, upload_backend);
+            }
+        }
+        if (upload_backend) {
+            ggml_backend_synchronize(upload_backend);
+        }
+
+        last_sync_tokens = heatmap.tokens_total;
+        is_filled = true;
+        update_luts();
+
+        const double plant_ms = (ggml_time_us() - t_plant_us) / 1e3;
+        LLAMA_LOG_INFO("%s: planted %d slots per layer in %zu groups, %zu MiB host->device in %.1f ms (%.2f GiB/s)\n",
+                __func__, hot_s, groups.size(), planted / (1024 * 1024), plant_ms,
+                plant_ms > 0.0 ? (double) planted / (1024.0*1024.0*1024.0) / (plant_ms / 1e3) : 0.0);
+        if (getenv("LLAMA_EXPERT_DEBUG")) {
+            log_pool("fill");
+        }
         return;
     }
 
@@ -261,7 +397,8 @@ size_t llama_expert_hotstore::resize(int new_hot_s, const llama_expert_heatmap &
 
     for (int want = new_hot_s; want > 0 && !ok; ) {
         hot_s = want;
-        for (int il = 0; il < n_layers; il++) {
+        // shared mode: allocate() sizes the banks and clears their owners
+        for (int il = 0; il < n_layers && !shared; il++) {
             slot_to_expert[il].assign(hot_s, -1);
             dwell_count[il].assign(hot_s, 0);
         }
@@ -304,6 +441,27 @@ void llama_expert_hotstore::plant_static() {
         return;
     }
 
+    if (shared) {
+        // layer k of a group takes the k-th run of hot_s slots
+        std::fill(slot_map.begin(), slot_map.end(), -1);
+        for (auto & g : groups) {
+            for (int k = 0; k < (int) g.layers.size(); k++) {
+                const int il = g.layers[k];
+                for (int ex = 0; ex < hot_s && ex < n_experts; ex++) {
+                    const int p = k * hot_s + ex;
+                    g.owner_layer[p]  = il;
+                    g.owner_expert[p] = ex;
+                    slot_map[(size_t) il * n_experts + ex] = p;
+                    set_pool_slot(il, ex, p, nullptr);
+                }
+            }
+        }
+        is_filled = true;
+        update_luts();
+        LLAMA_LOG("=== Expert hot store: STATIC plant of %d experts per layer ===\n", hot_s);
+        return;
+    }
+
     // plant experts 0..hot_s-1 into slots 0..hot_s-1, one shot, no heatmap
     for (int il = 0; il < n_layers; il++) {
         auto & ste = slot_to_expert[il];
@@ -325,8 +483,110 @@ void llama_expert_hotstore::plant_static() {
     LLAMA_LOG("=== Expert hot store: STATIC plant of %d experts per layer ===\n", hot_s);
 }
 
+// Same gate as the per-layer resync, ranked over the whole group: the hottest pair not resident
+// takes an empty slot, else the coldest resident that has dwelled enough, if it beats that one by hyst.
+// Candidates come hottest first and residents coldest first, so the first miss ends the group.
+void llama_expert_hotstore::resync_pool(const llama_expert_heatmap & heatmap) {
+    const int64_t elapsed = heatmap.tokens_total - last_sync_tokens;
+    int swapped = 0;
+    for (auto & g : groups) {
+        const auto top = pool_top(heatmap, g.layers, n_experts, g.n_slots);
+        auto score = [&](int p) {
+            return heatmap.get_score(g.owner_layer[p], g.owner_expert[p]);
+        };
+
+        std::vector<int> empty;
+        std::vector<int> victims;
+        for (int p = 0; p < g.n_slots; p++) {
+            if (g.owner_layer[p] < 0) {
+                empty.push_back(p);
+            } else if (hyst <= 0.0f || g.dwell_count[p] >= dwell) {
+                victims.push_back(p);
+            }
+        }
+        std::sort(victims.begin(), victims.end(), [&](int a, int b) { return score(a) < score(b); });
+
+        size_t i_empty  = 0;
+        size_t i_victim = 0;
+        for (const auto & [il, ex] : top) {
+            if (slot_map[(size_t) il * n_experts + ex] >= 0) {
+                continue;
+            }
+            int p = -1;
+            if (i_empty < empty.size()) {
+                p = empty[i_empty++];
+            } else if (i_victim < victims.size()) {
+                const float s_cold = heatmap.get_score(il, ex);
+                const float s_inc  = score(victims[i_victim]);
+                if (hyst <= 0.0f ? s_cold > s_inc : s_cold >= hyst * s_inc) {
+                    p = victims[i_victim++];
+                }
+            }
+            if (p < 0) {
+                break;
+            }
+            if (g.owner_layer[p] >= 0) {
+                slot_map[(size_t) g.owner_layer[p] * n_experts + g.owner_expert[p]] = -1;
+            }
+            set_pool_slot(il, ex, p, nullptr);
+            g.owner_layer[p]  = il;
+            g.owner_expert[p] = ex;
+            g.dwell_count[p]  = (int) -elapsed; // fresh dwell: aging below brings it to 0
+            slot_map[(size_t) il * n_experts + ex] = p;
+            swapped++;
+        }
+
+        for (int p = 0; p < g.n_slots; p++) {
+            if (g.owner_layer[p] >= 0) {
+                g.dwell_count[p] += (int) std::max<int64_t>(elapsed, 0);
+            }
+        }
+    }
+
+    last_sync_tokens = heatmap.tokens_total;
+    if (swapped > 0) {
+        update_luts();
+    }
+    if (getenv("LLAMA_EXPERT_DEBUG")) {
+        LLAMA_LOG("=== Expert hot store: re-sync swapped %d expert slots ===\n", swapped);
+        log_pool("resync");
+    }
+}
+
+void llama_expert_hotstore::log_pool(const char * tag) const {
+    std::vector<int> n_hot(n_layers, 0);
+    for (const auto & g : groups) {
+        for (int p = 0; p < g.n_slots && p < (int) g.owner_layer.size(); p++) {
+            if (g.owner_layer[p] >= 0) {
+                n_hot[g.owner_layer[p]]++;
+            }
+        }
+    }
+    for (const auto & g : groups) {
+        // layer list as ranges, e.g. 0-33,35-37
+        std::string ls;
+        for (size_t i = 0; i < g.layers.size(); ) {
+            size_t j = i;
+            while (j + 1 < g.layers.size() && g.layers[j + 1] == g.layers[j] + 1) {
+                j++;
+            }
+            ls += (ls.empty() ? "" : ",") + (j > i ? format("%d-%d", g.layers[i], g.layers[j]) : format("%d", g.layers[i]));
+            i = j + 1;
+        }
+        std::string counts;
+        for (int il : g.layers) {
+            counts += format(" %d", n_hot[il]);
+        }
+        LLAMA_LOG("expert pool %s layers %s:%s\n", tag, ls.c_str(), counts.c_str());
+    }
+}
+
 void llama_expert_hotstore::resync_top_s(const llama_expert_heatmap & heatmap) {
     if (!is_filled || hot_s <= 0 || !buf) {
+        return;
+    }
+    if (shared) {
+        resync_pool(heatmap);
         return;
     }
 
@@ -439,6 +699,9 @@ int llama_expert_hotstore::slot_of(int layer_idx, int expert_id) const {
     if (layer_idx < 0 || layer_idx >= n_layers || hot_s <= 0) {
         return -1;
     }
+    if (shared) {
+        return expert_id >= 0 && expert_id < n_experts && !slot_map.empty() ? slot_map[(size_t) layer_idx * n_experts + expert_id] : -1;
+    }
     const auto & ste = slot_to_expert[layer_idx];
     for (int p = 0; p < hot_s; p++) {
         if (ste[p] == expert_id) {
@@ -462,8 +725,6 @@ void llama_expert_hotstore::update_luts() {
     const bool cold_only = getenv("LLAMA_EXPERT_TIER_COLD_ONLY") != nullptr;
 
     for (int il = 0; il < n_layers; il++) {
-        const auto & ste = slot_to_expert[il];
-
         // defaults: everyone cold. 0 is the pad base; the graph adds the draw position to it,
         // so each cold draw of a token ends up on a different pad slot.
         for (int e = 0; e < n_experts; e++) {
@@ -471,14 +732,27 @@ void llama_expert_hotstore::update_luts() {
             cold_mask_h[e] = 1.0f;
         }
 
-        // residents override
-        for (int p = 0; p < hot_s && !cold_only; p++) {
-            const int e = ste[p];
-            if (e < 0) {
-                continue;
+        if (shared) {
+            // bank slot; f32 is exact for any bank size here
+            for (int e = 0; e < n_experts && !cold_only; e++) {
+                const int p = slot_map[(size_t) il * n_experts + e];
+                if (p >= 0) {
+                    hot_lut_h[e]   = (float) p;
+                    cold_mask_h[e] = 0.0f;
+                }
             }
-            hot_lut_h[e]   = (float) p; // its slot
-            cold_mask_h[e] = 0.0f;
+        } else {
+            const auto & ste = slot_to_expert[il];
+
+            // residents override
+            for (int p = 0; p < hot_s && !cold_only; p++) {
+                const int e = ste[p];
+                if (e < 0) {
+                    continue;
+                }
+                hot_lut_h[e]   = (float) p; // its slot
+                cold_mask_h[e] = 0.0f;
+            }
         }
 
         const size_t bytes_f32 = n_experts * sizeof(float);
@@ -571,6 +845,21 @@ void llama_expert_hotstore::log() const {
     }
     LLAMA_LOG("  total bytes/slot across all layers = %zu (%zu MiB)\n",
         total, total / (1024 * 1024));
+    if (shared) {
+        LLAMA_LOG("  shared pool: %zu layout groups\n", groups.size());
+        for (const auto & g : groups) {
+            std::string ls;
+            for (int il : g.layers) {
+                ls += format("%s%d", ls.empty() ? "" : ",", il);
+            }
+            std::string types;
+            for (const entry * e : entries_by_layer[g.layers[0]]) {
+                types += format(" %s", ggml_type_name(e->src->type));
+            }
+            LLAMA_LOG("    %zu layers [%s]:%s, %zu bytes/slot, %d slots\n",
+                g.layers.size(), ls.c_str(), types.c_str(), bytes_per_slot[g.layers[0]], g.n_slots);
+        }
+    }
     if (buf) {
         LLAMA_LOG("  GPU hot store allocated: %s, %zu bytes (%zu MiB) for %d slices (%d expert, no pad)\n",
             ggml_backend_buffer_name(buf.get()),

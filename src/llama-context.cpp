@@ -667,7 +667,7 @@ llama_context::llama_context(
         expert_hotstore = std::make_unique<llama_expert_hotstore>(
             &model, hparams.n_layer(), hparams.n_expert, hparams.n_expert_used_max(),
             params.expert_hot_s, sync_period,
-            params.expert_hyst, params.expert_dwell);
+            params.expert_hyst, params.expert_dwell, params.expert_pool_shared);
         // the GPU hot store is only supported on CUDA. On CPU it buys nothing
         // and on Vulkan it corrupts output (see manuallog section 12).
         // --expert-cache-force (or LLAMA_EXPERT_CACHE_FORCE) overrides the
@@ -5090,6 +5090,7 @@ llama_context_params llama_context_default_params() {
         /*.expert_cache_force         =*/ false,
         /*.expert_heat_defer          =*/ true,
         /*.expert_tier_max_tokens     =*/ 0,
+        /*.expert_pool_shared         =*/ false,
         /*.ctx_other                   =*/ nullptr,
         /*.n_ctx_max                   =*/ 0,
         /*.ctx_grow_factor             =*/ 1.5f,

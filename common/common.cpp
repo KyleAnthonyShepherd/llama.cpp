@@ -1831,6 +1831,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.expert_cache_force      = params.expert_cache_force;
     cparams.expert_heat_defer       = params.expert_heat_defer;
     cparams.expert_tier_max_tokens  = params.expert_tier_max_tokens;
+    cparams.expert_pool_shared      = params.expert_pool_shared;
     // note: params (and therefore params.kv_mean_center_path) is kept alive by the caller for
     // at least as long as it takes to call llama_init_from_model() with the returned cparams
     cparams.path_kv_mean_center = params.kv_mean_center_path.empty() ? nullptr : params.kv_mean_center_path.c_str();

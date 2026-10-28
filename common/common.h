@@ -606,6 +606,7 @@ struct common_params {
     bool  expert_cache_force      = false;  // bypass the CUDA-only hot store guard
     bool  expert_heat_defer       = true;   // count only the accepted prefix of a draft in the heatmap
     int   expert_tier_max_tokens  = 0;      // max batch the tiered path serves, 0 = built-in default
+    bool  expert_pool_shared      = false;  // --expert-pool shared: slots shared across the layers of a layout group
     bool    offline                    = false;
 
     int32_t ppl_stride      = 0;     // stride for perplexity calculations. If left at 0, the pre-existing approach will be used.

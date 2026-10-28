@@ -3081,6 +3081,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_EXPERT_DWELL"));
     add_opt(common_arg(
+        {"--expert-pool"}, "{layer,shared}",
+        "expert hot store slot layout: 'layer' gives every layer the same slots, 'shared' pools the slots of the layers "
+        "that share expert tensor types and shapes and gives them to the hottest (layer, expert) pairs (default: layer)",
+        [](common_params & params, const std::string & value) {
+            if (value == "layer") {
+                params.expert_pool_shared = false;
+            } else if (value == "shared") {
+                params.expert_pool_shared = true;
+            } else {
+                throw std::invalid_argument("invalid value");
+            }
+        }
+    ).set_env("LLAMA_ARG_EXPERT_POOL"));
+    add_opt(common_arg(
         {"-ehs", "--expert-hot-s"}, "N",
         "-1 = autofit slots from free VRAM, 0 = disabled, N = manual top-N slots. "
         "also raises the op-offload threshold to 128, see --op-offload-min-batch",

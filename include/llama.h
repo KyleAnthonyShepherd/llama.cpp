@@ -434,6 +434,7 @@ extern "C" {
         bool  expert_cache_force;      // bypass the CUDA-only hot store guard
         bool  expert_heat_defer;      // count only the accepted prefix of a draft in the heatmap
         int   expert_tier_max_tokens; // max batch the tiered path serves, 0 = built-in default
+        bool  expert_pool_shared;     // hot store slots shared across the layers of a layout group
 
         // a source/target/parent context
         // can be utilized in various ways, for example by sharing results or llama_memory between 2 contexts
