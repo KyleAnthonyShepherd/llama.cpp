@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
 
 int64_t llama_expert_read_sel_ids(const ggml_tensor * t, std::vector<int32_t> & ids) {
@@ -76,6 +77,20 @@ void llama_expert_heatmap::update_batch(const llama_expert_sel & sel, int64_t n_
 
     for (const auto & [il, ids] : sel.layers) {
         update(il, ids.data(), sel.n_expert_used, (int) n_tokens);
+    }
+
+    // diagnostic: LLAMA_EXPERT_SEL_DUMP=<file> appends every counted selection, for offline replay.
+    // record: i32 n_tokens, n_layers, n_expert_used, then per layer i32 il and n_tokens x n_expert_used ids
+    static FILE * dump = getenv("LLAMA_EXPERT_SEL_DUMP") ? fopen(getenv("LLAMA_EXPERT_SEL_DUMP"), "ab") : nullptr;
+    if (dump) {
+        const int32_t hdr[3] = { (int32_t) n_tokens, (int32_t) sel.layers.size(), (int32_t) sel.n_expert_used };
+        fwrite(hdr, sizeof(int32_t), 3, dump);
+        for (const auto & [il, ids] : sel.layers) {
+            const int32_t l = il;
+            fwrite(&l, sizeof(int32_t), 1, dump);
+            fwrite(ids.data(), sizeof(int32_t), (size_t) n_tokens * sel.n_expert_used, dump);
+        }
+        fflush(dump);
     }
 
     tokens_total += n_tokens;
