@@ -3094,7 +3094,7 @@ private:
 
         static const std::string grammar =
             "root ::= \"CAUSE: \" sent \"\\nSTUCK: \" (\"yes\" | \"no\") \"\\nNOTE: \" sent (\" \" sent)? (\" \" sent)? \"\\n\"?\n"
-            "sent ::= ([^\\n<>.!?] | \".\" [^ \\n<>.!?]){1,250} [.!?]\n";
+            "sent ::= ([^\\n<>.!?] | \".\" [0-9a-z]){1,250} [.!?]\n";
 
         // the verdict comes after the cause, so that it follows from what the model just wrote.
         // The sentences are counted by the grammar: a reflection that may ramble does ramble, and its
