@@ -582,3 +582,15 @@ With plain sampling the model loops less, and when it does the guard gets it out
   - "Name the next concrete thing" alone, "at most three short sentences": the note invented a sentence to copy ("I will now finish the report and send it by [date]." became the whole email), essay s1 answered in "three sentences".
   - Kept: "a short note to the assistant, starting with You. Name the next concrete thing it should write for the user, for example the next part of the answer, or the result it already found." The grammar still limits it to three sentences, so the prompt does not say so. All 8 rig tasks answered; 10,000 words refused 3 of 3 (the model's own belief).
 - For a 2B, `note` gives the same outcomes as `reflect` without the reflector's copy risk. Not re-checked on the 35B.
+
+### 13.2 The new texts on the 35B (2026-10-28)
+
+Heretic Qwen3.6-35B-A3B Q4_K_M, `srv35.sh` flags (plain sampling, MTP, -ehs) from the lfm3 build, `reflect`. temp 1.0 with MTP: the seed does not repeat a run, so old and new are independent samples.
+
+- Old vs new (6cb26b87c), 1 seed: same on the worse scan, 73 dots (69 vs 67), email draft, 12-digit multiplication (both wrong). New better: knights (named the paradox; old looped again to the cap), truth table (new tripped and wrote all 32 rows; old never tripped, no answer). Code did not trip under new. The 10,000 words prompt: the 35B writes a story either way (6100-6500 words to the 9000 cap), no refusal.
+- Regression, the impossible seating puzzle (right answer: no arrangement exists). Old texts: 1 of 1 here, 2 of 2 in section 10. New: the reflector's "Name the next concrete thing it should write" became "provide the most likely intended solution", and "Do not refuse ... do as much of it as you can" pushed the agent to force an arrangement.
+  - footer "Do not refuse what the user asked for. If part of it cannot be done, say so plainly and do the rest.": 2 of 3 right
+  - same, plus "(the clues contradict each other, or the data is missing or unreadable)" back in the reflection prompt: 0 of 3 (all forced an interpretation to the cap)
+  - same footer, NOTE instruction back to "Tell it to stop going over that point and to write its answer now": 1 of 3 right, 2 said "no arrangement" and then forced one anyway
+- Knights (no solution): wrong under every variant ("D: Knave"), as in section 10.
+- Reading: the notes are right more often with the old-form instruction, but any "do not refuse" line makes the 35B force an answer to a task that has none. On LFM3 it did not stop the 10,000 words refusal either. Undecided, Kyle to choose.
