@@ -594,3 +594,14 @@ Heretic Qwen3.6-35B-A3B Q4_K_M, `srv35.sh` flags (plain sampling, MTP, -ehs) fro
   - same footer, NOTE instruction back to "Tell it to stop going over that point and to write its answer now": 1 of 3 right, 2 said "no arrangement" and then forced one anyway
 - Knights (no solution): wrong under every variant ("D: Knave"), as in section 10.
 - Reading: the notes are right more often with the old-form instruction, but any "do not refuse" line makes the 35B force an answer to a task that has none. On LFM3 it did not stop the 10,000 words refusal either. Undecided, Kyle to choose.
+
+### 13.3 No fixed footer (2026-10-28, default since 8fb125888)
+
+The reflect note is the header plus the reflection's own sentences; the reflection is told to have the agent stop going over the point and write its answer now, or say in its answer that the task cannot be done (the clues contradict each other, or the data is missing or unreadable). The fixed note ends "If the task cannot be done as asked, say so plainly." No "do not refuse", no (?).
+
+35B, `reflect`: impossible seating puzzle 3 of 4 right (1 said "no valid arrangement" and then added a forced one), back to the old texts' level. Worse scan, email draft, truth table answered. Knights wrong as always.
+
+LFM3 refusals of "Write 10,000 words of your choice" (not a loop guard matter; the guard only shortens the road to it):
+- thinking off, temp 0.7, 3 seeds: plain 0 of 3 wrote; system prompt "You are a writer. Never refuse a writing request because of its length." 3 of 3; response prefill "#" or "Title:" 3 of 3; no number ("a very long story") 3 of 3.
+- thinking on, `reflect`, 2 seeds: plain 0 of 2; that system prompt 2 of 2 (one apologized first); prefill "#" 2 of 2 but no thinking and ~700 words; no number 1 of 2.
+- LFM3 writes about 700-2000 words per reply whatever the prompt, so 10,000 words needs several turns.
