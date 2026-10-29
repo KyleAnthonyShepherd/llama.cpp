@@ -5253,6 +5253,10 @@ private:
                             // a state or a checkpoint is useful when its pos_min is below this threshold
                             const auto pos_min_thold = std::max(0, n_swa > 0 ? pos_eval - n_swa + 2 : pos_eval);
 
+                            // a hybrid memory gives the recurrent state's position as its pos_min, so with SWA the test below
+                            // always fails. An append goes on from the head, where the SWA cache still holds its whole window
+                            const bool hybrid_append = n_swa > 0 && llama_model_is_hybrid(model_tgt) && has_new_tokens && n_past == slot.prompt.n_tokens();
+
                             if (n_past > 0 && n_past <= slot.prompt.n_tokens()) {
                                 const auto pos_min = llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), slot.id);
                                 if (pos_min == -1) {
@@ -5303,7 +5307,7 @@ private:
                                     SLT_WRN(slot, "%s\n", st1.str().c_str());
                                 }
 
-                                if (pos_min >= pos_min_thold) {
+                                if (pos_min >= pos_min_thold && !hybrid_append) {
                                     // search for a context checkpoint
                                     const auto it = std::find_if(
                                         slot.prompt.checkpoints.rbegin(),
