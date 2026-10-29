@@ -2874,7 +2874,7 @@ private:
         return guard_text(lg.note_text,
                 "LOOP GUARD: a monitor ended your last reply because it went in circles. {evidence}"
                 " Going over it again will not help. Write what the user asked for now, from what you already have."
-                " Do not refuse it: do as much of it as you can.",
+                " If the task cannot be done as asked, say so plainly.",
                 evidence);
     }
 
@@ -2884,7 +2884,7 @@ private:
     }
 
     static std::string guard_note_footer(const common_params_loop_guard & lg, const std::string & evidence) {
-        return guard_text(lg.note_footer, "Do not refuse what the user asked for: do as much of it as you can.", evidence);
+        return guard_text(lg.note_footer, "", evidence);
     }
 
     // feed one generated token to the loop guard
@@ -3115,9 +3115,9 @@ private:
             "You are not the assistant. Do not do the task yourself. Judge the reply above, and answer in exactly three lines:\n"
             "CAUSE: one sentence: what the reply keeps going back to.\n"
             "STUCK: yes if it goes over the same point again and again without a new result. no if the repeated text is real progress, like the rows of a long table or the next part of a long text.\n"
-            "NOTE: a short note to the assistant, starting with You. Name the next concrete thing it should write for the user, for example the next part of the answer, or the result it already found. "
+            "NOTE: a short note to the assistant, starting with You. Tell it to stop going over that point and to write its answer now. "
             "Do not give any value, reading or result of your own: if the assistant reached the same result more than once, tell it to keep that one. "
-            "If the task cannot be done as asked, tell it to do the part that can be done and to say what is missing, instead of forcing a result.",
+            "If the task cannot be done as asked (the clues contradict each other, or the data is missing or unreadable), tell it to say so in its answer instead of forcing a result.",
             g.evidence);
 
         const llama_tokens add = common_tokenize(vocab, guard_frame(slot, prompt, false), false, true);
@@ -3349,7 +3349,9 @@ private:
         if (looping == "yes" && !advice.empty()) {
             const auto & lg = slot.task->params.loop_guard;
 
-            note = guard_note_header(lg, g.evidence) + " " + advice + " " + guard_note_footer(lg, g.evidence);
+            const std::string footer = guard_note_footer(lg, g.evidence);
+
+            note = guard_note_header(lg, g.evidence) + " " + advice + (footer.empty() ? "" : " " + footer);
         }
 
         const llama_tokens add = common_tokenize(vocab, guard_frame(slot, note, guard_think_after(slot)), false, true);
