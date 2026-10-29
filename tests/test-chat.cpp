@@ -1423,6 +1423,11 @@ static void test_peg_parser(common_chat_templates *                      tmpls,
             reconstruction_msg.tool_calls[i].arguments = parsed_msg.tool_calls[i].arguments;
         }
         common_chat_templates_inputs reconstruction_inputs = tc.params;
+        if (reconstruction_inputs.continue_final_message != COMMON_CHAT_CONTINUATION_NONE && !reconstruction_inputs.messages.empty()) {
+            // the reply takes the place of the message it continues
+            reconstruction_inputs.messages.pop_back();
+            reconstruction_inputs.continue_final_message = COMMON_CHAT_CONTINUATION_NONE;
+        }
         reconstruction_inputs.messages.push_back(reconstruction_msg);
         reconstruction_inputs.add_generation_prompt = false;
 
@@ -5032,6 +5037,29 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
             .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
             .tools({ special_function_tool })
             .expect(message_assist_call_thoughts)
+            .run();
+
+        // Continuation tests: the prefill is framed as the template renders it, so the reply renders back to the prompt
+        tst.test("world!\nWhat's up?")
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .enable_thinking(true)
+            .messages({ message_user, message_assist_prefill_content })
+            .add_generation_prompt(false)
+            .continue_final_message(COMMON_CHAT_CONTINUATION_CONTENT)
+            .expect_reasoning("I'm thinking")
+            .expect_content("Hello, world!\nWhat's up?")
+            .expect_reconstruction()
+            .run();
+
+        tst.test(" thinking</think>Hello, world!\nWhat's up?")
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .enable_thinking(true)
+            .messages({ message_user, message_assist_prefill_reasoning })
+            .add_generation_prompt(false)
+            .continue_final_message(COMMON_CHAT_CONTINUATION_REASONING)
+            .expect_reasoning("I'm thinking")
+            .expect_content("Hello, world!\nWhat's up?")
+            .expect_reconstruction()
             .run();
     }
 

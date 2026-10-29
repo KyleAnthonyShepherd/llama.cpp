@@ -1,5 +1,54 @@
 #include "parsers.h"
 
+// the assistant turn of a continued message, as the template renders it (its own whitespace around <think>),
+// so the next request renders the reply back to the same tokens. nullopt if the probe render does not fit
+static std::optional<std::string> render_continuation(const common_chat_template &          tmpl,
+                                                      const autoparser::generation_params & inputs,
+                                                      const std::string &                   gen_prefix) {
+    static const std::string mark_r = "CONTINUE_PROBE_REASONING";
+    static const std::string mark_c = "CONTINUE_PROBE_CONTENT";
+
+    const auto & msg           = inputs.continue_msg;
+    const bool   has_reasoning = !msg.reasoning_content.empty();
+
+    const json probe = json::array({
+        json{ { "role", "user" }, { "content", "CONTINUE_PROBE_USER" } },
+        json{ { "role", "assistant" }, { "content", mark_c }, { "reasoning_content", has_reasoning ? mark_r : "" } },
+    });
+
+    std::string text;
+    try {
+        text = common_chat_template_direct_apply_impl(tmpl, inputs, probe);
+    } catch (const std::exception &) {
+        return std::nullopt;
+    }
+
+    const size_t pos_turn = text.rfind(gen_prefix);
+    if (pos_turn == std::string::npos) {
+        return std::nullopt;
+    }
+    std::string turn = text.substr(pos_turn + gen_prefix.size());
+
+    const size_t pos_r = has_reasoning ? turn.find(mark_r) : 0;
+    const size_t pos_c = turn.find(mark_c);
+    if (pos_c == std::string::npos || pos_r == std::string::npos || pos_r > pos_c) {
+        return std::nullopt;
+    }
+
+    if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_REASONING) {
+        if (!has_reasoning) {
+            return std::nullopt;
+        }
+        return turn.substr(0, pos_r) + msg.reasoning_content;
+    }
+
+    turn.resize(pos_c);
+    if (has_reasoning) {
+        turn.replace(pos_r, mark_r.size(), msg.reasoning_content);
+    }
+    return turn + msg.render_content();
+}
+
 common_chat_params common_chat_params_init_qwen3_coder(const common_chat_template &          tmpl,
                                                               const autoparser::generation_params & inputs) {
     common_chat_params data;
@@ -45,15 +94,21 @@ common_chat_params common_chat_params_init_qwen3_coder(const common_chat_templat
     if (inputs.has_continuation()) {
         const auto & msg = inputs.continue_msg;
 
+        const auto rendered = supports_reasoning ? render_continuation(tmpl, inputs, GEN_PREFIX) : std::nullopt;
+
         data.generation_prompt = GEN_PREFIX;
-        if (supports_reasoning) {
-            data.generation_prompt += "<think>\n" + msg.reasoning_content;
-            if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_CONTENT) {
-                data.generation_prompt += "\n</think>\n\n";
+        if (rendered) {
+            data.generation_prompt += *rendered;
+        } else {
+            if (supports_reasoning) {
+                data.generation_prompt += "<think>\n" + msg.reasoning_content;
+                if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_CONTENT) {
+                    data.generation_prompt += "\n</think>\n\n";
+                }
             }
-        }
-        if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_CONTENT) {
-            data.generation_prompt += msg.render_content();
+            if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_CONTENT) {
+                data.generation_prompt += msg.render_content();
+            }
         }
 
         data.prompt += data.generation_prompt;
