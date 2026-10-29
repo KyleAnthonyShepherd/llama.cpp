@@ -6,8 +6,6 @@
     - with --reasoning-preserve (on by default in this fork) the reasoning of earlier turns stays, so follow-ups reuse the cache
     LFM3 is hybrid with sliding window attention layers. The server reuses the cache for an append (the hop after a note,
     and follow-ups) without the SWA pos_min test; a server without that rule needs --swa-full.
-    A thinking prefill (continue_final_message) is framed by the Qwen3-Coder parser as "<think>\n...", which this template
-    does not render, so the request after a prefilled reply processes that reply again.
     Use: --loop-guard note --chat-template-file models/templates/LFM3-VL-2B-loop-guard.jinja -#}
 {{- bos_token -}}
 {%- set preserve_thinking = preserve_thinking | default(false) -%}
