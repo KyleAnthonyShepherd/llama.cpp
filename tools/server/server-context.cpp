@@ -2873,8 +2873,8 @@ private:
     static std::string guard_note_text(const common_params_loop_guard & lg, const std::string & evidence) {
         return guard_text(lg.note_text,
                 "LOOP GUARD: a monitor ended your last reply because it went in circles. {evidence}"
-                " Going over it again will not help. Do not check it again."
-                " Now write what the user asked for, in full: the answer, the text or the code. Use what you already have, and mark any value you are unsure of with (?).",
+                " Going over it again will not help. Write what the user asked for now, from what you already have."
+                " Do not refuse it: do as much of it as you can.",
                 evidence);
     }
 
@@ -2884,7 +2884,7 @@ private:
     }
 
     static std::string guard_note_footer(const common_params_loop_guard & lg, const std::string & evidence) {
-        return guard_text(lg.note_footer, "Do not check it again. Now write what the user asked for, in full, and mark any value you are unsure of with (?).", evidence);
+        return guard_text(lg.note_footer, "Do not refuse what the user asked for: do as much of it as you can.", evidence);
     }
 
     // feed one generated token to the loop guard
@@ -3115,8 +3115,8 @@ private:
             "You are not the assistant. Do not do the task yourself. Judge the reply above, and answer in exactly three lines:\n"
             "CAUSE: one sentence: what the reply keeps going back to.\n"
             "STUCK: yes if it goes over the same point again and again without a new result. no if the repeated text is real progress, like the rows of a long table or the next part of a long text.\n"
-            "NOTE: at most three short sentences to the assistant, starting with You. Tell it to stop going over that point and to write what the user asked for now. "
-            "Do not give any value, reading or result of your own: if the assistant reached the same result more than once, tell it to keep that one, otherwise tell it to mark the value as unclear. "
+            "NOTE: a short note to the assistant, starting with You. Name the next concrete thing it should write for the user, for example the next part of the answer, or the result it already found. "
+            "Do not give any value, reading or result of your own: if the assistant reached the same result more than once, tell it to keep that one. "
             "If the task cannot be done as asked, tell it to do the part that can be done and to say what is missing, instead of forcing a result.",
             g.evidence);
 
@@ -3142,6 +3142,7 @@ private:
         next.params.repetition_stop  = 96;
 
         next.params.sampling            = params_base.sampling;
+        next.params.sampling.seed       = slot.task->params.sampling.seed;
         next.params.sampling.temp       = lg.reflect_temp;
         next.params.sampling.n_probs    = 0;
 
