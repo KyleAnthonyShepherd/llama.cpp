@@ -560,3 +560,13 @@ With plain sampling the model loops less, and when it does the guard gets it out
 - With a loop guard template cut from it as it is: all 12 runs tripped (15 reflections, on point), but every follow-up missed the cache from the start of the reply (prompt_n 275-3048), because the new user message makes the template drop the reply's reasoning. That is the stock behavior on every turn, guard or not.
 - With `Qwen3.6-35B-A3B-unsloth-loop-guard.jinja`, which keeps the reasoning under `--reasoning-preserve`: 8 runs, 6 ended with an answer (2 at the 6000-token cap, one after two notes), all 8 follow-ups reused the cache (prompt_n 22-24). So the unsloth Qwen3.6 loop guard template is the one for unsloth's Qwen3.5 GGUFs too; no separate file.
 - The 4B escapes less often than the 35B: after the note it sometimes loops again in the answer (a second trip in content in several runs).
+
+## 13. LFM3-VL-2B, task-neutral texts, 2026-10-28
+
+`LiquidAI/LFM3-VL-2B-GGUF` QAD-Q4_0, branch `lfm3`, `models/templates/LFM3-VL-2B-loop-guard.jinja`, LiquidAI sampling (temp 0.1, top-k 50, repeat penalty 1.1).
+
+- Server fixes this model needed: the hybrid SWA cache reuse on an append (`d048cadf2`; before it every hop failed with "not an append"), and the reflection grammar (`f56153b9f`): LFM3 ended sentences with U+202F or no space, CAUSE took the STUCK and NOTE lines, and every reflection fell back to the fixed note.
+- "Write 10,000 words of your choice" gave "I'm sorry, but I can't ...". The refusal is the model's own: guard off it refused 1 of 3, thought for all 16000 tokens 1 of 3; thinking off it refused 3 of 3 at once. The guard cut a real circle (2000-3300 thinking tokens on "is it feasible", 6% new words).
+- The note, footer and reflection prompt spoke of a final answer, of what was worked out, of the image and the data. Now task-neutral: "Now write what the user asked for, in full: the answer, the text or the code." The "write now" order stays (9.3: "continue the task" was read as "keep checking"). The reflection's NOTE must start with "You": the 2B wrote it in the first person ("I will stop ...").
+- Old vs new texts on the same binary, 2 seeds: boring log tables the same; count_chars a wash (old: a fast wrong count, new: still counting at the cap; true count 77); essay, story, email draft all answered under both, healthy essays and drafts tripped in thinking under both (LFM3 overthinks). Reflect, 10,000 words: old 0 of 3 wrote at once, new 1 of 3 (1 apologized then wrote, 1 refused).
+- Not checked on the 35B.

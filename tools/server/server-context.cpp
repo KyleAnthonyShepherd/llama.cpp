@@ -2872,10 +2872,19 @@ private:
     // the note of the "note" mode, and the fallback of the "reflect" mode
     static std::string guard_note_text(const common_params_loop_guard & lg, const std::string & evidence) {
         return guard_text(lg.note_text,
-                "LOOP GUARD: your last reply was stopped because it went in circles. {evidence}"
-                " Going over it again will not give a better answer. Do not examine it again."
-                " Write your final answer now from what you already worked out. Where you are unsure, give your best reading and mark it with (?).",
+                "LOOP GUARD: a monitor ended your last reply because it went in circles. {evidence}"
+                " Going over it again will not help. Do not check it again."
+                " Now write what the user asked for, in full: the answer, the text or the code. Use what you already have, and mark any value you are unsure of with (?).",
                 evidence);
+    }
+
+    // the text around the reflection's advice in the note of the "reflect" mode
+    static std::string guard_note_header(const common_params_loop_guard & lg, const std::string & evidence) {
+        return guard_text(lg.note_header, "LOOP GUARD: a monitor ended your last reply because it went in circles.", evidence);
+    }
+
+    static std::string guard_note_footer(const common_params_loop_guard & lg, const std::string & evidence) {
+        return guard_text(lg.note_footer, "Do not check it again. Now write what the user asked for, in full, and mark any value you are unsure of with (?).", evidence);
     }
 
     // feed one generated token to the loop guard
@@ -3093,7 +3102,7 @@ private:
         auto & g = slot.guard;
 
         static const std::string grammar =
-            "root ::= \"CAUSE: \" sent \"\\nSTUCK: \" (\"yes\" | \"no\") \"\\nNOTE: \" sent (\" \" sent)? (\" \" sent)? \"\\n\"?\n"
+            "root ::= \"CAUSE: \" sent \"\\nSTUCK: \" (\"yes\" | \"no\") \"\\nNOTE: You \" sent (\" \" sent)? (\" \" sent)? \"\\n\"?\n"
             "sent ::= ([^\\n<>.!?] | \".\" [0-9a-z]){1,250} [.!?]\n";
 
         // the verdict comes after the cause, so that it follows from what the model just wrote.
@@ -3103,12 +3112,12 @@ private:
 
         const std::string prompt = guard_text(lg.reflect_prompt,
             "LOOP GUARD REFLECTION. A monitor stopped the assistant's reply above. {evidence}\n"
-            "You are not the assistant. Do not work on the task, and do not look at the image or the data again. Judge the reply above, and answer in exactly three lines:\n"
-            "CAUSE: one sentence: which question the reply keeps going back to.\n"
-            "STUCK: yes if it goes over that question again and again without a new result. no if the repeated text is real progress, like the rows of a long table.\n"
-            "NOTE: at most three short sentences to the assistant. Tell it to stop examining that question and to write its final answer now. "
-            "Do not give any value, reading or result of your own: if the assistant reached the same answer more than once, tell it to keep that one, otherwise tell it to mark the value as unclear. "
-            "If the task cannot be done as asked (the clues contradict each other, or the data is missing or unreadable), tell it to say so in its answer instead of forcing a result.",
+            "You are not the assistant. Do not do the task yourself. Judge the reply above, and answer in exactly three lines:\n"
+            "CAUSE: one sentence: what the reply keeps going back to.\n"
+            "STUCK: yes if it goes over the same point again and again without a new result. no if the repeated text is real progress, like the rows of a long table or the next part of a long text.\n"
+            "NOTE: at most three short sentences to the assistant, starting with You. Tell it to stop going over that point and to write what the user asked for now. "
+            "Do not give any value, reading or result of your own: if the assistant reached the same result more than once, tell it to keep that one, otherwise tell it to mark the value as unclear. "
+            "If the task cannot be done as asked, tell it to do the part that can be done and to say what is missing, instead of forcing a result.",
             g.evidence);
 
         const llama_tokens add = common_tokenize(vocab, guard_frame(slot, prompt, false), false, true);
@@ -3286,7 +3295,7 @@ private:
 
         // the reflection tends to copy sentences of the footer, from an earlier note or from its own prompt. The footer is added below
         {
-            const std::string footer = guard_text(slot.task->params.loop_guard.note_footer, "Do not examine it again. Write your final answer now, and mark any value you are unsure of with (?).", g.evidence);
+            const std::string footer = guard_note_footer(slot.task->params.loop_guard, g.evidence);
 
             size_t cut = std::string::npos;
             for (const auto & sentence : string_split<std::string>(footer, '.')) {
@@ -3339,8 +3348,7 @@ private:
         if (looping == "yes" && !advice.empty()) {
             const auto & lg = slot.task->params.loop_guard;
 
-            note = guard_text(lg.note_header, "LOOP GUARD: your last reply was stopped because it went in circles.", g.evidence) + " " + advice + " " +
-                   guard_text(lg.note_footer, "Do not examine it again. Write your final answer now, and mark any value you are unsure of with (?).", g.evidence);
+            note = guard_note_header(lg, g.evidence) + " " + advice + " " + guard_note_footer(lg, g.evidence);
         }
 
         const llama_tokens add = common_tokenize(vocab, guard_frame(slot, note, guard_think_after(slot)), false, true);
