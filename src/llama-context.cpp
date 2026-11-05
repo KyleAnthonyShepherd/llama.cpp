@@ -323,7 +323,7 @@ llama_context::llama_context(
 
     // with causal attention, the batch size is limited by the context size. Automatic growth makes room for a
     // batch in decode(), so then the limit is the growth bound
-    const uint32_t n_ctx_batch = params.n_ctx_max > cparams.n_ctx && params.n_seq_max == 1 ? params.n_ctx_max : cparams.n_ctx;
+    const uint32_t n_ctx_batch = params.n_ctx_max > cparams.n_ctx && (params.n_seq_max == 1 || params.kv_unified) ? params.n_ctx_max : cparams.n_ctx;
     cparams.n_batch = cparams.causal_attn ? std::min(n_ctx_batch, params.n_batch) : params.n_batch;
 
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
@@ -2881,10 +2881,12 @@ int llama_context::decode(const llama_batch & batch_inp) {
                     // llama_kv_cache::resize()); if unsupported, memory->resize() inside
                     // set_n_ctx() simply fails and this falls through to the existing error
                     // path below, so this is safe to attempt unconditionally when enabled.
-                    if (!did_grow && cparams.n_seq_max == 1 && cparams.n_ctx_max > cparams.n_ctx) {
+                    // a unified cache is one stream for all sequences, so it resizes the same way
+                    if (!did_grow && (cparams.n_seq_max == 1 || cparams.kv_unified) && cparams.n_ctx_max > cparams.n_ctx) {
                         did_grow = true;
 
-                        const llama_pos pos_max  = memory->seq_pos_max(0); // -1 if seq 0 has no cells yet
+                        // several sequences share the pool: it is full, so it needs at least room for this batch
+                        const llama_pos pos_max  = cparams.n_seq_max == 1 ? memory->seq_pos_max(0) : (llama_pos) cparams.n_ctx - 1;
                         const uint32_t  n_needed = (uint32_t) (pos_max + 1) + balloc->get_n_tokens();
 
                         const uint32_t n_target = std::min(cparams.n_ctx_max,

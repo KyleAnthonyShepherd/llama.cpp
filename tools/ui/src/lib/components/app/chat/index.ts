@@ -273,6 +273,12 @@ export { default as ChatFormCurrentWorkingDirectory } from './ChatForm/ChatFormC
 export { default as ChatFormHat } from './ChatForm/ChatFormHat/ChatFormHat.svelte';
 
 /**
+ * Hydra mode of the chat form: a chip that turns it on, then the head count and one
+ * tail box per head. The message box is the last message of the shared root.
+ */
+export { default as ChatFormHydra } from './ChatForm/ChatFormHydra/ChatFormHydra.svelte';
+
+/**
  * **ChatFormPickerMcpPrompts** - MCP prompt selection interface
  *
  * Floating picker for browsing and selecting MCP Server Prompts.

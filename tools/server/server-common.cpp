@@ -1244,7 +1244,8 @@ static void handle_media(
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
     const server_chat_params & opt,
-    std::vector<raw_buffer> & out_files)
+    std::vector<raw_buffer> & out_files,
+    bool prefill_assistant)
 {
     json llama_params;
 
@@ -1390,7 +1391,7 @@ json oaicompat_chat_params_parse(
     inputs.continue_final_message = body.contains("continue_final_message") ?
         common_chat_continuation_parse(body.at("continue_final_message")) :
         COMMON_CHAT_CONTINUATION_NONE;
-    if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_NONE && opt.prefill_assistant
+    if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_NONE && opt.prefill_assistant && prefill_assistant
         && !inputs.messages.empty() && inputs.messages.back().role == "assistant") {
         if (inputs.messages.size() >= 2 && inputs.messages[inputs.messages.size() - 2].role == "assistant") {
             throw std::invalid_argument("Cannot have 2 or more assistant messages at the end of the list.");

@@ -140,6 +140,15 @@ export interface DatabaseMessage {
 	extra?: DatabaseMessageExtra[];
 	timings?: ChatMessageTimings;
 	model?: string;
+	/** one head of a hydra request: set on the head's tail (user) message and on its reply */
+	hydra?: DatabaseMessageHydra;
+}
+
+/** The heads of one hydra request are sibling tail messages under the same parent, with the same group */
+export interface DatabaseMessageHydra {
+	group: string;
+	index: number;
+	count: number;
 }
 
 export type ExportedConversation = {

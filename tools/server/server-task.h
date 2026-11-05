@@ -178,6 +178,10 @@ struct server_task {
     std::string             cli_prompt;
     std::vector<raw_buffer> cli_files;
 
+    // hydra: the parent is the root (prefill only), each child is a head that forks from the root and
+    // prefills its own tail. Heads get the result indices 0..N-1, the root gets N (see PLAN-hydra.md)
+    bool hydra = false;
+
     server_task_type type;
 
     // used by SERVER_TASK_TYPE_SLOT_SAVE, SERVER_TASK_TYPE_SLOT_RESTORE, SERVER_TASK_TYPE_SLOT_ERASE,

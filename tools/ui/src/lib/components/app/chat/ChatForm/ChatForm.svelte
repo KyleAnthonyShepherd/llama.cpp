@@ -5,6 +5,7 @@
 		ChatFormActions,
 		ChatFormCurrentWorkingDirectory,
 		ChatFormHat,
+		ChatFormHydra,
 		ChatFormInput,
 		ChatFormInputFileInputInvisible,
 		ChatFormMcpResourcesList,
@@ -31,6 +32,7 @@
 	import {
 		chatStore,
 		conversationsStore,
+		hydraStore,
 		mcpStore,
 		modelsStore,
 		serverStore,
@@ -225,7 +227,12 @@
 	let hasAttachments = $derived(
 		(attachments && attachments.length > 0) || (uploadedFiles && uploadedFiles.length > 0)
 	);
-	let canSubmit = $derived(value.trim().length > 0 || hasAttachments);
+	// a hydra can go without a root message when the chat already has one
+	let canSubmit = $derived(
+		value.trim().length > 0 ||
+			hasAttachments ||
+			(hydraStore.ready && conversationsStore.activeMessages.some((m) => m.type !== 'root'))
+	);
 
 	// Caret offset restored after a renderer swap. Callers that mutate
 	// `value` themselves (e.g. the mention picker) pin the target offset
@@ -710,6 +717,8 @@
 		{/if}
 
 		<ChatFormHat {disabled} />
+
+		<ChatFormHydra {disabled} />
 	</div>
 </form>
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ChatMessageHydraGroup from './ChatMessageHydraGroup.svelte';
 	import LazyChatMessage from './LazyChatMessage.svelte';
 	import { ChatMessageUserPending } from '$lib/components/app';
 	import { MessageRole } from '$lib/enums';
@@ -150,6 +151,7 @@
 			isLastUserMessage: boolean;
 			nextAssistantMessage: DatabaseMessage | null;
 			siblingInfo: ChatMessageSiblingInfo;
+			isHydraGroup?: boolean;
 		}> = [];
 
 		for (let i = 0; i < filteredMessages.length; i++) {
@@ -157,6 +159,24 @@
 
 			// Skip tool messages - they're grouped with preceding assistant
 			if (msg.role === MessageRole.TOOL) continue;
+
+			// a hydra head's tail and reply show as one group with the other heads
+			if (msg.role === MessageRole.USER && msg.hydra) {
+				// the head's chain (reply, loop guard note, reply, ...) shows inside the group
+				while (filteredMessages[i + 1]?.hydra?.group === msg.hydra.group) i++;
+
+				result.push({
+					isHydraGroup: true,
+					isLastAssistantMessage: false,
+					isLastUserMessage: false,
+					message: msg,
+					nextAssistantMessage: null,
+					siblingInfo: { currentIndex: 0, message: msg, siblingIds: [msg.id], totalSiblings: 1 },
+					toolMessages: []
+				});
+
+				continue;
+			}
 
 			const toolMessages: DatabaseMessage[] = [];
 
@@ -225,6 +245,9 @@
 			if (result[i].message.role !== MessageRole.USER) continue;
 
 			for (let j = i + 1; j < result.length; j++) {
+				// the replies of a hydra group are not this message's reply
+				if (result[j].isHydraGroup) break;
+
 				if (result[j].message.role === MessageRole.ASSISTANT) {
 					result[i].nextAssistantMessage = result[j].message;
 
@@ -241,17 +264,21 @@
      navigation into a chat route. -->
 {#key conversationsStore.activeConversation?.id ?? 'new'}
 	<div class="chat-messages">
-		{#each displayMessages as { isLastAssistantMessage, isLastUserMessage, message, nextAssistantMessage, siblingInfo, toolMessages } (message.id)}
-			<LazyChatMessage
-				{chatActions}
-				class="mx-auto mt-12 w-full max-w-3xl"
-				{isLastAssistantMessage}
-				{isLastUserMessage}
-				{message}
-				{nextAssistantMessage}
-				{siblingInfo}
-				{toolMessages}
-			/>
+		{#each displayMessages as { isHydraGroup, isLastAssistantMessage, isLastUserMessage, message, nextAssistantMessage, siblingInfo, toolMessages } (message.id)}
+			{#if isHydraGroup}
+				<ChatMessageHydraGroup class="mx-auto mt-12 w-full max-w-6xl" {message} />
+			{:else}
+				<LazyChatMessage
+					{chatActions}
+					class="mx-auto mt-12 w-full max-w-3xl"
+					{isLastAssistantMessage}
+					{isLastUserMessage}
+					{message}
+					{nextAssistantMessage}
+					{siblingInfo}
+					{toolMessages}
+				/>
+			{/if}
 		{/each}
 
 		{#if conversationsStore.activeConversation && agenticStore.getPendingSteeringMessageContent(conversationsStore.activeConversation!.id)}

@@ -83,6 +83,7 @@ export type {
 	DatabaseMessageExtraTextFile,
 	DatabaseMessageExtra,
 	DatabaseMessage,
+	DatabaseMessageHydra,
 	ExportedConversation,
 	ExportedConversations
 } from './database';

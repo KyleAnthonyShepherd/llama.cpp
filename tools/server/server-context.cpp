@@ -633,6 +633,10 @@ struct server_slot_guard {
 
         // the whole state of the slot in host memory. Nothing evicts it, see PLAN-loop-guard.md section 3.6
         server_prompt_cache_state state;
+
+        // light park (hydra head): `state` holds only what the reflection overwrites (recurrent state and
+        // SWA window), the global KV cells before the park position stay in place, shared with the other heads
+        bool light = false;
     } parked;
 
     std::ofstream trace;
@@ -1803,9 +1807,9 @@ private:
         params_base.n_outputs_max = output_limits.total;
         params_base.n_outputs_max_per_seq = output_limits.per_seq;
 
-        if (params_base.n_ctx_max != 0 && params_base.n_parallel != 1) {
-            SRV_ERR("--ctx-max requires --parallel 1 (automatic KV cache growth is not "
-                    "supported with multiple slots); got --parallel %d\n", params_base.n_parallel);
+        // a unified KV cache is one pool for all slots, and it grows as one
+        if (params_base.n_ctx_max != 0 && params_base.n_parallel != 1 && !params_base.kv_unified) {
+            SRV_ERR("--ctx-max with several slots needs a unified KV cache (-kvu); got --parallel %d\n", params_base.n_parallel);
             return false;
         }
 
@@ -2549,7 +2553,10 @@ private:
                 SLT_TRC(slot, " - checking sim = %.3f (%zu/%zu) > %.3f\n", f_sim_cur, lcp_len, task.tokens.size(), slot_prompt_similarity);
 
                 // select the current slot if the criteria match
-                if (f_sim_cur > f_sim_best && f_sim_cur > slot_prompt_similarity) {
+                // on a tie, take the slot with fewer tokens past the common prefix: a recurrent memory cannot roll back
+                // without a checkpoint (e.g. the root slot of a hydra vs the head slots that hold root + tail)
+                if (f_sim_cur > slot_prompt_similarity &&
+                        (f_sim_cur > f_sim_best || (f_sim_cur == f_sim_best && ret != nullptr && tokens.size() < ret->prompt.tokens.size()))) {
                     f_sim_best = f_sim_cur;
 
                     ret = &slot;
@@ -2837,11 +2844,12 @@ private:
 
         slot.guard.mon.configure(lg.n_gram, lg.n_window, lg.n_min, lg.n_line_min, lg.n_words, lg.n_words_min);
 
-        // a note needs chat turns, a client that can hold them, and a template that renders them
+        // a note needs chat turns, a client that can hold them, and a template that renders them.
+        // A hydra head is a branch of its own for the client, unlike the copies of an n > 1 request
         slot.guard.intervene =
             lg.mode >= COMMON_LOOP_GUARD_NOTE && guard_tmpl.ok &&
             slot.task->params.res_type == TASK_RESPONSE_TYPE_OAI_CHAT &&
-            slot.task->params.n_cmpl == 1 && !slot.task->is_child();
+            (slot.task->hydra || (slot.task->params.n_cmpl == 1 && !slot.task->is_child()));
 
         if (lg.mode >= COMMON_LOOP_GUARD_NOTE && !slot.guard.intervene) {
             SLT_WRN(slot, "%s", "loop guard: this request is only watched (needs /v1/chat/completions, n = 1, and a chat template that passed the startup check)\n");
@@ -3039,6 +3047,10 @@ private:
         next.id_slot = slot.task->id_slot;
         next.params  = slot.task->params;
 
+        // a child (n_cmpl or hydra head) stays one
+        next.id_parent = slot.task->id_parent;
+        next.hydra     = slot.task->hydra;
+
         // the hop must reuse the whole slot
         next.params.cache_prompt = true;
 
@@ -3131,9 +3143,11 @@ private:
 
         server_task next(SERVER_TASK_TYPE_COMPLETION);
 
-        next.id      = slot.task->id;
-        next.index   = slot.task->index;
-        next.id_slot = slot.task->id_slot;
+        next.id        = slot.task->id;
+        next.index     = slot.task->index;
+        next.id_slot   = slot.task->id_slot;
+        next.id_parent = slot.task->id_parent;
+        next.hydra     = slot.task->hydra;
 
         // response formatting of the request, so that the events of the reflection reach its stream
         next.params.res_type          = slot.task->params.res_type;
@@ -3175,15 +3189,21 @@ private:
 
         const int64_t t_start = ggml_time_us();
 
+        // a hydra head shares the root's cells with the other heads: a full park would give it its own copy
+        // of the root on restore. The reflection only appends, so the head's cells stay put and only the
+        // state it overwrites is parked
+        g.parked.light = slot.task->hydra && params_base.kv_unified;
+
         std::string err;
-        if (!slot_state_capture(slot, g.parked.state, err)) {
+        if (!(g.parked.light ? guard_park_light(slot, g.parked.state, err) : slot_state_capture(slot, g.parked.state, err))) {
             SLT_ERR(slot, "loop guard: failed to park the request: %s\n", err.c_str());
             g.parked.state = {};
             return false;
         }
 
-        SLT_INF(slot, "loop guard: parked %d tokens in host memory, %.3f MiB in %.1f ms\n",
-                slot.prompt.n_tokens(), g.parked.state.size() / (1024.0 * 1024.0), (ggml_time_us() - t_start) / 1e3);
+        SLT_INF(slot, "loop guard: parked %d tokens in host memory%s, %.3f MiB in %.1f ms\n",
+                slot.prompt.n_tokens(), g.parked.light ? " (recurrent and SWA state, the KV cells stay)" : "",
+                g.parked.state.size() / (1024.0 * 1024.0), (ggml_time_us() - t_start) / 1e3);
 
         if (slot.task->params.stream) {
             send_guard_event(slot, json {
@@ -3229,6 +3249,51 @@ private:
         return true;
     }
 
+    // light park: the partial state (recurrent state, SWA window) of the slot and its tokens. The global KV
+    // cells are not copied: the reflection appends after them and they are cut back by position on unpark
+    bool guard_park_light(const server_slot & slot, server_prompt_cache_state & state, std::string & err) const {
+        const size_t size = llama_state_seq_get_size_ext(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+
+        try {
+            state.data.main.resize(size);
+            state.data.drft.clear();
+        } catch (const std::bad_alloc & e) {
+            err = string_format("failed to allocate %.3f MiB for the parked state: %s", size / (1024.0 * 1024.0), e.what());
+
+            return false;
+        }
+
+        llama_state_seq_get_data_ext(ctx_tgt, state.data.main.data(), size, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+
+        state.prompt = slot.prompt.clone();
+
+        return true;
+    }
+
+    // undo the reflection: the partial state back first (the recurrent state then ends before the park
+    // position), then drop every cell from the park position on, i.e. the waiting token and the reflection
+    bool guard_unpark_light(server_slot & slot, const server_prompt_cache_state & state, std::string & err) {
+        const auto & data = state.data.main;
+
+        if (llama_state_seq_set_data_ext(ctx_tgt, data.data(), data.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) != data.size()) {
+            slot.prompt.clear();
+            err = "failed to restore the recurrent and SWA state";
+
+            return false;
+        }
+
+        if (!llama_memory_seq_rm(llama_get_memory(ctx_tgt), slot.id, state.prompt.tokens.pos_next(), -1)) {
+            slot.prompt.clear();
+            err = "failed to remove the reflection from the KV cache";
+
+            return false;
+        }
+
+        slot.prompt = state.prompt.clone();
+
+        return true;
+    }
+
     // put the parked context back into the slot. true if the slot holds exactly what was parked
     bool guard_restore_parked(server_slot & slot) {
         auto & g = slot.guard;
@@ -3237,7 +3302,8 @@ private:
         const int64_t t_start = ggml_time_us();
 
         std::string err;
-        const bool ok = slot_state_restore(slot, g.parked.state, err) && slot.prompt.n_tokens() == n_park;
+        const bool restored = g.parked.light ? guard_unpark_light(slot, g.parked.state, err) : slot_state_restore(slot, g.parked.state, err);
+        const bool ok = restored && slot.prompt.n_tokens() == n_park;
 
         if (ok) {
             SLT_INF(slot, "loop guard: restored the parked context, %d tokens in %.1f ms\n", n_park, (ggml_time_us() - t_start) / 1e3);
@@ -5823,7 +5889,15 @@ private:
                     GGML_ASSERT(child->state == SLOT_STATE_WAIT_OTHER);
 
                     slot.copy_state_to(*child);
-                    child->state = SLOT_STATE_DONE_PROMPT;
+
+                    if (child->task->hydra) {
+                        // a hydra head holds the root now; the prompt path reuses it and prefills only the tail
+                        child->i_batch = -1;
+                        child->stats   = server_slot_stats();
+                        child->state   = SLOT_STATE_STARTED;
+                    } else {
+                        child->state = SLOT_STATE_DONE_PROMPT;
+                    }
                 }
             }
         }
@@ -6324,6 +6398,13 @@ private:
             return;
         }
 
+        // the pool of a unified cache also holds the other running slots (e.g. the heads of a hydra)
+        for (const auto & other : slots) {
+            if (other.id != slot.id && other.is_processing()) {
+                return;
+            }
+        }
+
         const int32_t n_ctx_cur = llama_n_ctx_seq(ctx_tgt);
 
         // the same target the grow path uses, so the two can never disagree and oscillate.
@@ -6601,6 +6682,8 @@ server_context_meta server_context::get_meta() const {
         /* model_n_params         */ llama_model_n_params(impl->model_tgt),
         /* model_size             */ llama_model_size(impl->model_tgt),
         /* model_ftype            */ ftype_name,
+
+        /* hydra_max_heads        */ impl->spec ? 0 : std::max(0, impl->params_base.n_parallel - 1),
     };
 }
 
@@ -6725,7 +6808,32 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         return res;
     }
 
-    bool stream = json_value(data, "stream", false);
+    return handle_results(std::move(res), req, json_value(data, "stream", false), res_type, sse_ping_interval);
+}
+
+// the hydra root is not a choice: only its prompt progress goes out, as a "hydra" chunk without choices
+static json hydra_root_chunk(server_task_result * result) {
+    auto * partial = dynamic_cast<server_task_result_cmpl_partial *>(result);
+    if (partial == nullptr || !partial->is_progress) {
+        return nullptr;
+    }
+
+    return json {
+        {"object",  "chat.completion.chunk"},
+        {"choices", json::array()},
+        {"hydra",   {{"root_progress", partial->progress.to_json()}}},
+    };
+}
+
+// send the results of the posted tasks. hydra_root_index >= 0: the result with this index is the hydra root, hide it
+std::unique_ptr<server_res_generator> server_routes::handle_results(
+            std::unique_ptr<server_res_generator> res,
+            const server_http_req & req,
+            bool stream,
+            task_response_type res_type,
+            int32_t sse_ping_interval,
+            int hydra_root_index) {
+    auto & rd = res->rd;
 
     if (!stream) {
         // non-stream, wait for the results
@@ -6739,6 +6847,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             json arr = json::array();
             for (auto & res : all_results.results) {
                 GGML_ASSERT(dynamic_cast<server_task_result_cmpl_final*>(res.get()) != nullptr);
+                if ((int) res->index == hydra_root_index) {
+                    continue;
+                }
                 arr.push_back(res->to_json());
             }
             GGML_ASSERT(!arr.empty() && "empty results");
@@ -6779,7 +6890,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
         // next responses are streamed
         // to be sent immediately
-        json first_result_json = first_result->to_json();
+        json first_result_json = (int) first_result->index == hydra_root_index
+            ? hydra_root_chunk(first_result.get())
+            : first_result->to_json();
         if (first_result_json == nullptr) {
             res->data = ""; // simply send HTTP headers and status code
         } else if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
@@ -6791,7 +6904,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
         res->status = 200;
         res->content_type = "text/event-stream";
-        res->set_next([res_this = res.get(), res_type, sse_ping_interval](std::string & output) -> bool {
+        res->set_next([res_this = res.get(), res_type, sse_ping_interval, hydra_root_index](std::string & output) -> bool {
             static auto format_error = [](task_response_type res_type, const json & res_json) {
                 if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                     return format_anthropic_sse({
@@ -6876,7 +6989,17 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         dynamic_cast<server_task_result_cmpl_partial*>(result.get()) != nullptr
                         || dynamic_cast<server_task_result_cmpl_final*>(result.get()) != nullptr
                     );
+                    if ((int) result->index == hydra_root_index) {
+                        const json chunk = hydra_root_chunk(result.get());
+                        output = chunk.is_null() ? "" : format_oai_sse(chunk);
+                        return true;
+                    }
                     json res_json = result->to_json();
+                    if (res_json.is_null()) {
+                        // a result that only starts the stream (the heads of a hydra send one each)
+                        output = "";
+                        return true;
+                    }
                     if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                         output = format_anthropic_sse(res_json);
                     } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
@@ -6900,6 +7023,216 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
     }
 
     return res;
+}
+
+// hydra: one root (the shared messages) and N heads (root + the head's own messages), see PLAN-hydra.md.
+// The root is prefilled once into one slot, each head forks from it in its own slot and prefills only its tail,
+// then all heads decode in the same batch. Choice i of the reply is head i
+std::unique_ptr<server_res_generator> server_routes::handle_hydra(const server_http_req & req, const json & body) {
+    auto res = create_response();
+    auto & rd = res->rd;
+
+    res->set_req(&req);
+
+    const auto completion_id = gen_chatcmplid();
+
+    int32_t sse_ping_interval = params.sse_ping_interval;
+    int     n_heads           = 0;
+
+    try {
+        const json heads = json_value(body.at("hydra"), "heads", json::array());
+
+        if (!heads.is_array() || heads.empty()) {
+            throw std::invalid_argument("hydra: \"heads\" must be a non-empty array");
+        }
+
+        n_heads = (int) heads.size();
+
+        if (meta->hydra_max_heads == 0) {
+            throw std::invalid_argument("hydra: not available on this server (it needs -np 2 or more, and no draft model or MTP)");
+        }
+        if (n_heads > meta->hydra_max_heads) {
+            throw std::invalid_argument(string_format("hydra: %d heads need %d slots and this server has %d (-np), so at most %d heads",
+                        n_heads, n_heads + 1, params.n_parallel, meta->hydra_max_heads));
+        }
+        if (json_value(body, "n", 1) != 1 || json_value(body, "n_cmpl", 1) != 1) {
+            throw std::invalid_argument("hydra: \"n\" cannot be used with \"hydra\", add heads instead");
+        }
+
+        json base = body;
+        base.erase("hydra");
+
+        if (!base.contains("messages") || !base.at("messages").is_array() || base.at("messages").empty()) {
+            throw std::invalid_argument("hydra: \"messages\" (the root) must be a non-empty array");
+        }
+
+        // the same tokenization as a normal chat request, so a head sees what a separate request would
+        const auto tokenize = [&](const json & data, const std::vector<raw_buffer> & files) -> server_tokens {
+            const std::string prompt = data.at("prompt").get<std::string>();
+            if (ctx_server.mctx != nullptr) {
+                return process_mtmd_prompt(ctx_server.mctx, prompt, files, ctx_server.init_opt);
+            }
+            return std::move(tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, true, true, ctx_server.init_opt)[0]);
+        };
+
+        const auto make_task = [&](const json & data, server_tokens && tokens) {
+            server_task task(SERVER_TASK_TYPE_COMPLETION);
+
+            task.id     = rd.get_new_id();
+            task.hydra  = true;
+            task.tokens = std::move(tokens);
+            task.params = server_schema::eval_llama_cmpl_schema(ctx_server.vocab, params, meta->logit_bias_eog, data);
+
+            // a head finds the root in its slot through the prompt cache path
+            task.params.cache_prompt = true;
+
+            auto delimiters = common_chat_msg_delimiters_parse(json_value(data, "message_delimiters", json::array()));
+            delimiters.tokenize(ctx_server.vocab);
+            task.params.message_spans = task.tokens.find_message_spans(delimiters);
+
+            task.params.res_type          = TASK_RESPONSE_TYPE_OAI_CHAT;
+            task.params.oaicompat_cmpl_id = completion_id;
+            task.params.oaicompat_model   = meta->model_name;
+
+            return task;
+        };
+
+        // the root: the shared messages as closed turns, prefill only
+        json root_body = base;
+        root_body["add_generation_prompt"] = false;
+        root_body.erase("continue_final_message");
+
+        std::vector<raw_buffer> root_files;
+        json root_data = oaicompat_chat_params_parse(root_body, meta->chat_params, root_files, false);
+        root_data["n_predict"] = 0;
+        root_data.erase("max_tokens");
+        root_data.erase("max_completion_tokens");
+
+        const std::string root_prompt = root_data.at("prompt").get<std::string>();
+
+        server_task root = make_task(root_data, tokenize(root_data, root_files));
+        root.id_slot = json_value(body, "id_slot", -1);
+
+        for (int i = 0; i < n_heads; i++) {
+            const json & head = heads[i];
+
+            if (!head.is_object() || !head.contains("messages") || !head.at("messages").is_array() || head.at("messages").empty()) {
+                throw std::invalid_argument(string_format("hydra: head %d needs a non-empty \"messages\" array (its tail)", i));
+            }
+
+            // the shared fields are the defaults, a head can override any of them
+            json head_body = base;
+            for (const auto & item : head.items()) {
+                if (item.key() != "messages") {
+                    head_body[item.key()] = item.value();
+                }
+            }
+            for (const auto & msg : head.at("messages")) {
+                head_body["messages"].push_back(msg);
+            }
+
+            std::vector<raw_buffer> head_files;
+            json head_data = oaicompat_chat_params_parse(head_body, meta->chat_params, head_files);
+
+            const std::string head_prompt = head_data.at("prompt").get<std::string>();
+
+            // a head forks from the root, so the template must render the root as a prefix of root + tail
+            if (head_prompt.size() <= root_prompt.size() || head_prompt.compare(0, root_prompt.size(), root_prompt) != 0) {
+                throw std::invalid_argument(string_format(
+                    "hydra: head %d: the chat template does not render the root messages as a prefix of root + tail, so the heads cannot share the root", i));
+            }
+
+            server_tokens tokens;
+
+            if (root_files.empty()) {
+                tokens = tokenize(head_data, head_files);
+
+                if (tokens.size() <= root.tokens.size() || tokens.get_common_prefix(root.tokens) != root.tokens.size()) {
+                    throw std::invalid_argument(string_format(
+                        "hydra: head %d: the root tokens are not a prefix of the head tokens (the tokenizer merges text across the end of the root)", i));
+                }
+            } else {
+                // media in the root: tokenize only the tail, so the images are not processed again for every head
+                const std::string tail = head_prompt.substr(root_prompt.size());
+
+                if (tail.find(get_media_marker()) != std::string::npos) {
+                    throw std::invalid_argument(string_format("hydra: head %d: a tail cannot hold media when the root has media", i));
+                }
+
+                tokens = root.tokens.clone();
+                for (const llama_token tok : tokenize_mixed(ctx_server.vocab, json(tail), false, true)) {
+                    tokens.push_back(tok);
+                }
+            }
+
+            server_task task = make_task(head_data, std::move(tokens));
+            task.id_parent = root.id;
+
+            root.child_tasks.push_back(std::move(task));
+        }
+
+        // a full KV cache fails every running slot, so give each head a token budget that fits. With a unified
+        // cache the root, all tails and all replies share one pool: each head gets an equal share of what is left.
+        // With --ctx-max the pool grows when it is full, up to that size
+        {
+            const int32_t n_ctx = params.n_ctx_max > 0 && params.kv_unified ? std::max(params.n_ctx_max, meta->slot_n_ctx) : meta->slot_n_ctx;
+
+            int64_t n_left = n_ctx;
+            if (params.kv_unified) {
+                n_left -= root.n_tokens();
+                for (const auto & head : root.child_tasks) {
+                    n_left -= head.n_tokens() - root.n_tokens();
+                }
+
+                n_left /= n_heads;
+
+                // a loop guard reflection appends its prompt and its text after the head and gives the cells
+                // back when it ends (light park): each head keeps room for one
+                const auto & lg = root.child_tasks[0].params.loop_guard;
+                if (lg.mode == COMMON_LOOP_GUARD_REFLECT) {
+                    n_left -= 512 + lg.reflect_n_predict;
+                }
+            }
+
+            for (size_t i = 0; i < root.child_tasks.size(); i++) {
+                auto & head = root.child_tasks[i];
+
+                // the per-slot limit: a head is also a sequence of the slot's context size
+                const int64_t n_budget = std::min<int64_t>(n_left, n_ctx - head.n_tokens()) - 1;
+
+                if (n_budget < 1) {
+                    throw std::invalid_argument(string_format(
+                        "hydra: the context (%d tokens) is too small for a root of %d tokens and %d heads; start the server with a larger -c",
+                        n_ctx, root.n_tokens(), n_heads));
+                }
+
+                if (head.params.n_predict < 0 || head.params.n_predict > n_budget) {
+                    head.params.n_predict = (int32_t) n_budget;
+                }
+            }
+
+            SRV_INF("hydra: context %d tokens, each head generates at most %d tokens\n", n_ctx, root.child_tasks[0].params.n_predict);
+        }
+
+        SRV_INF("hydra: root = %d tokens, %d heads, tails = %s\n", root.n_tokens(), n_heads, [&]() {
+            std::string s;
+            for (const auto & t : root.child_tasks) {
+                s += (s.empty() ? "" : ", ") + std::to_string(t.n_tokens() - root.n_tokens());
+            }
+            return s;
+        }().c_str());
+
+        sse_ping_interval = root.params.sse_ping_interval;
+
+        std::vector<server_task> tasks;
+        tasks.push_back(std::move(root));
+        rd.post_tasks(std::move(tasks));
+    } catch (const std::exception & e) {
+        res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+
+    return handle_results(std::move(res), req, json_value(body, "stream", false), TASK_RESPONSE_TYPE_OAI_CHAT, sse_ping_interval, n_heads);
 }
 
 std::unique_ptr<server_res_generator> server_routes::create_response(bool bypass_sleep) {
@@ -7013,6 +7346,7 @@ static json get_res_props(const server_context_meta & meta, const common_params 
         { "build_info",                  meta.build_info },
         { "is_sleeping",                 is_sleeping },
         { "cors_proxy_enabled",          params.ui_mcp_proxy },
+        { "hydra_max_heads",             meta.hydra_max_heads },
     };
     if (params.use_jinja) {
         if (!tmpl_tools.empty()) {
@@ -7314,6 +7648,9 @@ void server_routes::init_routes() {
         auto res = create_response();
         std::vector<raw_buffer> files;
         json body = json::parse(req.body);
+        if (body.contains("hydra")) {
+            return handle_hydra(req, body);
+        }
         json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,

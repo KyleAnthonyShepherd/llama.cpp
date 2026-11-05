@@ -71,6 +71,14 @@ public:
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
 
+    // the recurrent state is sized by n_seq_max, so only the attention caches resize (see llama_memory_hybrid)
+    bool resize(uint32_t n_new) override;
+
+    size_t resize_peak_bytes(uint32_t n_new) const override;
+
+    bool spill_layers()    override;
+    bool unspill_layers(bool force) override;
+
     // state write/load
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;

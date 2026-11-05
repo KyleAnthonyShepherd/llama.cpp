@@ -263,6 +263,8 @@ export interface ApiLlamaCppServerProps {
 	webui_settings?: Record<string, string | number | boolean>;
 	ui_settings?: Record<string, string | number | boolean>;
 	cors_proxy_enabled?: boolean;
+	/** most heads of a hydra request (one root, N heads), 0 or absent = not available */
+	hydra_max_heads?: number;
 }
 
 export interface ApiChatCompletionRequest {
@@ -352,6 +354,8 @@ export interface ApiChatCompletionStreamChunk {
 	};
 	prompt_progress?: ChatMessagePromptProgress;
 	loop_guard?: ApiLoopGuardEvent;
+	/** hydra request: prompt progress of the shared root, in a chunk without choices */
+	hydra?: { root_progress?: ChatMessagePromptProgress };
 }
 
 /**

@@ -27,6 +27,7 @@ import { chatProcessingStore } from '$lib/stores/chat/processing.svelte';
 import { type ChatStreamHost, ChatStreamManager } from '$lib/stores/chat/streams.svelte';
 import { conversationsStore } from '$lib/stores/conversations/index.svelte';
 import { hatsStore } from '$lib/stores/hats.svelte';
+import { hydraStore } from '$lib/stores/hydra.svelte';
 import { mcpStore } from '$lib/stores/mcp/index.svelte';
 import { modelsStore } from '$lib/stores/models/index.svelte';
 import { serverStore } from '$lib/stores/server.svelte';
@@ -37,8 +38,10 @@ import type {
 	ChatMessagePromptProgress,
 	ChatMessageTimings,
 	ChatStreamCallbacks,
+	DatabaseConversation,
 	DatabaseMessage,
 	DatabaseMessageExtra,
+	DatabaseMessageHydra,
 	ErrorDialogState,
 	HatWear
 } from '$lib/types';
@@ -48,9 +51,10 @@ import {
 	formatCwdMessage,
 	getConversationModel,
 	isAbortError,
-	normalizeModelName
+	normalizeModelName,
+	uuid
 } from '$lib/utils';
-import { SvelteMap } from 'svelte/reactivity';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { toast } from 'svelte-sonner';
 
 class ChatStore implements ChatStreamHost, ChatFlowsHost {
@@ -618,11 +622,240 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 		this.pendingDraftMessage = message;
 		this.pendingDraftFiles = [...files];
 	}
+	/**
+	 * Hydra send: the conversation so far plus the input box (if any) is the root, each tail in
+	 * hydraStore is one head. Every head is stored as a branch under the root: its tail as a user
+	 * message, its reply as the child. The chat then shows head 0's branch; the hydra group view
+	 * shows all heads side by side.
+	 */
+	async sendHydra(content: string, extras?: DatabaseMessageExtra[]): Promise<void> {
+		const tails = hydraStore.tails.map((t) => t.trim());
+
+		let activeConv = conversationsStore.activeConversation;
+
+		if (activeConv && this.isChatLoadingInternal(activeConv.id)) {
+			toast.error('Wait for the running reply to finish before sending a hydra');
+
+			return;
+		}
+
+		const hasRootInput = content.trim().length > 0 || (extras?.length ?? 0) > 0;
+
+		if (!hasRootInput && !conversationsStore.activeMessages.some((m) => m.type !== 'root')) {
+			toast.error('A hydra needs a root: type a message, or send it in a chat that has messages');
+
+			return;
+		}
+
+		this.cancelPreEncode();
+
+		let isNewConversation = false;
+
+		if (!activeConv) {
+			await conversationsStore.createConversation();
+			activeConv = conversationsStore.activeConversation;
+			isNewConversation = true;
+		}
+
+		if (!activeConv) return;
+
+		const convId = activeConv.id;
+
+		this.showErrorDialog(null);
+		this.setChatLoading(convId, true);
+
+		const abortController = this.getOrCreateAbortController(convId);
+		// the reply each head writes into now; a loop guard note starts a new one
+		const current: string[] = [];
+		const markers: DatabaseMessageHydra[] = [];
+		// every reply of this send that is not saved yet
+		const unsaved = new SvelteSet<string>();
+		const newMessage = (
+			role: MessageRole,
+			content: string,
+			hydra: DatabaseMessageHydra,
+			parent: string
+		) =>
+			DatabaseService.createMessageBranch(
+				{
+					children: [],
+					content,
+					convId,
+					hydra,
+					model: role === MessageRole.ASSISTANT ? null : undefined,
+					role,
+					timestamp: Date.now(),
+					toolCalls: '',
+					type: MessageType.TEXT
+				},
+				parent
+			);
+		const saveReply = async (id: string) => {
+			const live = hydraStore.live.get(id);
+
+			unsaved.delete(id);
+
+			if (!live) return;
+
+			const update: Partial<DatabaseMessage> = {
+				content: live.content,
+				reasoningContent: live.reasoning || undefined,
+				timings: live.timings
+			};
+
+			await DatabaseService.updateMessage(id, update);
+
+			const idx = conversationsStore.findMessageIndex(id);
+
+			if (idx !== -1) conversationsStore.updateMessageAtIndex(idx, update);
+
+			hydraStore.live.delete(id);
+		};
+
+		try {
+			let rootParentId = isNewConversation ? await this.startNewConversation(activeConv) : '-1';
+
+			if (hasRootInput) {
+				const userMessage = await this.addMessage(
+					MessageRole.USER,
+					content,
+					MessageType.TEXT,
+					rootParentId,
+					extras
+				);
+
+				rootParentId = userMessage.id;
+
+				if (isNewConversation && content)
+					await conversationsStore.applyTitleFromContent(convId, content);
+			} else if (rootParentId === '-1') {
+				rootParentId =
+					conversationsStore.activeMessages[conversationsStore.activeMessages.length - 1].id;
+			}
+
+			// the root as the server sees it: the active path, up to the root's last message
+			const rootMessages = [...conversationsStore.activeMessages];
+			const group = uuid();
+
+			for (let i = 0; i < tails.length; i++) {
+				const hydra = { count: tails.length, group, index: i };
+				const tail = await newMessage(MessageRole.USER, tails[i], hydra, rootParentId);
+				const reply = await newMessage(MessageRole.ASSISTANT, '', hydra, tail.id);
+
+				current.push(reply.id);
+				markers.push(hydra);
+				unsaved.add(reply.id);
+				hydraStore.updateLive(reply.id, { content: '', done: false, reasoning: '' });
+			}
+
+			// show head 0's branch, the group view lists the others next to it
+			await conversationsStore.updateCurrentNode(current[0]);
+			await conversationsStore.refreshActiveMessages();
+			// keep the tails, so the same heads can go to the next root; hide the boxes to free the screen
+			hydraStore.collapsed = true;
+
+			await ChatService.sendHydra(
+				rootMessages,
+				tails,
+				hydraStore.thinking === 'default'
+					? this.getApiOptions()
+					: { ...this.getApiOptions(), enableThinking: hydraStore.thinking === 'on' },
+				{
+					onHeadChunk: (index, delta) => {
+						const id = current[index];
+						const cur = id ? hydraStore.live.get(id) : undefined;
+
+						if (!id || !cur) return;
+
+						hydraStore.updateLive(id, {
+							content: cur.content + (delta.content ?? ''),
+							reasoning: cur.reasoning + (delta.reasoning ?? ''),
+							reflecting: false
+						});
+					},
+					onHeadDone: (index, finishReason, timings) => {
+						const id = current[index];
+
+						if (id) hydraStore.updateLive(id, { done: true, finishReason, timings });
+					},
+					// llama-server --loop-guard on a head: the reflection shows in the head's column, a note
+					// ends the reply so far and starts a new one in the head's branch, as in a normal chat
+					onHeadLoopGuard: async (index, event) => {
+						const id = current[index];
+						const cur = id ? hydraStore.live.get(id) : undefined;
+
+						if (!id || !cur) return;
+
+						if (event.event === 'reflect_start') {
+							hydraStore.updateLive(id, { reflecting: true, reflection: '' });
+						} else if (event.event === 'reflect_delta') {
+							hydraStore.updateLive(id, {
+								reflection: (cur.reflection ?? '') + (event.text ?? '')
+							});
+						} else if (event.event === 'resume') {
+							hydraStore.updateLive(id, { reflecting: false });
+						} else if (event.event === 'note' && event.message) {
+							hydraStore.updateLive(id, {
+								done: true,
+								finishReason: 'loop guard',
+								reflecting: false
+							});
+							await saveReply(id);
+
+							const note = await newMessage(
+								MessageRole.SYSTEM,
+								event.message.content,
+								markers[index],
+								id
+							);
+							const next = await newMessage(MessageRole.ASSISTANT, '', markers[index], note.id);
+
+							current[index] = next.id;
+							unsaved.add(next.id);
+							hydraStore.updateLive(next.id, { content: '', done: false, reasoning: '' });
+
+							// the chat shows this head: keep its path at the head's newest reply
+							if (conversationsStore.activeConversation?.currNode === id) {
+								await conversationsStore.updateCurrentNode(next.id);
+								await conversationsStore.refreshActiveMessages();
+							}
+						}
+					},
+					onHeadProgress: (index, progress) => {
+						const id = current[index];
+
+						if (id) hydraStore.updateLive(id, { progress });
+					},
+					onRootProgress: (progress) => hydraStore.rootProgress.set(convId, progress)
+				},
+				abortController.signal
+			);
+		} catch (error) {
+			if (!isAbortError(error)) {
+				console.error('Hydra request failed:', error);
+				this.showErrorDialog({
+					message: error instanceof Error ? error.message : 'Unknown error',
+					type: ErrorDialogType.SERVER
+				});
+			}
+		} finally {
+			// keep what each head wrote, also after a stop or an error
+			for (const id of [...unsaved]) await saveReply(id);
+
+			hydraStore.rootProgress.delete(convId);
+			this.abortControllers.delete(convId);
+			this.setChatLoading(convId, false);
+			conversationsStore.updateConversationTimestamp();
+		}
+	}
+
 	async sendMessage(
 		content: string,
 		extras?: DatabaseMessageExtra[],
 		prefill?: { reasoning: string; response: string }
 	): Promise<void> {
+		if (hydraStore.ready) return this.sendHydra(content, extras);
+
 		if (!content.trim() && (!extras || extras.length === 0)) return;
 
 		const activeConv = conversationsStore.activeConversation;
@@ -663,47 +896,9 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 		this.setChatLoading(currentConv.id, true);
 		this.clearChatStreaming(currentConv.id);
 		try {
-			let parentIdForUserMessage: string | undefined;
-
-			if (isNewConversation) {
-				const rootId = await DatabaseService.createRootMessage(currentConv.id);
-				const currentConfig = settingsStore.config;
-				const systemPrompt = currentConfig.systemMessage?.toString().trim();
-
-				let sysOrRootId = rootId;
-
-				// a hat brings its own system text
-				if (systemPrompt && !currentConv.hat) {
-					const systemMessage = await DatabaseService.createSystemMessage(
-						currentConv.id,
-						systemPrompt,
-						rootId
-					);
-
-					conversationsStore.addMessageToActive(systemMessage);
-					sysOrRootId = systemMessage.id;
-				}
-
-				// Reflect a working directory picked on the new-chat screen into
-				// chat history before the first user message, so the model sees
-				// it on its first turn. createConversation() has already threaded
-				// the pending pick onto the conversation.
-				if (currentConv.cwd) {
-					const cwdMessage = await this.addMessage(
-						MessageRole.USER,
-						formatCwdMessage(currentConv.cwd, await toolsStore.resolveServerHome()),
-						MessageType.TEXT,
-						sysOrRootId,
-						undefined,
-						true
-					);
-
-					parentIdForUserMessage = cwdMessage.id;
-				} else {
-					parentIdForUserMessage = sysOrRootId;
-				}
-			}
-
+			const parentIdForUserMessage = isNewConversation
+				? await this.startNewConversation(currentConv)
+				: undefined;
 			const userMessage = await this.addMessage(
 				MessageRole.USER,
 				content,
@@ -1500,6 +1695,45 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 			lastMessage.toolCalls = '';
 			console.error('Failed to save partial response:', error);
 		}
+	}
+
+	// first messages of a new conversation: root, system prompt, working directory. Returns the parent for the first user message
+	private async startNewConversation(conv: DatabaseConversation): Promise<string> {
+		const rootId = await DatabaseService.createRootMessage(conv.id);
+		const systemPrompt = settingsStore.config.systemMessage?.toString().trim();
+
+		let sysOrRootId = rootId;
+
+		// a hat brings its own system text
+		if (systemPrompt && !conv.hat) {
+			const systemMessage = await DatabaseService.createSystemMessage(
+				conv.id,
+				systemPrompt,
+				rootId
+			);
+
+			conversationsStore.addMessageToActive(systemMessage);
+			sysOrRootId = systemMessage.id;
+		}
+
+		// Reflect a working directory picked on the new-chat screen into
+		// chat history before the first user message, so the model sees
+		// it on its first turn. createConversation() has already threaded
+		// the pending pick onto the conversation.
+		if (conv.cwd) {
+			const cwdMessage = await this.addMessage(
+				MessageRole.USER,
+				formatCwdMessage(conv.cwd, await toolsStore.resolveServerHome()),
+				MessageType.TEXT,
+				sysOrRootId,
+				undefined,
+				true
+			);
+
+			return cwdMessage.id;
+		}
+
+		return sysOrRootId;
 	}
 
 	private async triggerPreEncode(

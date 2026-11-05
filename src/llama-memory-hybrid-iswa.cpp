@@ -192,6 +192,22 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_hybrid_iswa::memory_br
     return mb;
 }
 
+bool llama_memory_hybrid_iswa::resize(uint32_t n_new) {
+    return mem_attn->resize(n_new);
+}
+
+size_t llama_memory_hybrid_iswa::resize_peak_bytes(uint32_t n_new) const {
+    return mem_attn->resize_peak_bytes(n_new);
+}
+
+bool llama_memory_hybrid_iswa::spill_layers() {
+    return mem_attn->spill_layers();
+}
+
+bool llama_memory_hybrid_iswa::unspill_layers(bool force) {
+    return mem_attn->unspill_layers(force);
+}
+
 void llama_memory_hybrid_iswa::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
     mem_attn->state_write(io, seq_id, flags);
     mem_recr->state_write(io, seq_id, flags);

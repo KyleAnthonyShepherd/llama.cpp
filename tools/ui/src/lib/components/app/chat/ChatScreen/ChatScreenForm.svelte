@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { ChatForm } from '$lib/components/app';
 	import { useDraftMessages } from '$lib/hooks/use-draft-messages.svelte';
-	import { deviceStore, settingsStore } from '$lib/stores';
+	import { conversationsStore, deviceStore, hydraStore, settingsStore } from '$lib/stores';
 	import { onMount } from 'svelte';
 
 	interface Props {
@@ -86,7 +86,14 @@
 	}
 
 	async function handleSubmit() {
-		if ((!message.trim() && uploadedFiles.length === 0) || disabled || hasLoadingAttachments)
+		const hydraWithoutRoot =
+			hydraStore.ready && conversationsStore.activeMessages.some((m) => m.type !== 'root');
+
+		if (
+			(!message.trim() && uploadedFiles.length === 0 && !hydraWithoutRoot) ||
+			disabled ||
+			hasLoadingAttachments
+		)
 			return;
 
 		if (!chatFormRef?.checkModelSelected()) return;

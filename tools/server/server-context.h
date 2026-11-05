@@ -52,6 +52,9 @@ struct server_context_meta {
     uint64_t model_n_params;
     uint64_t model_size;
     std::string model_ftype;
+
+    // most heads a hydra request can have: one slot holds the root, 0 = hydra not available
+    int hydra_max_heads;
 };
 
 enum server_state {
@@ -165,6 +168,14 @@ private:
             const json & data,
             const std::vector<raw_buffer> & files,
             task_response_type res_type);
+    std::unique_ptr<server_res_generator> handle_results(
+            std::unique_ptr<server_res_generator> res,
+            const server_http_req & req,
+            bool stream,
+            task_response_type res_type,
+            int32_t sse_ping_interval,
+            int hydra_root_index = -1);
+    std::unique_ptr<server_res_generator> handle_hydra(const server_http_req & req, const json & body);
     std::unique_ptr<server_res_generator> handle_slots_save(const server_http_req & req, int id_slot);
     std::unique_ptr<server_res_generator> handle_slots_restore(const server_http_req & req, int id_slot);
     std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req &, int id_slot);

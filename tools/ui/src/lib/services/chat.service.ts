@@ -1027,6 +1027,169 @@ export class ChatService {
 	}
 
 	/**
+	 * Sends a hydra request: the messages are the shared root, each tail is the user message of one
+	 * head. The server reads the root once and streams all heads; choice i is head i.
+	 * Tools, hats and prefills are not used here.
+	 */
+	static async sendHydra(
+		messages: (DatabaseMessage & { extra?: DatabaseMessageExtra[] })[],
+		tails: string[],
+		options: SettingsChatServiceOptions,
+		callbacks: {
+			onHeadChunk: (index: number, delta: { content?: string; reasoning?: string }) => void;
+			onHeadDone: (index: number, finishReason: string, timings?: ChatMessageTimings) => void;
+			onHeadProgress?: (index: number, progress: ChatMessagePromptProgress) => void;
+			onRootProgress?: (progress: ChatMessagePromptProgress) => void;
+			onHeadLoopGuard?: (index: number, event: ApiLoopGuardEvent) => Promise<void>;
+		},
+		signal?: AbortSignal
+	): Promise<void> {
+		const normalizedMessages = await ChatService.normalizeMessagesForApi(messages);
+		const body: Record<string, unknown> = {
+			hydra: {
+				heads: tails.map((tail) => ({ messages: [{ content: tail, role: MessageRole.USER }] }))
+			},
+			messages: normalizedMessages.map((msg: ApiChatMessageData) => ({
+				content: msg.content,
+				reasoning_content: options.excludeReasoningFromContext ? undefined : msg.reasoning_content,
+				role: msg.role,
+				tool_call_id: msg.tool_call_id,
+				tool_calls: msg.tool_calls
+			})),
+			reasoning_format: options.disableReasoningParsing
+				? ReasoningFormat.NONE
+				: ReasoningFormat.AUTO,
+			return_progress: true,
+			sse_ping_interval: 1,
+			stream: true
+		};
+
+		if (options.model) body.model = options.model;
+
+		if (options.enableThinking !== undefined) {
+			body.chat_template_kwargs = { enable_thinking: options.enableThinking };
+		}
+
+		if (options.max_tokens !== undefined) {
+			body.max_tokens =
+				options.max_tokens !== null && options.max_tokens !== 0 ? options.max_tokens : -1;
+		}
+
+		const passThrough = [
+			'temperature',
+			'dynatemp_range',
+			'dynatemp_exponent',
+			'top_k',
+			'top_p',
+			'min_p',
+			'xtc_probability',
+			'xtc_threshold',
+			'typ_p',
+			'repeat_last_n',
+			'repeat_penalty',
+			'presence_penalty',
+			'frequency_penalty',
+			'dry_multiplier',
+			'dry_base',
+			'dry_allowed_length',
+			'dry_penalty_last_n',
+			'backend_sampling'
+		] as const;
+
+		for (const key of passThrough) {
+			if (options[key] !== undefined) body[key] = options[key];
+		}
+
+		if (options.samplers !== undefined) {
+			body.samplers =
+				typeof options.samplers === 'string'
+					? options.samplers.split(';').filter((s: string) => s.trim())
+					: options.samplers;
+		}
+
+		if (options.custom) {
+			try {
+				const customParams =
+					typeof options.custom === 'string' ? JSON.parse(options.custom) : options.custom;
+
+				Object.assign(body, customParams);
+			} catch (error) {
+				console.warn('Failed to parse custom parameters:', error);
+			}
+		}
+
+		const response = await fetch(API_CHAT.COMPLETIONS, {
+			body: JSON.stringify(body),
+			headers: { ...getJsonHeaders() },
+			method: 'POST',
+			signal
+		});
+
+		if (!response.ok) {
+			throw await ChatService.parseErrorResponse(response);
+		}
+
+		const reader = response.body?.getReader();
+
+		if (!reader) throw new Error('No response body');
+
+		const decoder = new TextDecoder();
+
+		let buffer = '';
+
+		while (true) {
+			const { done, value } = await reader.read();
+
+			if (done) break;
+
+			buffer += decoder.decode(value, { stream: true });
+
+			const lines = buffer.split('\n');
+
+			buffer = lines.pop() ?? '';
+
+			for (const line of lines) {
+				if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
+
+				const chunk = JSON.parse(line.slice(6)) as
+					| (ApiChatCompletionStreamChunk & { error?: { message?: string } })
+					| null;
+
+				if (!chunk) continue;
+
+				if (chunk.error) throw new Error(chunk.error.message ?? 'hydra request failed');
+
+				if (chunk.hydra?.root_progress) callbacks.onRootProgress?.(chunk.hydra.root_progress);
+
+				for (const choice of chunk.choices ?? []) {
+					const index = (choice as { index?: number }).index ?? 0;
+					const delta = choice.delta ?? {};
+
+					// awaited: a note starts a new reply, the next deltas of this head belong to it
+					if (chunk.loop_guard) {
+						await callbacks.onHeadLoopGuard?.(index, chunk.loop_guard);
+
+						continue;
+					}
+
+					if (chunk.prompt_progress) callbacks.onHeadProgress?.(index, chunk.prompt_progress);
+
+					if (delta.content || delta.reasoning_content) {
+						callbacks.onHeadChunk(index, {
+							content: delta.content,
+							reasoning: delta.reasoning_content
+						});
+					}
+
+					if (choice.finish_reason) {
+						callbacks.onHeadDone(index, choice.finish_reason, chunk.timings);
+					}
+				}
+			}
+		}
+	}
+
+	/**
 	 * Sends a chat completion request to the llama-server.
 	 * Supports both streaming and non-streaming responses with comprehensive parameter configuration.
 	 * Automatically converts database messages with attachments to the appropriate API format.

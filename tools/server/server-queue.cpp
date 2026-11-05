@@ -528,12 +528,19 @@ void server_response_reader::post_tasks(std::vector<server_task> && tasks, bool 
     states.reserve(tasks.size());
     size_t index = 0;
     for (auto & task : tasks) {
-        task.index = index++;
-        states.push_back(task.create_state());
+        // a hydra root comes after its heads, so the heads are choices 0..N-1
+        if (!task.hydra) {
+            task.index = index++;
+            states.push_back(task.create_state());
+        }
         // for child tasks
         for (auto & child_task : task.child_tasks) {
             child_task.index = index++;
             states.push_back(child_task.create_state());
+        }
+        if (task.hydra) {
+            task.index = index++;
+            states.push_back(task.create_state());
         }
     }
     GGML_ASSERT(states.size() == id_tasks.size());

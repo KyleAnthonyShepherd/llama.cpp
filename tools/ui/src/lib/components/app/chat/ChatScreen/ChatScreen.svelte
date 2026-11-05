@@ -22,6 +22,7 @@
 		chatStore,
 		conversationsStore,
 		deviceStore,
+		hydraStore,
 		serverStore,
 		settingsStore
 	} from '$lib/stores';
@@ -330,7 +331,10 @@
 						? 'bottom-1 left-2 right-2'
 						: 'bottom-2 right-2 left-2',
 				'md:bottom-4',
-				isEmpty ? 'md:translate-y-[calc(-50dvh+8rem)] 2xl:translate-y-[calc(-50dvh+5rem)]' : ''
+				// the open hydra panel makes the form tall: keep it at the bottom so its top stays on screen
+				isEmpty && !(hydraStore.enabled && !hydraStore.collapsed)
+					? 'md:translate-y-[calc(-50dvh+8rem)] 2xl:translate-y-[calc(-50dvh+5rem)]'
+					: ''
 			]}
 		>
 			<ChatScreenGreeting {isEmpty} />

@@ -56,6 +56,9 @@ export { toolsStore } from './tools.svelte';
 
 export { hatsStore } from './hats.svelte';
 
+// HYDRA (one root, N heads in one request)
+export { hydraStore } from './hydra.svelte';
+
 // ENVIRONMENT / META
 export { versionStore } from './version.svelte';
 

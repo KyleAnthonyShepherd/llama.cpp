@@ -332,10 +332,12 @@ struct server_chat_params {
 json oaicompat_completion_params_parse(const json & body);
 
 // used by /chat/completions endpoint
+// prefill_assistant = false renders a final assistant message as a closed turn even with --prefill-assistant (hydra root)
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
     const server_chat_params & opt,
-    std::vector<raw_buffer> & out_files);
+    std::vector<raw_buffer> & out_files,
+    bool prefill_assistant = true);
 
 // TODO: move it to server-task.cpp
 json format_embeddings_response_oaicompat(
