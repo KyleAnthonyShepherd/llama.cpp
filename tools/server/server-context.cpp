@@ -3515,6 +3515,14 @@ private:
             return false;
         }
 
+        // the MTP draft context wrote the reflection too (a KV cache, so it cuts back by position)
+        if (ctx_dft && ctx_dft != ctx_tgt && !llama_memory_seq_rm(llama_get_memory(ctx_dft), slot.id, state.prompt.tokens.pos_next(), -1)) {
+            slot.prompt.clear();
+            err = "failed to remove the reflection from the draft KV cache";
+
+            return false;
+        }
+
         slot.prompt = state.prompt.clone();
 
         return true;

@@ -362,3 +362,65 @@ request (system prompt, intro text then image, json_schema, thinking off), greed
    slot 0, so this only hits the first hydra after another request.
 3. Not measured: K = 2 extract hydras with long replies, the home server (GTX 1660 Ti), the expert overlap question
    (4.1 item 3), and `--spec-draft-n-max` above 1 on the heads (the tier is 8 tokens at most).
+
+## 8. Heads sweep for triage (2026-11-05)
+
+`toolbag/tests/hydra/pages_sweep.py`: K Micron pages per hydra (K = 1 is one normal request per page, as geoui does
+today), back to back after a warm-up hydra (root in slot 0, state cells made), 3 timed reps of distinct pages per K,
+greedy. Server: Kyle's 35B command with `--hydra-heads 16` (`srv35p.sh`; `SPEC=""` drops MTP). Every boring id was right
+at every K (165 + 75 pages).
+
+| K | MTP n_max 1: s/page | pages/min | no MTP: s/page | pages/min |
+|---|---|---|---|---|
+| 1 | 6.52 | 9.2 | 7.32 | 8.2 |
+| 2 | 3.65 | 16.5 | | |
+| 3 | 3.04 | 19.7 | | |
+| **4** | **2.82** | **21.3** | 3.16 | 19.0 |
+| 5 | 3.65 | 16.4 | | |
+| 6 | 3.86 | 15.6 | | |
+| 8 | 3.80 | 15.8 | 3.05 | 19.7 |
+| 12 | 6.11 | 9.8 | 3.23 | 18.6 |
+| 16 | 6.04 | 9.9 | | |
+
+**4 heads is the best on the laptop with MTP**, 2.3x one request per page. Two walls past it:
+
+1. **Generation leaves the hot store at 5+ heads.** A step is K x (1 + 1 draft) tokens and the hot store serves at most 8
+   (the MMVQ bound, 7.1). 4 heads: 5.2 s for 4 x 63 tokens (160 ms per step); 8 heads: 13.8 s (430 ms, every expert on
+   the CPU); 16: 25 s. Without MTP a step is K tokens, so 8 heads still fit: that is why the no-MTP curve stays flat to 8.
+2. **VRAM.** The state cells are 125.6 MiB per head and the image decode wants the large ubatch (target 1.6 GiB, MTP
+   draft 0.8 GiB). At 8 heads (1.1 GiB of cells) the hot store has 0 slots during the image decode (10 s for 8 pages, vs
+   3.1 s for 4); at 12+ there is no room for the large ubatch at all, the images go in 512-token ubatches with an upload
+   pass each (45-60 s). Without MTP the draft's buffers are not there, so 12 heads still get the large ubatch.
+
+For geoui: groups of 4 on this laptop. A box with more VRAM would move wall 2, but wall 1 stays until the tier serves
+more than 8 tokens (the MMQ id compaction TODO in llama-expert-tier.h).
+
+## 9. Boring log transcription with heads (2026-11-05)
+
+`toolbag/tests/hydra/trans_hydra.py`: 4 Micron CME sheets of different borings (p397, p219, p269, p325, exact truth),
+one shared root = geoui's transcription system prompt (root fix reply,mark) + 3 example sheets of other borings at
+1050 px (7262 tokens, kept in slot 0), each log = one user turn (its page image and PDF text layer, ~2000 tokens).
+Thinking on, temperature 0.3, reasoning budget 1500 (PLAN-loop-guard.md 14), json_schema, seed 1, `--loop-guard
+reflect`, MTP n_max 1.
+
+| mode | wall for 4 logs | s per log | generation per log (tok/s) | cells right |
+|---|---|---|---|---|
+| one request per log | 465 s | 116 | 29.5 | 98.8% |
+| 2 hydras of 2 heads | 387 s | 97 | 17.5 each (35 together) | 99.2% |
+| 1 hydra of 4 heads | 332 s | 83 | 10.4 each (42 together) | 99.2% |
+
+- **It works and is faster, but only 1.4x at 4 heads** (triage: 2.3x). A log is ~3200 generated tokens (1500 thinking +
+  the JSON), so generation is ~95% of the time and the shared root saves little: the root is cached in slot 0 for single
+  requests too. The heads gain only on the generation step, which at 4 x 2 tokens and 31k cells of context (root + 4 x
+  ~6k) runs ~190 ms per step (triage: 160 ms).
+- Latency per log goes up: all 4 logs arrive after 5.5 min, instead of one every 2 min. For a job queue it is the
+  throughput that counts.
+- Accuracy and thinking length did not change (3600-4000 thinking characters per log in every mode).
+- More heads would not help on this laptop: past 4 the step leaves the hot store (section 8), and the KV of 4 long
+  replies already takes ~620 MiB beside the 628 MiB of state cells.
+
+**Loop guard reflect on heads** (no trip in the runs above, the budget prevents them; forced with 3 text heads, MTP on,
+thinking off): head 0 ("write buffalo 600 times") tripped at 602 tokens, light park 36 ms, reflection STUCK yes, note,
+new reply; head 2 (numbers as words to 400) tripped at 1053, reflection found no loop, went on, tripped again at 1527,
+note; head 1 ran untouched. Restores 27-29 ms. Fixed on the way: the light park did not cut the MTP draft context back,
+so the reflection's cells stayed in the draft KV; after the fix the tripped heads keep 0.98 and 0.998 draft acceptance.
