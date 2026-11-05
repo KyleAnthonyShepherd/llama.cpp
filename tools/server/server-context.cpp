@@ -1119,6 +1119,11 @@ struct server_slot {
                 "   graphs reused = %10d\n",
                 llama_perf_context(ctx_tgt).n_reused);
 
+        // what the generation had to work with: the hot store gives VRAM to the KV cache as it grows
+        SLT_INF(*this,
+                "       hot store = %10d expert slots now, n_ctx = %d\n",
+                llama_expert_hotstore_free_bytes(ctx_tgt, 0), llama_n_ctx(ctx_tgt));
+
         const int32_t n_draft_total       = stats.n_draft_tokens;
         const int32_t n_draft_accepted    = stats.n_draft_accepted;
         const int32_t n_draft_verif_steps = stats.n_draft_verif_steps;
@@ -2349,6 +2354,8 @@ private:
             if (n_tier < n_want) {
                 SRV_INF("hydra: %d heads decode %d tokens per step, the expert hot store serves at most %d, so wider steps run on the stock path\n",
                         n_heads, n_want, n_tier);
+            } else {
+                SRV_INF("hydra: %d heads decode %d tokens per step, the expert hot store serves them (up to %d)\n", n_heads, n_want, n_tier);
             }
         }
 
@@ -4195,8 +4202,9 @@ private:
         const int64_t t_start = ggml_time_us();
         const bool ok = llama_seq_reserve(ctx_tgt, n_need);
 
-        SRV_INF("hydra: %s state cells for %d heads, %u -> %u cells in %.1f ms\n",
-                ok ? "made" : "FAILED to make", n_heads, n_cells, llama_seq_cells(ctx_tgt), (ggml_time_us() - t_start) / 1e3);
+        SRV_INF("hydra: %s state cells for %d heads, %u -> %u cells in %.1f ms, expert hot store %d slots\n",
+                ok ? "made" : "FAILED to make", n_heads, n_cells, llama_seq_cells(ctx_tgt), (ggml_time_us() - t_start) / 1e3,
+                llama_expert_hotstore_free_bytes(ctx_tgt, 0));
 
         return ok;
     }
