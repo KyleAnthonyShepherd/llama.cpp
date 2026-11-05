@@ -461,7 +461,7 @@ log's pages (read once). **Stage 1**, one hydra request of 3 heads: title + head
 notes, remarks); the skeleton (the main table's rows by their first 4 columns + page). **Stage 2**, one hydra
 request on the same root plus one shared turn that lists the skeleton's rows: 4 heads, each writes a contiguous
 group of rows in full. Each head has its part's own JSON schema. Merge in order; the transcript keeps what each head
-wrote and which head wrote each row (`reply.split`). Settings › Hydra › "Split transcriptions" (off by default),
+wrote and which head wrote each row (`reply.split`). Settings › Hydra › "Split transcriptions" (on by default, Kyle 2026-11-05),
 "Thinking per split head" (0). Reruns (old answer and feedback after the pages) run as one request.
 
 Laptop, 4 Micron sheets (p397, p219, p269, p325; examples p220, p189, p339), 35B with MTP, `--hydra-heads 4`
