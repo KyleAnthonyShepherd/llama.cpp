@@ -752,8 +752,8 @@ struct server_slot {
         return true;
     }
 
-    bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens) {
-        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id);
+    bool prompt_load(server_prompt_cache & prompt_cache, std::list<server_prompt_cache_state>::iterator it) {
+        bool res = prompt_cache.load(prompt, it, ctx_tgt, ctx_dft, id);
         if (!res) {
             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
         }
@@ -2608,7 +2608,14 @@ private:
 
                 ret->prompt_save(*prompt_cache);
 
-                if (!ret->prompt_load(*prompt_cache, task.tokens)) {
+                const auto it = prompt_cache->find(ret->prompt, task.tokens);
+
+                // under --ctx-max the cache may have shrunk below the size of the cached state
+                if (it != prompt_cache->states.end()) {
+                    maybe_grow_for_restore(*ret, (int32_t) it->prompt.tokens.size());
+                }
+
+                if (!ret->prompt_load(*prompt_cache, it)) {
                     ret->prompt_clear();
                 }
 
