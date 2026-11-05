@@ -95,6 +95,9 @@ void common_speculative_accept(common_speculative * spec, llama_seq_id, uint16_t
 bool common_speculative_get_state(common_speculative * spec, llama_seq_id seq_id, std::vector<uint8_t> & data);
 void common_speculative_set_state(common_speculative * spec, llama_seq_id seq_id, const std::vector<uint8_t> & data);
 
+// seq_id_dst was forked from seq_id_src (llama_memory_seq_cp), give it the same draft state
+void common_speculative_seq_cp(common_speculative * spec, llama_seq_id seq_id_src, llama_seq_id seq_id_dst);
+
 // print statistics about the speculative decoding
 void common_speculative_print_stats(const common_speculative * spec);
 

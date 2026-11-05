@@ -48,7 +48,7 @@ static common_speculative_output_limits server_output_limits(const common_params
     }
 
     auto result = common_speculative_get_output_limits(
-            params.n_batch, params.n_parallel, common_speculative_n_max(&params.speculative));
+            params.n_batch, params.n_parallel + std::max(0, params.hydra_heads), common_speculative_n_max(&params.speculative));
 
     result.total   = std::max<int32_t>(1, result.total);
     result.per_seq = std::max<int32_t>(1, result.per_seq);
@@ -673,6 +673,9 @@ struct server_slot_guard {
 struct server_slot {
     int id;
 
+    // a hydra head slot (--hydra-heads): only the heads of a hydra request run here, see get_free_slots()
+    bool is_head = false;
+
     llama_context * ctx_tgt = nullptr;
     llama_context * ctx_dft = nullptr;
 
@@ -1201,6 +1204,8 @@ struct server_slot {
         mem.seq_rm(other.id,     -1, -1);
         mem.seq_cp(id, other.id, -1, -1);
 
+        common_speculative_seq_cp(spec, id, other.id);
+
         other.i_batch = i_batch;
 
         other.stats = stats;
@@ -1597,6 +1602,204 @@ static int process_mtmd_run(const server_slot & slot, size_t idx, size_t idx_end
 
     SLT_INF(slot, "media run: %zu images + %zu text tokens = %zu tokens, VRAM %zu of %zu MiB asked for, free %zu MiB%s%s%s%s%s, room %.1f ms, encode %.1f ms, restore %.1f ms, decode %.1f ms\n",
             chunks.size(), text.size(), n, used / (1024*1024), need / (1024*1024), vram_free_0 / (1024*1024),
+            on_device ? ", weights on the device" : "",
+            on_cpu ? ", on the CPU" : "",
+            ubatch.released() ? ", large ubatch released and back" : "",
+            !kv_spilled ? "" : kv_back ? ", KV cache moved out and back" : ", KV cache moved out and NOT back",
+            n_hot == n_hot_room ? "" : ", hot store refit",
+            (t_encode - t_room) / 1000.0, (t_restore - t_encode) / 1000.0, (t_decode - t_restore) / 1000.0, (ggml_time_us() - t_decode) / 1000.0);
+
+    return 0;
+}
+
+// The heads of a hydra that are each at an image chunk with the same token count (see the caller): one round of making
+// room, one encode per image, then one decode of the embeddings of all heads, each row with its head's sequence and
+// positions. A batch of several sequences splits into ubatches with an equal number of tokens per sequence, so heads
+// with images of the same size fill each ubatch, and the expert upload of a large ubatch is paid once for all of
+// them. returns 0 on success
+static int process_mtmd_group(const std::vector<const server_slot *> & heads, size_t vram_keep) {
+    GGML_ASSERT(!heads.empty());
+
+    const server_slot & slot0 = *heads[0];
+
+    mtmd_context * mctx = slot0.mctx;
+    llama_context * ctx = slot0.ctx_tgt;
+    const llama_model * model = llama_get_model(ctx);
+    const size_t n_embd = llama_model_n_embd_inp(model);
+    const bool   mrope  = mtmd_decode_use_mrope(mctx);
+    const size_t n_pos_per_embd = mrope ? 4 : 1;
+
+    std::vector<mtmd::batch_ptr> mbatches;
+    std::vector<const mtmd_input_chunk *> chunks;
+    std::vector<size_t> n_text; // text tokens of each head before its image
+    size_t need = 0;
+    for (const server_slot * h : heads) {
+        const auto & tokens = h->task->tokens;
+        const size_t idx = h->prompt.n_tokens();
+        size_t i = idx;
+        while (tokens[i] != LLAMA_TOKEN_NULL) {
+            i++;
+        }
+        const auto & chunk = tokens.find_chunk(i);
+        mbatches.emplace_back(mtmd_batch_init(mctx));
+        if (mtmd_batch_add_chunk(mbatches.back().get(), chunk.get()) != 0) {
+            return -1;
+        }
+        need = std::max(need, mtmd_batch_encode_vram_need(mbatches.back().get()));
+        chunks.push_back(chunk.get());
+        n_text.push_back(i - idx);
+    }
+
+    const size_t nt = mtmd_input_chunk_get_n_tokens(chunks[0]);
+
+    // the same room-making as process_mtmd_run(): once for the largest encode, with the vision weights on the device
+    static const bool pin_weights = !getenv("MTMD_PIN_WEIGHTS") || atoi(getenv("MTMD_PIN_WEIGHTS")) != 0;
+    const size_t w_bytes = need > 0 && pin_weights && heads.size() > 1 ? mtmd_weights_device_bytes(mctx) : 0;
+
+    const int64_t t_room = ggml_time_us();
+    const size_t vram_free_0 = need > 0 ? llama_vram_free(ctx) : 0;
+    const size_t room = need + w_bytes + vram_keep;
+
+    ubatch_step_aside ubatch(slot0);
+    ubatch.release(need > 0 ? need + vram_keep : 0);
+
+    const int  n_hot_room = need > 0 ? llama_expert_hotstore_free_bytes(ctx, room) : -1;
+    const bool kv_spilled = need > 0 && llama_kv_spill(ctx, room);
+
+    const int64_t t_encode = ggml_time_us();
+    const bool on_device = w_bytes > 0 && vram_free_usable(ctx) >= need + w_bytes + vram_keep && mtmd_weights_to_device(mctx);
+
+    int32_t res = 0;
+    size_t used = 0;
+    bool on_cpu = false;
+    for (auto & mb : mbatches) {
+        res = mtmd_batch_encode(mb.get());
+        bool cpu = false;
+        used = std::max(used, mtmd_batch_encode_vram_used(mb.get(), &cpu));
+        on_cpu = on_cpu || cpu;
+        if (res != 0) {
+            break;
+        }
+    }
+    if (on_device) {
+        mtmd_weights_to_host(mctx);
+    }
+
+    const int64_t t_restore = ggml_time_us();
+    const bool kv_back = kv_spilled && llama_kv_unspill(ctx, true);
+    ubatch.restore();
+    const int  n_hot   = n_hot_room >= 0 ? llama_expert_hotstore_refit(ctx) : -1;
+    const int64_t t_decode = ggml_time_us();
+
+    if (res != 0) {
+        SLT_ERR(slot0, "failed to encode an image of a group of %zu heads, res = %d\n", heads.size(), res);
+        return -1;
+    }
+
+    // whole heads per decode, as many as n_batch holds
+    const size_t n_batch = llama_n_batch(ctx);
+
+    int    n_decodes = 0;
+    size_t n_text_all = 0;
+    for (size_t h0 = 0; h0 < heads.size(); ) {
+        size_t h1 = h0;
+        size_t n  = 0;
+        while (h1 < heads.size() && (h1 == h0 || n + n_text[h1] + nt <= n_batch)) {
+            n += n_text[h1] + nt;
+            h1++;
+        }
+
+        std::vector<float>         embd(n * n_embd);
+        std::vector<llama_pos>     pos(n * n_pos_per_embd);
+        std::vector<llama_seq_id>  seq(n);
+        std::vector<int32_t>       n_seq_id(n, 1);
+        std::vector<llama_seq_id *> seq_ids(n + 1, nullptr);
+        std::vector<int8_t>        logits(n, 0);
+
+        size_t row = 0;
+        for (size_t ih = h0; ih < h1; ih++) {
+            const server_slot & h = *heads[ih];
+            const size_t row0 = row;
+            llama_pos p = h.prompt.tokens.pos_next();
+
+            // the text before the image, as rows of the token embedding table
+            if (n_text[ih] > 0) {
+                std::vector<llama_token> text(n_text[ih]);
+                for (size_t k = 0; k < n_text[ih]; k++) {
+                    text[k] = h.task->tokens[h.prompt.n_tokens() + k];
+                }
+                if (!llama_model_get_tok_embd_rows(model, text.data(), (int32_t) text.size(), embd.data() + row*n_embd)) {
+                    SLT_ERR(h, "%s", "failed to read the token embeddings for the text before an image\n");
+                    return -1;
+                }
+                // a text token takes the same position in every M-RoPE section, as in llama_batch_allocr
+                for (size_t k = 0; k < n_text[ih]; k++) {
+                    for (size_t j = 0; j < n_pos_per_embd; j++) {
+                        pos[j*n + row + k] = p + (llama_pos) k;
+                    }
+                }
+                row += n_text[ih];
+                p   += (llama_pos) n_text[ih];
+                n_text_all += n_text[ih];
+            }
+
+            const float * out = mtmd_batch_get_output_embd(mbatches[ih].get(), chunks[ih]);
+            if (out == nullptr) {
+                return -1;
+            }
+            std::memcpy(embd.data() + row*n_embd, out, nt*n_embd*sizeof(float));
+
+            if (mrope) {
+                std::vector<mtmd_decoder_pos> rel(nt);
+                mtmd_helper_image_get_decoder_pos(mtmd_input_chunk_get_tokens_image(chunks[ih]), p, rel.data());
+                for (size_t k = 0; k < nt; k++) {
+                    pos[0*n + row + k] = rel[k].t;
+                    pos[1*n + row + k] = rel[k].y;
+                    pos[2*n + row + k] = rel[k].x;
+                    pos[3*n + row + k] = rel[k].z;
+                }
+            } else {
+                for (size_t k = 0; k < nt; k++) {
+                    pos[row + k] = p + (llama_pos) k;
+                }
+            }
+            row += nt;
+
+            for (size_t k = row0; k < row; k++) {
+                seq[k] = h.id;
+            }
+        }
+        GGML_ASSERT(row == n);
+        for (size_t k = 0; k < n; k++) {
+            seq_ids[k] = &seq[k];
+        }
+
+        const llama_batch batch = {
+            /*n_tokens =*/ (int32_t) n,
+            /*token    =*/ nullptr,
+            /*embd     =*/ embd.data(),
+            /*pos      =*/ pos.data(),
+            /*n_seq_id =*/ n_seq_id.data(),
+            /*seq_id   =*/ seq_ids.data(),
+            /*logits   =*/ logits.data(),
+        };
+
+        res = llama_decode(ctx, batch);
+        if (res != 0) {
+            SLT_ERR(slot0, "failed to decode the images of a group of %zu heads, res = %d\n", heads.size(), res);
+            return -1;
+        }
+        if (!common_speculative_process(slot0.spec, batch)) {
+            SLT_ERR(slot0, "%s", "failed to process the images of a head group in the draft\n");
+            return -1;
+        }
+        n_decodes++;
+
+        h0 = h1;
+    }
+
+    SLT_INF(slot0, "hydra image group: %zu heads x %zu image tokens + %zu text tokens in %d decode(s), VRAM %zu of %zu MiB asked for, free %zu MiB%s%s%s%s%s, room %.1f ms, encode %.1f ms, restore %.1f ms, decode %.1f ms\n",
+            heads.size(), nt, n_text_all, n_decodes, used / (1024*1024), need / (1024*1024), vram_free_0 / (1024*1024),
             on_device ? ", weights on the device" : "",
             on_cpu ? ", on the CPU" : "",
             ubatch.released() ? ", large ubatch released and back" : "",
@@ -2096,19 +2299,28 @@ private:
             SRV_TRC("%s", "speculative decoding will use checkpoints\n");
         }
 
+        // the head slots come after the normal slots, so the normal slots keep their ids
+        const int n_heads = std::max(0, params_base.hydra_heads);
+        const int n_slots = params_base.n_parallel + n_heads;
+
         // setup slots
         SRV_INF("initializing, n_slots = %d, n_ctx_slot = %d, kv_unified = '%s'\n",
                 params_base.n_parallel, n_ctx_slot(), params_base.kv_unified ? "true" : "false");
 
+        if (n_heads > 0) {
+            SRV_INF("hydra: %d head slots (ids %d..%d), their recurrent states are made when a hydra starts (%u state cells now)\n",
+                    n_heads, params_base.n_parallel, n_slots - 1, llama_seq_cells(ctx_tgt));
+        }
+
         // initialize slots
-        for (int i = 0; i < params_base.n_parallel; i++) {
+        for (int i = 0; i < n_slots; i++) {
             slots.emplace_back();
         }
 
         // try speculative decoding
         if (ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_NO) {
             try {
-                spec.reset(common_speculative_init(params_base.speculative, params_base.n_parallel));
+                spec.reset(common_speculative_init(params_base.speculative, n_slots));
             } catch (const std::exception & e) {
                 SRV_ERR("failed to initialize speculative decoding context: %s\n", e.what());
                 if (params_base.speculative.has_synth()) {
@@ -2127,6 +2339,17 @@ private:
             spec_init.reset();
             ctx_dft   = nullptr;
             model_dft = nullptr;
+        }
+
+        // all heads generating are one batch of n_heads x (1 + draft) tokens. The expert hot store serves only small
+        // batches (4 tokens by default, an id compaction bound of MMQ), so widen it as far as the device allows
+        if (n_heads > 0 && params_base.expert_hot_s != 0 && params_base.expert_tier_max_tokens == 0) {
+            const int32_t n_want = n_heads * (1 + (spec ? common_speculative_n_max(&params_base.speculative) : 0));
+            const int32_t n_tier = llama_expert_tier_widen(n_want);
+            if (n_tier < n_want) {
+                SRV_INF("hydra: %d heads decode %d tokens per step, the expert hot store serves at most %d, so wider steps run on the stock path\n",
+                        n_heads, n_want, n_tier);
+            }
         }
 
         if (!spec && params_base.speculative.has_synth()) {
@@ -2153,10 +2376,11 @@ private:
             }
         }
 
-        for (int i = 0; i < params_base.n_parallel; i++) {
+        for (int i = 0; i < n_slots; i++) {
             server_slot & slot = slots[i];
 
             slot.id      = i;
+            slot.is_head = i >= params_base.n_parallel;
             slot.ctx_tgt = ctx_tgt;
             slot.ctx_dft = ctx_dft;
             slot.mem.init(ctx_tgt, ctx_dft);
@@ -2224,7 +2448,7 @@ private:
         {
             const int32_t n_batch = llama_n_batch(ctx_tgt);
             const int32_t n_embd  = llama_model_n_embd_inp(model_tgt);
-            batch.init(std::max(n_batch, params_base.n_parallel), n_embd);
+            batch.init(std::max(n_batch, n_slots), n_embd);
         }
 
         if (params_base.cache_ram_mib != 0) {
@@ -2484,8 +2708,8 @@ private:
     }
 
     server_slot * get_slot_by_id(int id_slot) {
-        // note: allow id_slot to be out of bounds (wrap around)
-        id_slot = id_slot % slots.size();
+        // note: allow id_slot to be out of bounds (wrap around). A client only addresses the normal slots, never a head
+        id_slot = id_slot % params_base.n_parallel;
 
         for (server_slot & slot : slots) {
             if (slot.id == id_slot) {
@@ -2523,12 +2747,14 @@ private:
             }
         }
 
+        const int id_slot = ret ? ret->id : -1;
+
         // find the slot that has at least n% prompt similarity
         if (slot_prompt_similarity != 0.0f) {
             float f_sim_best = 0;
 
             for (server_slot & slot : slots) {
-                if (task.id_slot != -1 && slot.id != task.id_slot) {
+                if (slot.is_head || (id_slot != -1 && slot.id != id_slot)) {
                     continue;
                 }
 
@@ -2584,7 +2810,7 @@ private:
 
             for (server_slot & slot : slots) {
                 // skip the slot if it is not available
-                if (slot.is_processing()) {
+                if (slot.is_processing() || slot.is_head) {
                     continue;
                 }
 
@@ -3941,10 +4167,134 @@ private:
         return true;
     }
 
-    std::vector<server_slot *> get_free_slots(size_t n_slots_needed, int exclude_id_slot) {
+    // A recurrent memory has state cells for the normal slots only (llama_context_params::n_seq_alloc). A hydra of
+    // n_heads heads needs one more cell per head while it runs, taken from the expert hot store. The cells stay while
+    // hydras keep coming and go back when another request starts (hydra_release)
+    bool hydra_reserve(int n_heads) {
+        // the heads of another hydra can still run
+        int n_busy = 0;
+        for (const auto & slot : slots) {
+            n_busy += slot.is_head && slot.is_processing();
+        }
+
+        const uint32_t n_cells = llama_seq_cells(ctx_tgt);
+        const uint32_t n_need  = (uint32_t) (params_base.n_parallel + n_busy + n_heads);
+
+        if (n_cells == 0 || n_cells >= n_need) {
+            return true;
+        }
+
+        const int64_t t_start = ggml_time_us();
+        const bool ok = llama_seq_reserve(ctx_tgt, n_need);
+
+        SRV_INF("hydra: %s state cells for %d heads, %u -> %u cells in %.1f ms\n",
+                ok ? "made" : "FAILED to make", n_heads, n_cells, llama_seq_cells(ctx_tgt), (ggml_time_us() - t_start) / 1e3);
+
+        return ok;
+    }
+
+    void hydra_release() {
+        const uint32_t n_cells = llama_seq_cells(ctx_tgt);
+
+        if (params_base.hydra_heads <= 0 || n_cells <= (uint32_t) params_base.n_parallel) {
+            return;
+        }
+
+        for (const auto & slot : slots) {
+            if (slot.is_head && slot.is_processing()) {
+                return;
+            }
+        }
+
+        const int64_t t_start = ggml_time_us();
+        const bool ok = llama_seq_reserve(ctx_tgt, params_base.n_parallel);
+
+        SRV_INF("hydra: %s the heads' state cells, %u -> %u cells in %.1f ms\n",
+                ok ? "gave back" : "FAILED to give back", n_cells, llama_seq_cells(ctx_tgt), (ggml_time_us() - t_start) / 1e3);
+    }
+
+    // the heads of slot's hydra that stand at an image chunk, or at a short text before one (with --mtmd-pack), whose
+    // image has as many tokens as slot's, slot first (see process_mtmd_group). Heads with images of another size form
+    // their own group when their turn comes. wait: a head of the hydra has not started its tail yet, all heads go
+    // together in the next pass
+    std::vector<const server_slot *> find_mtmd_group(const server_slot & slot, bool & wait) const {
+        std::vector<const server_slot *> res;
+
+        wait = false;
+
+        const size_t n_batch = llama_n_batch(ctx_tgt);
+
+        // n_tok: tokens of the image, n_text: text tokens before it
+        const auto at_image = [&](const server_slot & s, size_t & n_tok, size_t & n_text) {
+            if (s.state != SLOT_STATE_PROCESSING_PROMPT || !s.task || !s.task->hydra || !s.task->is_child()) {
+                return false;
+            }
+            const auto & tokens = s.task->tokens;
+            const size_t n_all = s.task->n_tokens();
+            const size_t idx   = s.prompt.n_tokens();
+
+            size_t i = idx;
+            while (i < n_all && tokens[i] != LLAMA_TOKEN_NULL && i - idx < n_batch) {
+                i++;
+            }
+            if (i >= n_all || tokens[i] != LLAMA_TOKEN_NULL || (i > idx && !mtmd_pack)) {
+                return false;
+            }
+            const auto & chunk = tokens.find_chunk(i);
+            if (mtmd_input_chunk_get_type(chunk.get()) != MTMD_INPUT_CHUNK_TYPE_IMAGE || mtmd_decode_use_non_causal(s.mctx, chunk.get())) {
+                return false;
+            }
+            n_text = i - idx;
+            n_tok  = mtmd_input_chunk_get_n_tokens(chunk.get());
+            const int32_t n_ctx_limit = s.task->params.n_ctx_limit;
+            return n_text + n_tok <= n_batch && (n_ctx_limit <= 0 || i + n_tok <= (size_t) n_ctx_limit);
+        };
+
+        size_t n0 = 0;
+        size_t t0 = 0;
+        if (!at_image(slot, n0, t0)) {
+            return res;
+        }
+
+        for (const auto & other : slots) {
+            if (other.id != slot.id && other.task && other.task->id_parent == slot.task->id_parent &&
+                    (other.state == SLOT_STATE_STARTED || other.state == SLOT_STATE_WAIT_OTHER)) {
+                wait = true;
+                return res;
+            }
+        }
+
+        res.push_back(&slot);
+
+        std::string other_sizes;
+        for (const auto & other : slots) {
+            size_t n = 0;
+            size_t t = 0;
+            if (other.id == slot.id || !other.task || other.task->id_parent != slot.task->id_parent || !at_image(other, n, t) ||
+                    !are_lora_equal(slot.lora, other.lora)) {
+                continue;
+            }
+            if (n == n0) {
+                res.push_back(&other);
+            } else {
+                other_sizes += string_format(" %d:%zu", other.id, n);
+            }
+        }
+
+        if (!other_sizes.empty()) {
+            SLT_INF(slot, "hydra image group: %zu heads at %zu tokens, other sizes (slot:tokens)%s go in their own groups\n",
+                    res.size(), n0, other_sizes.c_str());
+        }
+
+        return res;
+    }
+
+    // heads: the head slots (in id order, so a hydra of K heads uses the sequences n_parallel .. n_parallel + K - 1),
+    // otherwise the normal slots
+    std::vector<server_slot *> get_free_slots(size_t n_slots_needed, int exclude_id_slot, bool heads = false) {
         std::vector<server_slot *> free_slots;
         for (auto & slot : slots) {
-            if (!slot.is_processing() && slot.id != exclude_id_slot) {
+            if (!slot.is_processing() && slot.id != exclude_id_slot && slot.is_head == heads) {
                 free_slots.push_back(&slot);
             }
             if (free_slots.size() >= n_slots_needed) {
@@ -4268,14 +4618,30 @@ private:
                         break;
                     }
 
+                    // the heads of a hydra run in the head slots when the server has them
+                    const bool on_heads = task.hydra && task.is_parent() && params_base.hydra_heads > 0;
+
+                    // a request that is not a hydra gets the VRAM of the heads' states back first
+                    if (!on_heads) {
+                        hydra_release();
+                    }
+
                     if (task.is_parent()) {
                         // try getting free slots for all child tasks
                         size_t n_child_tasks = task.child_tasks.size();
-                        std::vector<server_slot *> child_slots = get_free_slots(n_child_tasks, slot->id);
+                        std::vector<server_slot *> child_slots = get_free_slots(n_child_tasks, slot->id, on_heads);
                         if (child_slots.size() < n_child_tasks) {
                             SRV_DBG("not enough free slots for child tasks, n_free = %zu, n_children = %zu, defer task, id_task = %d\n", child_slots.size(), n_child_tasks, id_task);
                             queue_tasks.defer(std::move(task));
                             break;
+                        }
+                        if (on_heads && !hydra_reserve((int) n_child_tasks)) {
+                            const std::string err = string_format("hydra: not enough memory for the states of %zu heads, send fewer heads", n_child_tasks);
+                            for (const auto & child : task.child_tasks) {
+                                send_error(child, err, ERROR_TYPE_UNAVAILABLE);
+                            }
+                            send_error(task, err, ERROR_TYPE_UNAVAILABLE);
+                            break; // drop the task
                         }
                         if (!launch_slots_with_parent_task(*slot, child_slots, std::move(task))) {
                             SRV_ERR("failed to launch slot with parent task, id_task = %d\n", id_task);
@@ -5520,8 +5886,10 @@ private:
 
                     bool do_checkpoint = params_base.n_ctx_checkpoints > 0;
 
-                    // make checkpoints only for completion tasks, and not for the few tokens of a loop guard hop
-                    do_checkpoint = do_checkpoint && slot.task->type == SERVER_TASK_TYPE_COMPLETION && !slot.guard.hop;
+                    // make checkpoints only for completion tasks, and not for the few tokens of a loop guard hop.
+                    // A hydra head is cleared when it ends, so nothing would ever restore its checkpoints
+                    do_checkpoint = do_checkpoint && slot.task->type == SERVER_TASK_TYPE_COMPLETION && !slot.guard.hop &&
+                        !(slot.task->hydra && slot.task->is_child());
 
                     // make a checkpoint of the parts of the memory that cannot be rolled back.
                     // checkpoints are created only if:
@@ -5538,6 +5906,57 @@ private:
                     // check if we should process the mtmd chunk
                     while (true) {
                         auto cur_token_idx = slot.prompt.n_tokens();
+
+                        // the heads of a hydra that all stand at an image of one size, or at a short text before it:
+                        // one encode round and one decode for all of them
+                        if (cur_token_idx < slot.task->n_tokens() && slot.task->hydra && slot.task->is_child() &&
+                                lora_get_enabled_ids(slot.lora).empty()) {
+                            bool wait = false;
+                            const auto group = find_mtmd_group(slot, wait);
+                            if (wait) {
+                                return; // the other heads start their tails in this pass, go on with them in the next
+                            }
+                            if (group.size() >= 2) {
+                                metrics_pre_decode();
+
+                                int32_t res = 0;
+                                queue_tasks.yield_to_queue([&]() {
+                                    res = process_mtmd_group(group, (size_t) params_base.kv_spill_margin * 1024 * 1024);
+                                });
+
+                                if (res != 0) {
+                                    for (const server_slot * h : group) {
+                                        server_slot & hs = slots[h->id];
+                                        send_error(hs, "failed to process the images of a hydra head group", ERROR_TYPE_SERVER);
+                                        hs.release();
+                                    }
+                                    return;
+                                }
+
+                                for (const server_slot * h : group) {
+                                    server_slot & hs = slots[h->id];
+                                    const auto & tokens = hs.task->tokens;
+
+                                    size_t n_done = 0;
+                                    while (tokens[hs.prompt.n_tokens()] != LLAMA_TOKEN_NULL) {
+                                        hs.prompt.tokens.push_back(tokens[hs.prompt.n_tokens()]);
+                                        n_done++;
+                                    }
+
+                                    const auto & chunk = tokens.find_chunk(hs.prompt.n_tokens());
+                                    n_done += mtmd_input_chunk_get_n_tokens(chunk.get());
+                                    hs.prompt.tokens.push_back_placeholder(chunk.get());
+
+                                    metrics_queue_prompt(n_done);
+                                    hs.stats.n_prompt_processed += n_done;
+                                    hs.stats.update_prompt_last();
+                                }
+
+                                // the text after the images goes in the next pass, for all heads in one batch
+                                return;
+                            }
+                        }
+
                         if (
                             cur_token_idx >= slot.task->n_tokens() ||
                             input_tokens[cur_token_idx] != LLAMA_TOKEN_NULL // encountered a text token
@@ -6683,7 +7102,8 @@ server_context_meta server_context::get_meta() const {
         /* model_size             */ llama_model_size(impl->model_tgt),
         /* model_ftype            */ ftype_name,
 
-        /* hydra_max_heads        */ impl->spec ? 0 : std::max(0, impl->params_base.n_parallel - 1),
+        /* hydra_max_heads        */ impl->params_base.hydra_heads > 0 ? impl->params_base.hydra_heads : std::max(0, impl->params_base.n_parallel - 1),
+        /* hydra_media_tails      */ impl->mctx != nullptr,
     };
 }
 
@@ -7049,10 +7469,12 @@ std::unique_ptr<server_res_generator> server_routes::handle_hydra(const server_h
         n_heads = (int) heads.size();
 
         if (meta->hydra_max_heads == 0) {
-            throw std::invalid_argument("hydra: not available on this server (it needs -np 2 or more, and no draft model or MTP)");
+            throw std::invalid_argument("hydra: not available on this server (it needs --hydra-heads N, or -np 2 or more)");
         }
         if (n_heads > meta->hydra_max_heads) {
-            throw std::invalid_argument(string_format("hydra: %d heads need %d slots and this server has %d (-np), so at most %d heads",
+            throw std::invalid_argument(params.hydra_heads > 0
+                ? string_format("hydra: %d heads and this server has %d head slots (--hydra-heads)", n_heads, meta->hydra_max_heads)
+                : string_format("hydra: %d heads need %d slots and this server has %d (-np), so at most %d heads",
                         n_heads, n_heads + 1, params.n_parallel, meta->hydra_max_heads));
         }
         if (json_value(body, "n", 1) != 1 || json_value(body, "n_cmpl", 1) != 1) {
@@ -7155,13 +7577,35 @@ std::unique_ptr<server_res_generator> server_routes::handle_hydra(const server_h
                 // media in the root: tokenize only the tail, so the images are not processed again for every head
                 const std::string tail = head_prompt.substr(root_prompt.size());
 
-                if (tail.find(get_media_marker()) != std::string::npos) {
-                    throw std::invalid_argument(string_format("hydra: head %d: a tail cannot hold media when the root has media", i));
+                // the files of the head are the root's, then the tail's
+                size_t n_tail_media = 0;
+                for (size_t pos = tail.find(get_media_marker()); pos != std::string::npos; pos = tail.find(get_media_marker(), pos + 1)) {
+                    n_tail_media++;
+                }
+                if (n_tail_media + root_files.size() != head_files.size()) {
+                    throw std::invalid_argument(string_format("hydra: head %d: %zu media files for %zu media markers", i, head_files.size(), n_tail_media + root_files.size()));
                 }
 
                 tokens = root.tokens.clone();
-                for (const llama_token tok : tokenize_mixed(ctx_server.vocab, json(tail), false, true)) {
-                    tokens.push_back(tok);
+
+                if (n_tail_media == 0) {
+                    for (const llama_token tok : tokenize_mixed(ctx_server.vocab, json(tail), false, true)) {
+                        tokens.push_back(tok);
+                    }
+                } else {
+                    const std::vector<raw_buffer> tail_files(head_files.end() - n_tail_media, head_files.end());
+                    const server_tokens tail_tokens = process_mtmd_prompt(ctx_server.mctx, tail, tail_files, ctx_server.init_opt, false, false);
+
+                    for (size_t k = 0; k < tail_tokens.size(); ) {
+                        if (tail_tokens[k] != LLAMA_TOKEN_NULL) {
+                            tokens.push_back(tail_tokens[k]);
+                            k++;
+                        } else {
+                            const auto & chunk = tail_tokens.find_chunk(k);
+                            tokens.push_back(chunk.get());
+                            k += mtmd_input_chunk_get_n_tokens(chunk.get());
+                        }
+                    }
                 }
             }
 
@@ -7347,6 +7791,7 @@ static json get_res_props(const server_context_meta & meta, const common_params 
         { "is_sleeping",                 is_sleeping },
         { "cors_proxy_enabled",          params.ui_mcp_proxy },
         { "hydra_max_heads",             meta.hydra_max_heads },
+        { "hydra_media_tails",           meta.hydra_media_tails },
     };
     if (params.use_jinja) {
         if (!tmpl_tools.empty()) {

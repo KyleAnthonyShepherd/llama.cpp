@@ -1777,7 +1777,9 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.n_ctx             = params.n_ctx;
     cparams.n_ctx_max         = params.n_ctx_max;
     cparams.ctx_grow_factor   = params.ctx_grow_factor;
-    cparams.n_seq_max         = params.n_parallel;
+    // hydra head slots are sequence ids beside the normal slots; their recurrent states are made when a hydra starts
+    cparams.n_seq_max         = params.n_parallel + std::max(0, params.hydra_heads);
+    cparams.n_seq_alloc       = params.hydra_heads > 0 ? params.n_parallel : 0;
     cparams.n_rs_seq          = params.speculative.need_n_rs_seq();
     // recurrent/hybrid memory keeps the last n_rs_seq + 1 tokens of a sequence inside one micro-batch, so the window has to fit or we keep the checkpoint path
     // llama_context clamps the micro-batch to min(n_batch, n_ubatch), and n_batch to n_ctx, so the check uses the effective size and not the requested one

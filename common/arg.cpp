@@ -2777,6 +2777,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         ).set_env("LLAMA_ARG_N_PARALLEL"));
     }
     add_opt(common_arg(
+        {"--hydra-heads"}, "N",
+        string_format("head slots for hydra requests (one shared root, N tails decoded together), beside the -np slots; "
+                      "normal requests never use them, and their recurrent states exist only while a hydra runs. "
+                      "Needs a unified KV cache, which it turns on (default: %d = off)", params.hydra_heads),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("error: --hydra-heads must be >= 0\n");
+            }
+            params.hydra_heads = value;
+        }
+    ).set_env("LLAMA_ARG_HYDRA_HEADS").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"-ns", "--sequences"}, "N",
         string_format("number of sequences to decode (default: %d)", params.n_sequences),
         [](common_params & params, int value) {

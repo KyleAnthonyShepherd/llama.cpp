@@ -1025,7 +1025,8 @@ server_tokens process_mtmd_prompt(
         const std::string & prompt,
         const std::vector<raw_buffer> & files,
         const mtmd_helper_init_opt & init_opt,
-        bool is_placeholder) {
+        bool is_placeholder,
+        bool add_special) {
     // these will be freed upon going out of scope
     mtmd::bitmaps bitmaps;
     std::vector<mtmd_helper::video_ptr> videos;
@@ -1045,7 +1046,7 @@ server_tokens process_mtmd_prompt(
     mtmd_input_text inp_txt = {
         prompt.data(),
         prompt.size(),
-        /* add_special */   true,
+        /* add_special */   add_special,
         /* parse_special */ true,
     };
     mtmd::input_chunks chunks(mtmd_input_chunks_init());

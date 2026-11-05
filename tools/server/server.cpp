@@ -155,6 +155,12 @@ int llama_server(common_params & params, int argc, char ** argv) {
             params.n_parallel = 4;
             params.kv_unified = true;
         }
+
+        // the heads share the root's KV cells, so all sequences use one pool
+        if (params.hydra_heads > 0 && !params.kv_unified) {
+            SRV_INF("%s", "--hydra-heads: using a unified KV cache\n");
+            params.kv_unified = true;
+        }
     }
 
     // size the KV pool from --kv-unified-per-slot, unless the user pinned it with -c

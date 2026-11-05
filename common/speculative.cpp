@@ -181,6 +181,14 @@ struct common_speculative_impl {
     // (optional) serialize/restore per-seq internal state (e.g. eagle3's deferred boundary).
     virtual bool get_state(llama_seq_id /*seq_id*/, std::vector<uint8_t> & /*data*/) const { return false; }
     virtual void set_state(llama_seq_id /*seq_id*/, const std::vector<uint8_t> & /*data*/) {}
+
+    // a sequence forked from another one (llama_memory_seq_cp) goes on from the same draft state
+    virtual void seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst) {
+        std::vector<uint8_t> data;
+        if (get_state(seq_id_src, data)) {
+            set_state(seq_id_dst, data);
+        }
+    }
 };
 
 struct common_speculative_impl_draft_simple : public common_speculative_impl {
@@ -1649,19 +1657,31 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
         }
 
-        // --spec-draft-chain: keep the catch-up of a small generation batch, the next draft decodes it
-        const bool keep = dev_chain && n_seq == 1 && !is_mem_shared && !need_reprime &&
-            i_batch_beg[0] == 0 && n_tokens <= this->params.n_max + 1;
+        // --spec-draft-chain: keep the catch-up of a small generation batch of one sequence, the next draft decodes it
+        llama_seq_id seq_keep = -1;
+        int          n_present = 0;
+        for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+            n_present += i_batch_beg[seq_id] >= 0;
+            if (i_batch_beg[seq_id] == 0 && i_batch_end[seq_id] == n_tokens - 1) {
+                seq_keep = seq_id;
+            }
+        }
+        if (n_present != 1) {
+            seq_keep = -1;
+        }
+
+        const bool keep = dev_chain && seq_keep >= 0 && !is_mem_shared && !need_reprime &&
+            n_tokens <= this->params.n_max + 1;
 
         if (keep) {
-            auto & kr = kept[0];
+            auto & kr = kept[seq_keep];
 
             kr.tok.assign(batch_in.token, batch_in.token + n_tokens);
             kr.pos.assign(batch_in.pos,   batch_in.pos   + n_tokens);
 
             // same rows as the catch-up below: the target h shifted right by one, pending_h first
             kr.h.resize((size_t) n_tokens * n_embd);
-            std::memcpy(kr.h.data(), pending_h[0].data(), row_bytes);
+            std::memcpy(kr.h.data(), pending_h[seq_keep].data(), row_bytes);
             std::memcpy(kr.h.data() + n_embd, llama_get_embeddings_nextn(ctx_tgt), row_bytes * (n_tokens - 1));
         }
 
@@ -2017,6 +2037,18 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 dp.result->clear();
             }
         }
+    }
+
+    void seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst) override {
+        if (seq_id_src < 0 || seq_id_src >= (llama_seq_id) n_seq || seq_id_dst < 0 || seq_id_dst >= (llama_seq_id) n_seq || seq_id_src == seq_id_dst) {
+            return;
+        }
+
+        pending_h[seq_id_dst]     = pending_h[seq_id_src];
+        valid[seq_id_dst]         = valid[seq_id_src];
+        verify_h[seq_id_dst]      = verify_h[seq_id_src];
+        verify_h_rows[seq_id_dst] = verify_h_rows[seq_id_src];
+        kept[seq_id_dst]          = kept[seq_id_src];
     }
 
     void accept(llama_seq_id seq_id, uint16_t n_accepted, bool /*is_other*/) override {
@@ -2788,7 +2820,7 @@ common_params common_base_params_to_speculative(const common_params & params) {
         result.n_ubatch = std::min(result.n_ubatch, params_spec.n_ubatch);
     }
 
-    result.n_outputs_max = params.n_parallel;
+    result.n_outputs_max = params.n_parallel + std::max(0, params.hydra_heads);
     result.n_outputs_max_per_seq = 1;
 
     // dflash/dspark decode the whole noise block in a single pass and sample every block position on the backend
@@ -2802,7 +2834,7 @@ common_params common_base_params_to_speculative(const common_params & params) {
     if (has_block_draft) {
         // per-seq output positions: DFlash decodes anchor + n_max masks (n_max + 1); DSpark n_max -> +1 covers both
         const int32_t per_seq = std::max(1, params_spec.n_max + 1);
-        result.n_outputs_max = params.n_parallel * per_seq;
+        result.n_outputs_max = (params.n_parallel + std::max(0, params.hydra_heads)) * per_seq;
         if (params_spec.backend_sampling) {
             result.n_outputs_max_per_seq = per_seq;
         }
@@ -3239,6 +3271,16 @@ void common_speculative_set_state(common_speculative * spec, llama_seq_id seq_id
 
     for (auto & impl : spec->impls) {
         impl->set_state(seq_id, data);
+    }
+}
+
+void common_speculative_seq_cp(common_speculative * spec, llama_seq_id seq_id_src, llama_seq_id seq_id_dst) {
+    if (spec == nullptr) {
+        return;
+    }
+
+    for (auto & impl : spec->impls) {
+        impl->seq_cp(seq_id_src, seq_id_dst);
     }
 }
 

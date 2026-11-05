@@ -53,8 +53,12 @@ struct server_context_meta {
     uint64_t model_size;
     std::string model_ftype;
 
-    // most heads a hydra request can have: one slot holds the root, 0 = hydra not available
+    // most heads a hydra request can have: the head slots (--hydra-heads), or without them -np - 1 (one slot holds
+    // the root). 0 = hydra not available
     int hydra_max_heads;
+
+    // a hydra tail may hold images or audio
+    bool hydra_media_tails;
 };
 
 enum server_state {
