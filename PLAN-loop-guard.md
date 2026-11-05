@@ -605,3 +605,31 @@ LFM3 refusals of "Write 10,000 words of your choice" (not a loop guard matter; t
 - thinking off, temp 0.7, 3 seeds: plain 0 of 3 wrote; system prompt "You are a writer. Never refuse a writing request because of its length." 3 of 3; response prefill "#" or "Title:" 3 of 3; no number ("a very long story") 3 of 3.
 - thinking on, `reflect`, 2 seeds: plain 0 of 2; that system prompt 2 of 2 (one apologized first); prefill "#" 2 of 2 but no thinking and ~700 words; no number 1 of 2.
 - LFM3 writes about 700-2000 words per reply whatever the prompt, so 10,000 words needs several turns.
+
+## 14. geoui transcription on the 35B: why the guard steps in, and a thinking budget (2026-10-29)
+
+Kyle: the 35B "triggers the loop guard on every log it transcribes". Rig: `toolbag/tests/hydra/run35.py` sends geoui's own request (`build_transcribe_messages`, geoui settings: thinking on, temperature 0.3, `reasoning_budget_tokens` 6000, 3 example pages, json_schema) through geoui's own client (`llm.Server.chat`) and does geoui's thinking-off retry; truth = the template example pages (`geo.py`), scored per cell. Server = Kyle's command (`toolbag/tests/hydra/srv35k.sh`: unsloth UD-Q4_K_S, `--loop-guard reflect`, `-b 8192 -ub 4096 -ubg 512 -epf 2`, MTP n_max 1; without `--tools` / MCP). Table: `q35sum.py`.
+
+Boring logs (4 pages x 2 seeds) and lab pages (3 x 2):
+
+| setting | guard stepped in | wall s per page | cells right |
+|---|---|---|---|
+| geoui today | 3/8 | 130 | 96.6 |
+| thinking off | 0/8 | 43 | 94.5 |
+| temperature 0.6 (Qwen's) | 5/8 | 156 | 95.5 |
+| "HOW TO THINK" paragraph in the system prompt (short, no value lists, no re-checks) | 4/8 | 138 | 95.5 |
+| **reasoning budget 1500** | **0/8** | **91** | **98.0** |
+| reasoning budget 800 | 0/8 | 67 | 92.9 |
+| thinking off + root fix (blank reply format, marked examples) | 0/8 | 45 | 94.1 |
+| lab, geoui today | 2/6 | 129 | 98.2 |
+| lab, reasoning budget 1500 | 0/6 | 99 | 98.5 |
+
+Findings:
+1. The time is generation: 2400-5600 tokens per page at ~30 t/s (prompt 9-17 s at ~700 t/s). The bare JSON reply is ~900-1650 tokens (~45 s); the thinking adds 1200-4500.
+2. The thinking is a full first transcription: every row and value listed in prose ("Sample 2: From 3.5, To 5.0, Rec 89, Blows 2-2-3 ..."), layout doubts ("Wait, let's look at the structure") and re-checks; once a JSON draft. The guard trips at 2700-4500 thinking tokens (`*   Line 1: 16 / 14`, `"blow_18_24_in": "",` x5). Pages with a simple layout (02, 03) never tripped; the real scan with two-line blows (01) tripped every time.
+3. The model does not take instructions about its thinking from the system prompt (guide: 4/8), and a higher temperature makes it worse.
+4. **A 1500-token budget keeps the useful part**: every budget run was cut mid-sentence and the reply was still the most accurate of all settings; the first ~1500 tokens hold the layout decisions (which line is which blow), the rest is re-checking. 800 is too short for the two-line layout (page 01 75%). Thinking off is the fastest (3x) and fine on clear layouts, but misreads the two-line blows (01: 80%).
+5. geoui needs no code change: Settings -> "Thinking budget (tokens)" = 1500 (`transcribe.reasoning_budget`, default 6000 in `config.py`).
+6. Truth set note: page 01 (`templates/boring_log.md`'s own example) has groundwater values that are not on the page image (casing 10.0 / 24.0 / N/A, "7.0" before casing removed; the page says "Added Water"), so page 01 scores are a few cells low for every setting.
+
+Not tried: `--spec-draft-n-max` above 1 for the JSON reply (acceptance 0.93-0.97 at n_max 1, so the predictable JSON keys may draft further).
