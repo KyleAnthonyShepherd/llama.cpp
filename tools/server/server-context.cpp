@@ -2401,6 +2401,9 @@ private:
 
             slot.callback_on_release = [this](int id_slot) {
                 queue_tasks.pop_deferred_task(id_slot);
+                if (slots[id_slot].is_head) {
+                    t_head_done_us = ggml_time_us();      // see hydra_trim()
+                }
             };
 
             slot.callback_on_reset = [this](const server_slot & slot) {
@@ -4209,6 +4212,41 @@ private:
         return ok;
     }
 
+    // A head that finished while other heads of its hydra still write gives its state cell back, so the expert hot
+    // store gets the VRAM (about 2 slots of the 35B on a 6 GB card) for the heads that are left. It waits
+    // HEAD_TRIM_US after the last head finished: heads that end together (crawl pages) cost one trim or none,
+    // instead of a reallocation each. When no head runs, the cells stay for the next hydra (hydra_release).
+    // TODO: the finished head's KV cells are the larger part (a long transcription tail is ~10k cells, 200 MiB),
+    // but the unified cache holds every head's cells mixed together and only shrinks from the end, so they stay
+    // until the hydra is over. Giving them back needs the cache compacted (cells moved down) while it is in use
+    static constexpr int64_t HEAD_TRIM_US = 5 * 1000 * 1000;
+
+    void hydra_trim() {
+        if (t_head_done_us == 0 || ggml_time_us() - t_head_done_us < HEAD_TRIM_US) {
+            return;
+        }
+        t_head_done_us = 0;
+
+        int n_busy = 0;
+        for (const auto & slot : slots) {
+            n_busy += slot.is_head && slot.is_processing();
+        }
+
+        const uint32_t n_cells = llama_seq_cells(ctx_tgt);
+        const uint32_t n_want  = (uint32_t) (params_base.n_parallel + n_busy);
+
+        if (n_busy == 0 || n_cells <= n_want) {
+            return;
+        }
+
+        const int64_t t_start = ggml_time_us();
+        const bool ok = llama_seq_reserve(ctx_tgt, n_want);
+
+        SRV_INF("hydra: %s the state cells of finished heads while %d heads still write, %u -> %u cells in %.1f ms, expert hot store %d slots\n",
+                ok ? "gave back" : "FAILED to give back", n_busy, n_cells, llama_seq_cells(ctx_tgt), (ggml_time_us() - t_start) / 1e3,
+                llama_expert_hotstore_free_bytes(ctx_tgt, 0));
+    }
+
     void hydra_release() {
         const uint32_t n_cells = llama_seq_cells(ctx_tgt);
 
@@ -5182,6 +5220,9 @@ private:
                 queue_tasks.post(std::move(task));
             }
         }
+
+        // between two decodes: a finished head's state cell can go
+        hydra_trim();
 
         try {
             scoped_timer t(t_pre_decode, n_pre_decode);
@@ -6683,6 +6724,9 @@ private:
 
     // last slot count reported by the idle refit, so a steady state stays quiet in the log
     int32_t n_hot_idle = -1;
+
+    // when the last hydra head finished, 0 = nothing to trim (hydra_trim)
+    int64_t t_head_done_us = 0;
 
     // context size of a single slot, capped by --kv-unified-per-slot and by the training context of the model
     int n_ctx_slot() const {

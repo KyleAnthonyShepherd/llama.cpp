@@ -448,3 +448,47 @@ quick looks, moisture reads and transcriptions, waiting for 4 in the queue.
   cancelling one job of a running 4-head transcription group: it ended cancelled, the other 3 went back and ran as 3.
 - Not tested: two servers sharing the queue, the home server, describe (left one page per request: each page's
   prompt holds the previous page's description, so a file's pages depend on each other).
+
+## 11. One log written by several heads (split transcription, 2026-11-05)
+
+Kyle's home server test of V3 transcriptions (4 multi-page logs per request): the 4 tails held 13 page images at
+1800 px (~39k prompt tokens), the shared KV cache grew 4096 -> 54272 cells (~1 GiB on a 6 GB card, beside 628 MiB of
+head states), the vision encode was ~7 s per page on the 1660 Ti, and generation stayed at the speed of one stream.
+Kyle: transcribe one log at a time and split its writing across the heads, with stage 1 parallel too.
+
+`geoui/split.py` (V3-Hydra) and `jobs.run_transcribe_split()`: root = the system prompt, the example pages and the
+log's pages (read once). **Stage 1**, one hydra request of 3 heads: title + header; the small sections (groundwater,
+notes, remarks); the skeleton (the main table's rows by their first 4 columns + page). **Stage 2**, one hydra
+request on the same root plus one shared turn that lists the skeleton's rows: 4 heads, each writes a contiguous
+group of rows in full. Each head has its part's own JSON schema. Merge in order; the transcript keeps what each head
+wrote and which head wrote each row (`reply.split`). Settings › Hydra › "Split transcriptions" (off by default),
+"Thinking per split head" (0). Reruns (old answer and feedback after the pages) run as one request.
+
+Laptop, 4 Micron sheets (p397, p219, p269, p325; examples p220, p189, p339), 35B with MTP, `--hydra-heads 4`
+(`toolbag/tests/hydra/split_check.py`, the same split.py):
+
+| mode | cells right | s per log |
+|---|---|---|
+| one request, thinking on (budget 1500) | 98.3% | 116.6 |
+| **split, thinking off** | **99.0%** | **76.0** (stage 1 ~39 s incl. the page, stage 2 ~37 s) |
+| split, thinking 300 tokens per head | 96.0% | 120.5 |
+| split, thinking 800 per head (first try, 1 sheet) | 98.5% | 277.8 |
+
+- The skeleton was right on every sheet (10, 10, 8, 8 rows). Thinking in each head is the cost: every head re-reads the
+  whole page in its thinking (1000-2500 characters each at budget 800), for a part that is a fraction of the reply.
+- First version gave each row head the whole row list in its tail (4 x 366 tokens, over the op-offload threshold):
+  7.2 s of prompt. The list is now one shared turn after the root.
+- Caveat: 4 single-sheet CME logs. Section 14 of PLAN-loop-guard found thinking helps on the two-line-blow layouts
+  (single request: thinking off 94.5% vs budget 1500 98.0%); not measured for split heads yet.
+- geoui end to end (test data folder): an auger probe log with no samples (stage 1 only, the empty skeleton is right),
+  and the template's two-line-blows log: 7 heads, 11 rows, 63 s. The review page shows the heads as chips (each opens
+  what it was asked, its thinking and its reply), a "side by side" view of all heads, a badge on the header and
+  sections saying which head wrote them, the head of each sample row in the # column, and a mark on a row whose first
+  columns differ from the skeleton.
+
+**Finished heads give their state back** (server, `hydra_trim`): 5 s after a head finished, while other heads still
+write, the recurrent state cells shrink to the heads still running and the hot store refits (seen: 5 -> 4 cells,
+hot store 16 -> 18 slots; 4 -> 2 cells, 20 -> 24). Heads that end together (crawl pages) trim once or not at all.
+**TODO**: a finished head's KV cells (a long transcription tail is ~10k cells, ~200 MiB) stay until the hydra ends:
+the unified cache holds every head's cells mixed together and only shrinks from the end. Giving them back needs the
+cache compacted (cells moved down) while it is in use.
