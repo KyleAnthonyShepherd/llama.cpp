@@ -424,3 +424,27 @@ thinking off): head 0 ("write buffalo 600 times") tripped at 602 tokens, light p
 new reply; head 2 (numbers as words to 400) tripped at 1053, reflection found no loop, went on, tripped again at 1527,
 note; head 1 ran untouched. Restores 27-29 ms. Fixed on the way: the light park did not cut the MTP draft context back,
 so the reflection's cells stayed in the draft KV; after the fix the tripped heads keep 0.98 and 0.998 draft acceptance.
+
+## 10. geoui V3-Hydra (phase 3, 2026-11-05)
+
+`W:\Kyle_Shepherd\geocrawler\V3-Hydra` (a copy of V2, not a git folder; V2 untouched). Kyle: 4 heads for everything:
+quick looks, moisture reads and transcriptions, waiting for 4 in the queue.
+
+- `llm.Server.hydra()`: one streamed hydra request, per-head results, loop guard events per head, hangs up when every
+  head's JSON is complete. `status()` reads `hydra_max_heads` / `hydra_media_tails` from `/props`.
+- `jobs._take_group()`: up to 4 crawl jobs at once; transcriptions in groups of one template and one example set
+  (`_tkey`), an app-queued group waits up to Settings › Hydra › wait_s (600 s) to fill, a hand-started one goes at
+  once. `_chat_hydra()`: the root's hat as before (named from root + first head, the same name V2 used), per-head
+  thinking-off retry when the loop guard gives up. `_settle()`: per job as V2; a job whose request was dropped because
+  another job of it was cancelled goes back to the queue.
+- `crawl.run_crawl_group()`: quick looks 4 pages per request across the jobs; a page that fails goes alone. Moisture
+  pages go to a queue across files (`crawl_pages.extract_pending`, a new column V2 ignores) and are read 4 at a time
+  when 4 wait, when the oldest waited wait_s, or when no crawl job is left; `kick_pending()` at start for leftovers.
+  A server without hydra runs V2's path, which also reads leftovers one by one.
+- Tested end to end against the 35B (`--hydra-heads 4`, test data folder, 6 PDFs / 10 pages): 4 + 2 crawl jobs
+  pooled, quick looks as 4-head requests (images of two sizes grouped by size), 3 moisture pages of 3 files read in
+  one 3-head request at the end, 10 moisture rows saved; 4 transcriptions in one request (259 s for 4 logs, root 9255
+  tokens read once, right boring ids); 2 app-queued transcriptions waited 61 s (test wait 60) then ran together;
+  cancelling one job of a running 4-head transcription group: it ended cancelled, the other 3 went back and ran as 3.
+- Not tested: two servers sharing the queue, the home server, describe (left one page per request: each page's
+  prompt holds the previous page's description, so a file's pages depend on each other).
