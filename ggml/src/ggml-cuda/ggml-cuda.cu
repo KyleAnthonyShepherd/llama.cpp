@@ -6265,10 +6265,21 @@ static bool ggml_backend_cuda_fattn_uses_mma(ggml_backend_dev_t dev, const ggml_
     return op->op == GGML_OP_FLASH_ATTN_EXT && ggml_cuda_flash_attn_ext_uses_mma(ctx->device, op);
 }
 
+// largest MUL_MAT_ID batch (tokens) that the device runs on MMVQ for this weight type. MMVQ has no id compaction,
+// so ids repeated inside one token's list are fine there
+static int ggml_backend_cuda_mmid_mmvq_max_batch(ggml_backend_dev_t dev, enum ggml_type type) {
+    ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *) dev->context;
+
+    return ggml_is_quantized(type) ? get_mmvq_mmid_max_batch(type, ggml_cuda_info().devices[ctx->device].cc) : 0;
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
     if (strcmp(name, "ggml_backend_dev_free_vram") == 0) {
         return (void *)ggml_backend_cuda_device_free_vram;
+    }
+    if (strcmp(name, "ggml_backend_cuda_mmid_mmvq_max_batch") == 0) {
+        return (void *)ggml_backend_cuda_mmid_mmvq_max_batch;
     }
     if (strcmp(name, "ggml_backend_cuda_fattn_uses_mma") == 0) {
         return (void *)ggml_backend_cuda_fattn_uses_mma;

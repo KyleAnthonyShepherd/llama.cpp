@@ -219,6 +219,18 @@ bool llama_memory_hybrid::unspill_layers(bool force) {
     return mem_attn->unspill_layers(force);
 }
 
+uint32_t llama_memory_hybrid::seq_cells() const {
+    return mem_recr->seq_cells();
+}
+
+bool llama_memory_hybrid::seq_reserve(uint32_t n_new) {
+    return mem_recr->seq_reserve(n_new);
+}
+
+size_t llama_memory_hybrid::seq_reserve_bytes(uint32_t n_new) const {
+    return mem_recr->seq_reserve_bytes(n_new);
+}
+
 llama_kv_cache * llama_memory_hybrid::get_mem_attn() const {
     return mem_attn.get();
 }

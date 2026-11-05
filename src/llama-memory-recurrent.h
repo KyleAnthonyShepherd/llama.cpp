@@ -58,6 +58,16 @@ public:
     // there is nothing to grow - always succeeds
     bool resize(uint32_t n_new) override;
 
+    // state cells: a sequence id below n_seq_max needs a free cell for its state, see seq_reserve()
+    uint32_t seq_cells() const override;
+
+    // reallocate the states for n_new cells, keeping the used ones. A shrink moves used cells to the front first,
+    // and fails when more than n_new cells are in use
+    bool seq_reserve(uint32_t n_new) override;
+
+    // device memory seq_reserve(n_new) takes on top of what the states hold now
+    size_t seq_reserve_bytes(uint32_t n_new) const override;
+
     bool prepare(const std::vector<llama_ubatch> & ubatches);
 
     // find a contiguous slot of memory cells and emplace the ubatch there
@@ -93,7 +103,6 @@ public:
         llama_pos pos  = -1;
         int32_t   src  = -1; // used to know where states should be copied from
         int32_t   src0 = -1; // like src, but only used when setting the inputs (allowing to copy once)
-        int32_t   tail = -1;
 
         std::set<llama_seq_id> seq_id;
 
@@ -112,6 +121,10 @@ public:
 
     std::vector<mem_cell> cells;
 
+    // per seq id: the cell that holds its latest state, -1 for none. Kept apart from the cells, so that there can be
+    // fewer cells than sequence ids
+    std::vector<int32_t> tails;
+
     // per layer
     std::vector<ggml_tensor *> r_l;
     std::vector<ggml_tensor *> s_l;
@@ -124,10 +137,22 @@ private:
 
     const uint32_t n_seq_max = 1;
 
+    const ggml_type type_r;
+    const ggml_type type_s;
+
+    // per layer, nullptr for a skipped layer
+    std::vector<ggml_backend_buffer_type_t> layer_buft;
+
     // ggml contexts for the KV cache along with the allocated backend buffers:
     std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs;
 
+    // allocate cleared r/s/p tensors for n_cells cells, replacing the current ones
+    bool alloc_tensors(uint32_t n_cells);
+
     size_t total_size() const;
+
+    // device bytes of the states of one cell, all rollback rows included
+    size_t cell_bytes_dev() const;
 
     size_t size_r_bytes() const;
     size_t size_s_bytes() const;

@@ -3,6 +3,7 @@
 #include "ggml-backend.h"
 #include "llama.h"
 
+#include "../src/llama-ext.h"
 #include "../src/llama-io.h"
 #include "../src/llama-memory.h"
 
@@ -262,6 +263,127 @@ static bool test_multi_seq_split_replay(const common_params & params, llama_mode
     return true;
 }
 
+// State cells made on demand (n_seq_alloc < n_seq_max, llama_seq_reserve) against a context that has all of them from
+// the start: a pending rollback survives the growth, a forked sequence decodes the same, and a shrink that moves the
+// cell of seq 0 keeps its state
+static bool test_seq_reserve(const common_params & params, llama_model * model, const int n_vocab, uint8_t fill) {
+    constexpr uint32_t  n_seqs     = 3;
+    constexpr uint32_t  n_prompt   = 12;
+    constexpr uint32_t  n_rollback = 2;
+    constexpr llama_pos p0         = n_prompt - n_rollback;
+
+    const auto make = [&](uint32_t n_alloc) {
+        auto cparams = common_context_params_to_llama(params);
+        cparams.n_seq_max   = n_seqs;
+        cparams.n_seq_alloc = n_alloc;
+        cparams.n_rs_seq    = 8;
+        cparams.n_ctx       = 256;
+        cparams.n_batch     = 256;
+        cparams.n_ubatch    = 16;
+        cparams.kv_unified  = true;
+        return init_ctx(model, cparams, fill);
+    };
+
+    llama_context * ctx_dyn = make(1);
+    llama_context * ctx_ref = make(n_seqs);
+    if (ctx_dyn == nullptr || ctx_ref == nullptr) {
+        fprintf(stderr, "%s : failed to init contexts\n", __func__);
+        return false;
+    }
+
+    const auto cleanup = [&]() {
+        llama_free(ctx_dyn);
+        llama_free(ctx_ref);
+    };
+
+    if (llama_seq_cells(ctx_dyn) != 1 || llama_seq_cells(ctx_ref) != n_seqs) {
+        fprintf(stderr, "%s : state cells %u / %u, expected 1 / %u\n", __func__, llama_seq_cells(ctx_dyn), llama_seq_cells(ctx_ref), n_seqs);
+        cleanup();
+        return false;
+    }
+
+    const auto tok = [&](llama_pos pos) {
+        return (llama_token) ((11*(uint32_t) pos + 5) % (uint32_t) n_vocab);
+    };
+
+    // the logits of every output of the last decode, both contexts
+    const auto same_logits = [&](int n_out, const char * what) {
+        constexpr float eps = 1e-5f;
+        float diff = 0.0f;
+        for (int i = 0; i < n_out; ++i) {
+            const float * a = llama_get_logits_ith(ctx_dyn, i);
+            const float * b = llama_get_logits_ith(ctx_ref, i);
+            if (a == nullptr || b == nullptr) {
+                fprintf(stderr, "test_seq_reserve : %s: missing logits\n", what);
+                return false;
+            }
+            for (int t = 0; t < n_vocab; ++t) {
+                diff = std::max(diff, logit_diff(a[t], b[t]));
+            }
+        }
+        fprintf(stderr, "test_seq_reserve : %s: max diff %g\n", what, (double) diff);
+        return diff <= eps;
+    };
+
+    bool ok = true;
+
+    // seq 0: the prompt, then a rollback that is still pending when the cells grow
+    {
+        llama_batch batch = llama_batch_init(n_prompt, 0, 1);
+        for (llama_pos pos = 0; pos < (llama_pos) n_prompt; ++pos) {
+            common_batch_add(batch, tok(pos), pos, { 0 }, false);
+        }
+        ok = llama_decode(ctx_dyn, batch) == 0 && llama_decode(ctx_ref, batch) == 0;
+        llama_batch_free(batch);
+    }
+    ok = ok && llama_memory_seq_rm(llama_get_memory(ctx_dyn), 0, p0, -1);
+    ok = ok && llama_memory_seq_rm(llama_get_memory(ctx_ref), 0, p0, -1);
+
+    ok = ok && llama_seq_reserve(ctx_dyn, n_seqs) && llama_seq_cells(ctx_dyn) == n_seqs;
+    if (!ok) {
+        fprintf(stderr, "%s : prompt, rollback or growth failed\n", __func__);
+        cleanup();
+        return false;
+    }
+
+    // fork seq 1 from seq 0, then both go on in one batch
+    llama_memory_seq_cp(llama_get_memory(ctx_dyn), 0, 1, -1, -1);
+    llama_memory_seq_cp(llama_get_memory(ctx_ref), 0, 1, -1, -1);
+    {
+        llama_batch batch = llama_batch_init(2, 0, 1);
+        common_batch_add(batch, tok(p0),     p0, { 0 }, true);
+        common_batch_add(batch, tok(p0 + 7), p0, { 1 }, true);
+        ok = llama_decode(ctx_dyn, batch) == 0 && llama_decode(ctx_ref, batch) == 0;
+        llama_batch_free(batch);
+    }
+    if (!ok || !same_logits(2, "after growth and fork")) {
+        cleanup();
+        return false;
+    }
+
+    // two sequences hold state, so one cell is too few
+    if (llama_seq_reserve(ctx_dyn, 1)) {
+        fprintf(stderr, "%s : a shrink below the cells in use was accepted\n", __func__);
+        cleanup();
+        return false;
+    }
+
+    ok = llama_memory_seq_rm(llama_get_memory(ctx_dyn), 1, -1, -1) && llama_memory_seq_rm(llama_get_memory(ctx_ref), 1, -1, -1);
+    ok = ok && llama_seq_reserve(ctx_dyn, 1) && llama_seq_cells(ctx_dyn) == 1;
+    if (!ok) {
+        fprintf(stderr, "%s : shrink failed\n", __func__);
+        cleanup();
+        return false;
+    }
+
+    for (llama_pos pos = p0 + 1; pos < p0 + 4 && ok; ++pos) {
+        ok = decode_one(ctx_dyn, tok(pos), pos) && decode_one(ctx_ref, tok(pos), pos) && same_logits(1, "after shrink");
+    }
+
+    cleanup();
+    return ok;
+}
+
 static int test_rollback(const common_params & params, llama_model * model, uint8_t fill) {
     const llama_vocab * vocab   = llama_model_get_vocab(model);
     const int           n_vocab = llama_vocab_n_tokens(vocab);
@@ -423,6 +545,10 @@ static int test_rollback(const common_params & params, llama_model * model, uint
     llama_free(ctx_dirty);
 
     if (!test_multi_seq_split_replay(params, model, n_vocab, fill)) {
+        return 1;
+    }
+
+    if (!test_seq_reserve(params, model, n_vocab, fill)) {
         return 1;
     }
 

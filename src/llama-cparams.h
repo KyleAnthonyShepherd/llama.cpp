@@ -19,6 +19,7 @@ struct llama_cparams {
     int32_t  n_expert_prefetch;
     uint32_t n_seq_max;
     uint32_t n_rs_seq;        // number of recurrent-state snapshots per seq for rollback
+    uint32_t n_seq_alloc;     // recurrent states allocated at load, <= n_seq_max
     uint32_t n_outputs_max;   // max outputs supported by the context
     uint32_t n_outputs_max_per_seq;
     int32_t  n_threads;       // number of threads to use for generation

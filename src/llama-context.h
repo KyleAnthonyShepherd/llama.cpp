@@ -72,6 +72,10 @@ struct llama_context {
     uint32_t n_ubatch()  const;
     uint32_t n_seq_max() const;
 
+    // sequences the worst-case graph is reserved for, see llama_seq_reserve()
+    uint32_t n_seqs_reserve() const;
+    uint32_t n_outputs_reserve() const;
+
     uint32_t n_threads()       const;
     uint32_t n_threads_batch() const;
 
@@ -173,6 +177,9 @@ struct llama_context {
     // resize the KV cache to n_ctx_new cells; see llama_set_n_ctx() in llama.h for the
     // return code semantics
     int32_t set_n_ctx(uint32_t n_ctx_new);
+
+    // state cells for n sequences, see llama_seq_reserve() in llama-ext.h
+    bool seq_reserve(uint32_t n);
 
     void set_adapters_lora(llama_adapter_lora ** adapters, size_t n_adapters, float * scales);
 

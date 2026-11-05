@@ -457,6 +457,10 @@ extern "C" {
         // [EXPERIMENTAL] adaptive micro-batch: the compute buffers are sized for this n_ubatch, and a batch larger
         // than it switches them to n_ubatch until the next generation step (0 = off)
         uint32_t n_ubatch_gen;
+
+        // [EXPERIMENTAL] recurrent states allocated at load, fewer than n_seq_max; more come with llama_seq_reserve()
+        // (0 = n_seq_max)
+        uint32_t n_seq_alloc;
     };
 
     struct llama_model_tensor_override {

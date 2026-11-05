@@ -139,6 +139,27 @@ struct llama_memory_i {
         return false;
     }
 
+    // cells for per-sequence state (recurrent memory): at most this many sequences can hold memory at once.
+    // 0 = no such limit (a KV cache: any sequence id up to n_seq_max can use any cell)
+    virtual uint32_t seq_cells() const {
+        return 0;
+    }
+
+    // set the per-sequence state cells to n_new, keeping the used ones. false if unsupported or failed, and then the
+    // memory stays as it was. The caller re-reserves its graphs after a change
+    virtual bool seq_reserve(uint32_t n_new) {
+        GGML_UNUSED(n_new);
+
+        return seq_cells() == 0;
+    }
+
+    // free device memory seq_reserve(n_new) needs on top of what this memory holds now
+    virtual size_t seq_reserve_bytes(uint32_t n_new) const {
+        GGML_UNUSED(n_new);
+
+        return 0;
+    }
+
     // if data == true, the data buffers will also be cleared together with the metadata
     virtual void clear(bool data) = 0;
 

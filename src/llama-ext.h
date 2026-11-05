@@ -92,6 +92,10 @@ LLAMA_API int32_t llama_model_n_devices(const struct llama_model * model);
 // wide draft can hold the whole run above this.
 LLAMA_API int32_t llama_expert_tier_max_tokens(void);
 
+// Raise that limit towards n_tokens, as far as the device kernels of every expert weight in the hot store allow
+// (MMVQ, which has no id compaction). Call it once the hot store exists. Returns the limit now
+LLAMA_API int32_t llama_expert_tier_widen(int32_t n_tokens);
+
 // Decode batches this context sent past that limit.
 LLAMA_API int64_t llama_expert_tier_n_bypassed(const struct llama_context * ctx);
 
@@ -133,6 +137,13 @@ LLAMA_API size_t llama_vram_free(const struct llama_context * ctx);
 // encode). A growing KV cache keeps it free on top of kv_spill_margin, and so does the expert hot
 // store when it refits. Nothing is freed by the call itself.
 LLAMA_API void llama_model_set_vram_reserve(struct llama_model * model, size_t n_bytes);
+
+// Per-sequence state (recurrent memory) exists only for llama_seq_cells() sequences at once, even with more sequence
+// ids (llama_context_params::n_seq_alloc). llama_seq_reserve() makes cells for n_seq sequences, or gives cells back
+// when n_seq is smaller (only possible while at most n_seq sequences hold memory), and sizes the compute buffers to
+// match. A growth takes VRAM from the expert hot store. llama_seq_cells() is 0 when the memory has no such limit
+LLAMA_API bool     llama_seq_reserve(struct llama_context * ctx, uint32_t n_seq);
+LLAMA_API uint32_t llama_seq_cells(const struct llama_context * ctx);
 
 // Free device memory a resize of ctx to n_ctx_seq_new cells needs at its peak, on top of what
 // its memory already holds. 0 when nothing has to be found.

@@ -178,6 +178,8 @@ llama_context::llama_context(
         throw std::runtime_error("n_seq_max must be <= " + std::to_string(LLAMA_MAX_SEQ));
     }
 
+    cparams.n_seq_alloc = params.n_seq_alloc > 0 ? std::min(params.n_seq_alloc, cparams.n_seq_max) : cparams.n_seq_max;
+
     cparams.n_rs_seq = params.n_rs_seq;
     if (cparams.n_rs_seq > 0 && !llm_arch_supports_rs_rollback(model.arch)) {
         LLAMA_LOG_DEBUG("%s: n_rs_seq=%u requested but model does not support recurrent partial rollback; clamping to 0\n",
@@ -828,7 +830,7 @@ void llama_context::sched_reserve() {
 
     const int64_t t_start_us = ggml_time_us();
 
-    const uint32_t n_seqs = cparams.n_seq_max;
+    const uint32_t n_seqs = n_seqs_reserve();
     const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
 
     const size_t max_nodes = this->graph_max_nodes(n_tokens);
@@ -870,7 +872,7 @@ void llama_context::sched_reserve() {
     int n_splits_tg = -1;
     int n_nodes_tg  = -1;
 
-    const uint32_t n_outputs_pp = std::min(n_tokens, cparams.n_outputs_max);
+    const uint32_t n_outputs_pp = std::min(n_tokens, n_outputs_reserve());
 
     // reserve pp (prompt processing) graph first so that buffers are only allocated once
     {
@@ -1031,6 +1033,25 @@ uint32_t llama_context::n_seq_max() const {
     return cparams.n_seq_max;
 }
 
+// sequences a worst-case graph holds: those that can have memory now. A recurrent memory with fewer state cells
+// than sequence ids cannot hold more at once (see llama_seq_reserve)
+uint32_t llama_context::n_seqs_reserve() const {
+    const uint32_t n_cells = memory ? memory->seq_cells() : 0;
+
+    return n_cells > 0 ? std::min(cparams.n_seq_max, n_cells) : cparams.n_seq_max;
+}
+
+// outputs a worst-case graph holds: n_outputs_max is sized for all sequences, so with fewer of them holding memory
+// the graph needs that share of it
+uint32_t llama_context::n_outputs_reserve() const {
+    const uint32_t n_seqs = n_seqs_reserve();
+    if (n_seqs >= cparams.n_seq_max) {
+        return cparams.n_outputs_max;
+    }
+
+    return std::max(1u, (uint32_t) ((uint64_t) cparams.n_outputs_max * n_seqs / cparams.n_seq_max));
+}
+
 uint32_t llama_context::n_threads() const {
     return cparams.n_threads;
 }
@@ -1141,10 +1162,10 @@ bool llama_context::memory_update(bool optimize) {
             throw std::runtime_error("failed to initialize memory context");
         }
 
-        const uint32_t n_seqs = cparams.n_seq_max;
+        const uint32_t n_seqs = n_seqs_reserve();
         const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
 
-        const uint32_t n_outputs_max = std::min(n_tokens, cparams.n_outputs_max);
+        const uint32_t n_outputs_max = std::min(n_tokens, n_outputs_reserve());
 
         auto * gf = graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get());
         if (!gf) {
@@ -1391,6 +1412,76 @@ int32_t llama_context::set_n_ctx(uint32_t n_ctx_new) {
     return 0;
 }
 
+// Make state cells for n sequences in a memory whose per-sequence state is allocated (recurrent), and size the compute
+// buffers for that many sequences in a batch. A growth takes its VRAM from the expert hot store first, as a KV growth
+// does in set_n_ctx(); a shrink gives it back. On failure the context stays as it was
+bool llama_context::seq_reserve(uint32_t n) {
+    if (!memory || memory->seq_cells() == 0) {
+        return true;
+    }
+
+    n = std::max(1u, std::min(n, cparams.n_seq_max));
+
+    const uint32_t n_old = memory->seq_cells();
+    if (n == n_old) {
+        return true;
+    }
+
+    const bool is_grow = n > n_old;
+
+    synchronize();
+
+    const size_t need = memory->seq_reserve_bytes(n);
+    const size_t keep = need > 0 ? need + model.kv_spill_margin() : 0;
+
+    if (keep > 0) {
+        shrink_expert_hotstore(keep);
+    }
+
+    ggml_backend_set_vram_strict(true);
+
+    bool ok = memory->seq_reserve(n);
+    for (int i = 0; !ok && is_grow && i < 4 && drop_expert_hotstore_slots(1 << i); ++i) {
+        ok = memory->seq_reserve(n);
+    }
+
+    if (!ok) {
+        ggml_backend_set_vram_strict(false);
+        LLAMA_LOG_WARN("%s: could not make state cells for %u sequences (%u now)\n", __func__, n, n_old);
+        return false;
+    }
+
+    const size_t compute_need = is_grow ? compute_growth_bytes() : 0;
+    if (compute_need > 0) {
+        shrink_expert_hotstore(compute_need + model.kv_spill_margin());
+    }
+
+    ok = reserve_worst_case_graph();
+    for (int i = 0; !ok && i < 4 && drop_expert_hotstore_slots(1 << i); ++i) {
+        ok = reserve_worst_case_graph();
+    }
+
+    ggml_backend_set_vram_strict(false);
+
+    if (!ok) {
+        LLAMA_LOG_WARN("%s: could not reserve compute buffers for %u sequences, back to %u\n", __func__, n, n_old);
+
+        if (!memory->seq_reserve(n_old) || !reserve_worst_case_graph()) {
+            LLAMA_LOG_ERROR("%s: could not restore %u state cells - the context is no longer usable\n", __func__, n_old);
+        }
+
+        return false;
+    }
+
+    if (!is_grow) {
+        refit_expert_hotstore(true);
+    }
+
+    LLAMA_LOG_INFO("%s: state cells %u -> %u, %.1f MiB of VRAM asked for\n", __func__, n_old, n, need / (1024.0*1024.0));
+
+    return true;
+}
+
 // re-reserve the worst-case graph and invalidate the scheduler/graph-reuse caches right
 // away - mirrors the tail of memory_update() (same category of change: the structure the
 // scheduler caches changed under its feet). This must happen synchronously (not via the
@@ -1404,9 +1495,9 @@ bool llama_context::reserve_worst_case_graph() {
         return false;
     }
 
-    const uint32_t n_seqs         = cparams.n_seq_max;
+    const uint32_t n_seqs         = n_seqs_reserve();
     const uint32_t n_tokens       = std::min(cparams.n_ctx, cparams.n_ubatch);
-    const uint32_t n_outputs_max  = std::min(n_tokens, cparams.n_outputs_max);
+    const uint32_t n_outputs_max  = std::min(n_tokens, n_outputs_reserve());
 
     if (!graph_reserve(n_tokens, n_seqs, n_outputs_max, mctx.get())) {
         // the allocator freed its old buffers on the way to failing, so the context is not
@@ -1559,9 +1650,9 @@ size_t llama_context::compute_growth_bytes() {
         return 0;
     }
 
-    const uint32_t n_seqs        = cparams.n_seq_max;
+    const uint32_t n_seqs        = n_seqs_reserve();
     const uint32_t n_tokens      = std::min(cparams.n_ctx, cparams.n_ubatch);
-    const uint32_t n_outputs_max = std::min(n_tokens, cparams.n_outputs_max);
+    const uint32_t n_outputs_max = std::min(n_tokens, n_outputs_reserve());
 
     std::vector<size_t> sizes(backend_ptrs.size(), 0);
 
@@ -1653,9 +1744,9 @@ size_t llama_context::compute_bytes_at(uint32_t n_ubatch_new, size_t * scratch) 
     const uint32_t n_ubatch_old = cparams.n_ubatch;
     cparams.n_ubatch = n_ubatch_new;
 
-    const uint32_t n_seqs        = cparams.n_seq_max;
+    const uint32_t n_seqs        = n_seqs_reserve();
     const uint32_t n_tokens      = std::min(cparams.n_ctx, n_ubatch_new);
-    const uint32_t n_outputs_max = std::min(n_tokens, cparams.n_outputs_max);
+    const uint32_t n_outputs_max = std::min(n_tokens, n_outputs_reserve());
     const size_t   max_nodes     = graph_max_nodes(n_tokens);
 
     // measure on a scratch scheduler, so the real one keeps its buffers
@@ -5100,6 +5191,7 @@ llama_context_params llama_context_default_params() {
         /*.n_vocab_rank                =*/ 0,
         /*.n_expert_prefetch           =*/ 0,
         /*.n_ubatch_gen                =*/ 0,
+        /*.n_seq_alloc                 =*/ 0,
     };
 
     return result;
@@ -5303,6 +5395,15 @@ void llama_set_causal_attn(llama_context * ctx, bool causal_attn) {
 
 int32_t llama_set_n_ctx(llama_context * ctx, uint32_t n_ctx_new) {
     return ctx->set_n_ctx(n_ctx_new);
+}
+
+bool llama_seq_reserve(llama_context * ctx, uint32_t n_seq) {
+    return ctx->seq_reserve(n_seq);
+}
+
+uint32_t llama_seq_cells(const llama_context * ctx) {
+    const auto * mem = ctx->get_memory();
+    return mem ? mem->seq_cells() : 0;
 }
 
 void llama_set_warmup(llama_context * ctx, bool warmup) {

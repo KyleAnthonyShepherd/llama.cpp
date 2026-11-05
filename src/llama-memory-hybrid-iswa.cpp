@@ -208,6 +208,18 @@ bool llama_memory_hybrid_iswa::unspill_layers(bool force) {
     return mem_attn->unspill_layers(force);
 }
 
+uint32_t llama_memory_hybrid_iswa::seq_cells() const {
+    return mem_recr->seq_cells();
+}
+
+bool llama_memory_hybrid_iswa::seq_reserve(uint32_t n_new) {
+    return mem_recr->seq_reserve(n_new);
+}
+
+size_t llama_memory_hybrid_iswa::seq_reserve_bytes(uint32_t n_new) const {
+    return mem_recr->seq_reserve_bytes(n_new);
+}
+
 void llama_memory_hybrid_iswa::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
     mem_attn->state_write(io, seq_id, flags);
     mem_recr->state_write(io, seq_id, flags);

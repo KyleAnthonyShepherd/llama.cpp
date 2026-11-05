@@ -2,6 +2,9 @@
 #include "llama-ext.h"
 #include "llama-impl.h"
 
+#include "ggml-backend.h"
+
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
@@ -55,6 +58,32 @@ void llama_expert_tier_reset_graph() {
 bool llama_expert_tier_has(ggml_tensor * w) {
     std::lock_guard<std::mutex> lk(g_mtx);
     return g_table.find(w) != g_table.end();
+}
+
+// The 4 token default is the lowest MMVQ bound over every arch table. A device can run wider batches of
+// some types on MMVQ, see ggml_backend_cuda_mmid_mmvq_max_batch
+int32_t llama_expert_tier_widen(int32_t n_tokens) {
+    typedef int (*mmvq_max_t)(ggml_backend_dev_t dev, enum ggml_type type);
+
+    std::lock_guard<std::mutex> lk(g_mtx);
+
+    int32_t safe = n_tokens;
+    for (const auto & [w, ent] : g_table) {
+        ggml_backend_buffer_t      buf  = ent.dst_hot ? ent.dst_hot->buffer : nullptr;
+        ggml_backend_dev_t         dev  = buf ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buf)) : nullptr;
+        ggml_backend_reg_t         reg  = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
+        auto                       fn   = reg ? (mmvq_max_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_mmid_mmvq_max_batch") : nullptr;
+
+        safe = std::min(safe, fn ? (int32_t) fn(dev, w->type) : (int32_t) LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT);
+    }
+
+    if (!g_table.empty() && safe > g_max_tokens.load(std::memory_order_relaxed)) {
+        LLAMA_LOG_INFO("%s: expert tier limit %d -> %d tokens per batch (asked for %d)\n", __func__,
+                g_max_tokens.load(std::memory_order_relaxed), safe, n_tokens);
+        g_max_tokens.store(safe, std::memory_order_relaxed);
+    }
+
+    return g_max_tokens.load(std::memory_order_relaxed);
 }
 
 int32_t llama_expert_tier_max_tokens(void) {

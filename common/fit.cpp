@@ -199,6 +199,8 @@ static void common_params_fit_impl(
     // size the context for all sequences, but keep minimums and alignment per KV stream
     const uint32_t n_seq_max  = std::max<uint32_t>(1, cparams->n_seq_max);
     const uint32_t n_streams  = cparams->kv_unified ? 1 : n_seq_max;
+    // sequence ids without memory at load (hydra head slots) do not size an unset context
+    const uint32_t n_seq_ctx  = cparams->n_seq_alloc > 0 ? std::min(n_seq_max, cparams->n_seq_alloc) : n_seq_max;
     const bool     n_ctx_auto = cparams->n_ctx == 0;
 
     dmds_t   dmds_extra;       // memory of the extra model, laid out on the devices of the main model
@@ -269,15 +271,15 @@ static void common_params_fit_impl(
     dmds_t dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_neu, log_level);
 
     // saturate instead of overflowing, this also preserves the UINT32_MAX sentinel of n_ctx_min:
-    const uint32_t n_ctx_max       = (uint32_t) std::min<uint64_t>(uint64_t(hp_nct)    * n_seq_max, UINT32_MAX);
+    const uint32_t n_ctx_max       = (uint32_t) std::min<uint64_t>(uint64_t(hp_nct)    * n_seq_ctx, UINT32_MAX);
     const uint32_t n_ctx_min_total = (uint32_t) std::min<uint64_t>(uint64_t(n_ctx_min) * n_streams, UINT32_MAX);
 
     // llama_context would use only hp_nct in total for n_ctx == 0, resolve the context before measuring anything else:
     if (n_ctx_auto) {
         cparams->n_ctx = n_ctx_max;
-        if (n_seq_max > 1) {
+        if (n_seq_ctx > 1) {
             LOG_TRC("%s: context size unset -> using %" PRIu32 " for %" PRIu32 " sequences:\n",
-                __func__, n_ctx_max, n_seq_max);
+                __func__, n_ctx_max, n_seq_ctx);
             dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_neu, log_level);
         }
     }
