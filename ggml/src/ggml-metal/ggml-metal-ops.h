@@ -31,9 +31,6 @@ int ggml_metal_op_encode(ggml_metal_op_t ctx, int idx);
 // available ops:
 //
 
-// activation bit-planes for the Q1_0 word-parallel path
-size_t ggml_metal_op_mul_mat_extra_q1_0_planes(const struct ggml_tensor * op);
-
 // tokens per expert
 size_t ggml_metal_op_mul_mat_id_extra_tpe(const struct ggml_tensor * op);
 
@@ -101,6 +98,8 @@ int ggml_metal_op_timestep_embedding(ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_argmax            (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_argsort           (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_top_k             (ggml_metal_op_t ctx, int idx);
+int ggml_metal_op_topk_moe          (ggml_metal_op_t ctx, int idx);
+int ggml_metal_op_moe_reduce        (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_tri               (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_opt_step_adamw    (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_opt_step_sgd      (ggml_metal_op_t ctx, int idx);

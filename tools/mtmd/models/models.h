@@ -55,6 +55,10 @@ struct clip_graph_lfm3vl : clip_graph {
     ggml_cgraph * build() override;
 };
 
+struct clip_graph_ling3vl : clip_graph_qwen3vl {
+    clip_graph_ling3vl(clip_ctx * ctx, const clip_image_f32 & img) : clip_graph_qwen3vl(ctx, img) {}
+    ggml_cgraph * build() override;
+};
 
 struct clip_graph_minimax_m3 : clip_graph {
     clip_graph_minimax_m3(clip_ctx * ctx, const clip_image_f32 & img) : clip_graph(ctx, img) {}

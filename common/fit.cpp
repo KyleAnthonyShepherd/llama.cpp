@@ -196,11 +196,11 @@ static void common_params_fit_impl(
     uint32_t hp_nex = 0; // hparams.n_expert
     uint32_t hp_neu = 0; // hparams.n_expert_used
 
-    // size the context for all sequences, but keep minimums and alignment per KV stream
-    const uint32_t n_seq_max  = std::max<uint32_t>(1, cparams->n_seq_max);
-    const uint32_t n_streams  = cparams->kv_unified ? 1 : n_seq_max;
+    // with non-unified kv, we need to take into account n_streams
+    // for example, if memory can hold more than model's trained context size, we must extend the n_ctx to hold enough n_streams
+    const uint32_t n_streams  = cparams->kv_unified ? 1 : std::max<uint32_t>(1, cparams->n_seq_max);
     // sequence ids without memory at load (hydra head slots) do not size an unset context
-    const uint32_t n_seq_ctx  = cparams->n_seq_alloc > 0 ? std::min(n_seq_max, cparams->n_seq_alloc) : n_seq_max;
+    const uint32_t n_seq_ctx  = cparams->n_seq_alloc > 0 ? std::min(n_streams, cparams->n_seq_alloc) : n_streams;
     const bool     n_ctx_auto = cparams->n_ctx == 0;
 
     dmds_t   dmds_extra;       // memory of the extra model, laid out on the devices of the main model
@@ -278,7 +278,7 @@ static void common_params_fit_impl(
     if (n_ctx_auto) {
         cparams->n_ctx = n_ctx_max;
         if (n_seq_ctx > 1) {
-            LOG_TRC("%s: context size unset -> using %" PRIu32 " for %" PRIu32 " sequences:\n",
+            LOG_TRC("%s: context size unset and KV cache not unified -> using %" PRIu32 " for %" PRIu32 " sequences:\n",
                 __func__, n_ctx_max, n_seq_ctx);
             dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, hp_neu, log_level);
         }

@@ -26,18 +26,8 @@
 #define N_R0_Q1_0 8
 #define N_SG_Q1_0 2
 
-// Q1_0 word-parallel (popcount) verify path: rows per simdgroup, and the uint32
-// stride of one activation bit-plane record (8 planes x 4 words + scale + sum + pad).
-#define N_R0_Q1_0_PC 4
-#define Q1_0_PLANE_STRIDE 36
-
 #define N_R0_Q2_0 8
 #define N_SG_Q2_0 2
-
-#define N_R0_PQ2_0 8
-#define N_SG_PQ2_0 2
-#define N_R0_PTQ1_0 4
-#define N_SG_PTQ1_0 1
 
 #define N_R0_Q4_0 4
 #define N_SG_Q4_0 2
@@ -119,7 +109,6 @@
 #define FC_MUL_MM                      700
 #define FC_ROPE                        800
 #define FC_SSM_CONV                    900
-#define FC_SSM_CONV_SILU               (FC_SSM_CONV + 1)
 #define FC_SOLVE_TRI                   1000
 #define FC_COUNT_EQUAL                 1100
 #define FC_UNARY                       1200
@@ -127,18 +116,28 @@
 #define FC_SUM_ROWS                    1400
 #define FC_UPSCALE                     1500
 #define FC_GATED_DELTA_NET             1600
-#define FC_GATED_DELTA_NET_WRITE_ROWS  (FC_GATED_DELTA_NET + 4)
-#define FC_GATED_DELTA_NET_RAW_GATES   (FC_GATED_DELTA_NET + 5)
+#define FC_NORM                        1700
+#define FC_TOPK_MOE                    1800
+#define FC_MOE_REDUCE                  1900
+#define FC_DSV4_HC                     2000
+#define FC_PAD                         2100
+#define FC_FLASH_ATTN_EXT_TENSOR       2200
+#define FC_LIGHTNING_INDEXER           2200
+#define FC_MUL_MV_MMA                  2300
 
 // op-specific constants
 #define OP_FLASH_ATTN_EXT_NQPSG 8
 #define OP_FLASH_ATTN_EXT_NCPSG 64
 
+#define OP_FLASH_ATTN_EXT_TENSOR_NQPSG       32
+#define OP_FLASH_ATTN_EXT_TENSOR_NQPSG_LARGE 16
+#define OP_FLASH_ATTN_EXT_TENSOR_NCPSG       64
+#define OP_FLASH_ATTN_EXT_TENSOR_NSG         8
+
 #define OP_FLASH_ATTN_EXT_VEC_NQPSG 1
 #define OP_FLASH_ATTN_EXT_VEC_NCPSG 32
 
 #define OP_LIGHTNING_INDEXER_DK    128
-#define OP_LIGHTNING_INDEXER_NH     64
 #define OP_LIGHTNING_INDEXER_NHPTG   8
 #define OP_LIGHTNING_INDEXER_NKPSG   8
 #define OP_LIGHTNING_INDEXER_NSG     8
@@ -217,6 +216,7 @@ typedef struct {
     uint64_t nb2;
     uint64_t nb3;
     int32_t  dim;
+    int32_t  nc0;
 } ggml_metal_kargs_concat;
 
 typedef struct {
@@ -539,12 +539,6 @@ typedef struct {
 } ggml_metal_kargs_mul_mv;
 
 typedef struct {
-    int32_t  nblk;
-    int32_t  ne11;
-    uint64_t nb11;
-} ggml_metal_kargs_q1_0_planes;
-
-typedef struct {
     int32_t  ne00;
     int32_t  ne01;
     int32_t  ne02;
@@ -566,7 +560,6 @@ typedef struct {
 } ggml_metal_kargs_mul_mv_ext;
 
 typedef struct {
-    int32_t  ne02;
     int32_t  ne10;
     int32_t  ne11;  // n_expert_used (bcast)
     uint64_t nb11;
@@ -596,7 +589,6 @@ typedef struct {
     uint64_t nb12;
     uint64_t nb13;
     int32_t  ne20;
-    int32_t  ne21;
     int32_t  ne0;
     int32_t  ne1;
     int16_t  r2;
@@ -641,6 +633,7 @@ typedef struct {
     uint64_t nbf1[3];
     uint64_t nbf2[3];
     uint64_t nbf3[3];
+    float    scale;
 } ggml_metal_kargs_norm;
 
 typedef struct {
@@ -929,7 +922,6 @@ typedef struct {
     uint64_t nb00;
     uint64_t nb01;
     uint64_t nb02;
-    int64_t  ne10;
     int64_t  ne11;
     uint64_t nb10;
     uint64_t nb11;
@@ -1076,22 +1068,6 @@ typedef struct {
 } ggml_metal_kargs_set_rows;
 
 typedef struct {
-    int32_t  nv00; // row size in float4
-    int32_t  ne02;
-    uint64_t nb01;
-    uint64_t nb02;
-    uint64_t nb03;
-    int32_t  ne11;
-    int32_t  ne12;
-    uint64_t nb10;
-    uint64_t nb11;
-    uint64_t nb12;
-    uint64_t nb1;
-    uint64_t nb2;
-    uint64_t nb3;
-} ggml_metal_kargs_set_rows_wide;
-
-typedef struct {
     int32_t  ne00;
     int32_t  ne01;
     int32_t  ne02;
@@ -1151,6 +1127,10 @@ typedef struct {
     uint64_t nb1;
     uint64_t nb2;
     uint64_t nb3;
+    int32_t  lp0;
+    int32_t  lp1;
+    int32_t  lp2;
+    int32_t  lp3;
 } ggml_metal_kargs_pad;
 
 typedef struct {
@@ -1255,11 +1235,6 @@ typedef struct {
     int32_t  len;
 } ggml_metal_kargs_argsort_merge;
 
-// Block widths at or above this run the threadgroup-staged FWHT kernel: the
-// register-resident one keeps N/32 values per thread, which stops fitting here.
-#define GGML_METAL_FWHT_TG_MIN_N 512
-#define GGML_METAL_FWHT_TG_NT    256
-
 typedef struct {
     int32_t  ne00;   // number of columns (elements per row)
     int32_t  ne01;   // rows
@@ -1271,9 +1246,26 @@ typedef struct {
     int32_t  top_k;  // k
 } ggml_metal_kargs_top_k;
 
+// widths at or above this use the threadgroup FWHT kernel, one row per threadgroup
+// with GGML_METAL_FWHT_TG_NT threads, instead of one row per simdgroup
+#define GGML_METAL_FWHT_TG_MIN_N 512
+#define GGML_METAL_FWHT_TG_NT    256
+
+typedef struct {
+    int32_t  ne01;      // n_tokens
+    uint64_t nb01;      // logits row stride
+    uint64_t nb1_ids;   // ids row stride
+    float    clamp;
+    float    scale;
+} ggml_metal_kargs_topk_moe;
+
+typedef struct {
+    int32_t ne00; // n_embd
+    int32_t ne02; // n_tokens
+} ggml_metal_kargs_moe_reduce;
+
 typedef struct {
     int32_t nrows;
-    int32_t n_blk; // sign rows per activation row (K / N); 0 = no sign flip fused in
 } ggml_metal_kargs_fwht;
 
 typedef struct {
@@ -1324,8 +1316,10 @@ typedef struct {
     uint64_t nb_x2;
     uint64_t nb_w0;
     uint64_t nb_w1;
+    uint64_t nb_w2;
     uint64_t nb_d0;
     uint64_t nb_d1;
+    float    scale;
 } ggml_metal_kargs_dsv4_hc_pre;
 
 typedef struct {

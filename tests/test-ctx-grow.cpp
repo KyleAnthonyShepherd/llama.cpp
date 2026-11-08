@@ -41,10 +41,9 @@ static llama_context * make_ctx(
 }
 
 static bool decode_one(llama_context * ctx, llama_token tok, llama_pos pos) {
-    llama_batch batch = llama_batch_init(1, 0, 1);
-    common_batch_add(batch, tok, pos, { 0 }, true);
-    const bool ok = llama_decode(ctx, batch) == 0;
-    llama_batch_free(batch);
+    common_batch batch(ctx);
+    batch.add(tok, pos, 0, true);
+    const bool ok = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get()) == 0;
     return ok;
 }
 
