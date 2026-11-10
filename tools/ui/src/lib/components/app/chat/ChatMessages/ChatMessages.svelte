@@ -2,6 +2,7 @@
 	import ChatMessageHydraGroup from './ChatMessageHydraGroup.svelte';
 	import LazyChatMessage from './LazyChatMessage.svelte';
 	import { ChatMessageUserPending } from '$lib/components/app';
+	import { LANDING_EAGER_ROWS } from '$lib/constants';
 	import { MessageRole } from '$lib/enums';
 	import { agenticStore, chatStore, conversationsStore, settingsStore } from '$lib/stores';
 	import type { ChatMessageActions } from '$lib/types';
@@ -14,11 +15,10 @@
 
 	interface Props {
 		messages?: DatabaseMessage[];
-		onUserAction?: () => void;
 		onMessagesReady?: (messageCount: number) => void;
 	}
 
-	let { messages = [], onMessagesReady, onUserAction }: Props = $props();
+	let { messages = [], onMessagesReady }: Props = $props();
 
 	let allConversationMessages = $state<DatabaseMessage[]>([]);
 
@@ -26,7 +26,6 @@
 
 	const chatActions: ChatMessageActions = {
 		continueAssistantMessage: async (message: DatabaseMessage) => {
-			onUserAction?.();
 			await chatStore.continueAssistantMessage(message.id);
 			refreshAllMessages();
 		},
@@ -52,7 +51,6 @@
 			newContent: string,
 			newExtras?: DatabaseMessageExtra[]
 		) => {
-			onUserAction?.();
 			// in-place edit: the store already updated activeMessages and no
 			// branch is created, so sibling info stays valid without a refetch
 			await chatStore.editUserMessagePreserveResponses(message.id, newContent, newExtras);
@@ -63,7 +61,6 @@
 			newContent: string,
 			newExtras?: DatabaseMessageExtra[]
 		) => {
-			onUserAction?.();
 			await chatStore.editMessageWithBranching(message.id, newContent, newExtras);
 			refreshAllMessages();
 		},
@@ -73,7 +70,6 @@
 			newContent: string,
 			shouldBranch: boolean
 		) => {
-			onUserAction?.();
 			await chatStore.editAssistantMessage(message.id, newContent, shouldBranch);
 
 			// only a branch changes sibling info; an in-place edit already
@@ -92,8 +88,12 @@
 			await conversationsStore.navigateToSibling(siblingId);
 		},
 
+		regenerateCompaction: async (message: DatabaseMessage) => {
+			await chatStore.regenerateCompaction(message.id);
+			refreshAllMessages();
+		},
+
 		regenerateWithBranching: async (message: DatabaseMessage, modelOverride?: string) => {
-			onUserAction?.();
 			await chatStore.regenerateMessageWithBranching(message.id, modelOverride);
 			refreshAllMessages();
 		}
@@ -260,17 +260,18 @@
 	});
 </script>
 
-<!-- Re-created per conversation, so the CSS fade-in below plays on every
-     navigation into a chat route. -->
+<!-- Re-created per conversation, so each one starts from fresh rows that
+     mount eagerly at its bottom. -->
 {#key conversationsStore.activeConversation?.id ?? 'new'}
 	<div class="chat-messages">
-		{#each displayMessages as { isHydraGroup, isLastAssistantMessage, isLastUserMessage, message, nextAssistantMessage, siblingInfo, toolMessages } (message.id)}
+		{#each displayMessages as { isHydraGroup, isLastAssistantMessage, isLastUserMessage, message, nextAssistantMessage, siblingInfo, toolMessages }, index (message.id)}
 			{#if isHydraGroup}
 				<ChatMessageHydraGroup class="mx-auto mt-12 w-full max-w-6xl" {message} />
 			{:else}
 				<LazyChatMessage
 					{chatActions}
 					class="mx-auto mt-12 w-full max-w-3xl"
+					eager={index >= displayMessages.length - LANDING_EAGER_ROWS}
 					{isLastAssistantMessage}
 					{isLastUserMessage}
 					{message}

@@ -136,3 +136,13 @@ Recommendation: skip it unless the Bonsai 27B is still in use. Then merge it as 
 - **Two passes**: 4413a1924 first, then `upstream/master` (section 4).
 
 Still open: after the sync, does the daily branch become `upstream-sync-2026-11`, or should it be fast-forwarded into `parallel-pages` / `master`?
+
+## 10. Progress (2026-11-07, Claude)
+
+- Baselines on today's build (`toolbag/tests/sync/baseline.sh pre`, data in `toolbag/tests/sync/data/pre/`): 35B 9.7k prompt 818/892 t/s, 600-token gen 34.0/30.2 t/s (MTP acc 0.80); 4 triage pages 2.99 s/page; split log 98.5% in 72.9 s; Qwen3.5-4B MTP n_max 4 mean ~137 t/s; LFM3-VL Q4_0 tg 176.4, pp4096 6600.
+- Worktree `I:\Kyle_Shepherd\opt-llama-sync`, branch `upstream-sync-2026-11`, tag `pre-sync-2026-11`.
+- **Pass 1 committed** (ca94e0cf3): builds, test-backend-ops CUDA passes except upstream's new `dup=1` MUL_MAT_ID cases (CUDA mmid helper is byte-identical to upstream: the repeated-id gap of PLAN-hot-expert-once.md, then an illegal access). 35B loads with 28 hot slots, coherent text; pass1 numbers: gen 31.5/30.4 t/s, 3.08 s/page.
+  - Open: the 512-token ubatch compute buffer grew 287 -> 382 MiB (two expert weight copies alive at once), which made split_check's 3-head hydra fail with 503 after a long media run. Re-measure after pass 2.
+  - test_multi_seq_split_replay fails, but it also fails on the pre-sync tree (it never ran before because dirty-ctx stopped the test first; the merge fixed dirty-ctx).
+- **Pass 2 (merge of 18ab62a8e) in progress, NOT built, NOT committed**: every conflict is resolved in the worktree (merge state still open, `git add` not run yet). Choices: LFM3 files from upstream; fork `llama_model_get_tok_embd_rows` renamed `_inp` (upstream has its own with another signature); hot store autosize moved into upstream's `common_fit_apply`; MMQ keeps PrismML GB10 args after upstream's `fusion` arg; GDN chunked MMA kernel only when gates are not raw and no fused cache; our seq-reserve test moved to `tests/llama-context/cases-rs.cpp` (case "reserve"), old test file removed as upstream did.
+- Next: `git add -A`, build (expect compile errors, mostly API drift), quick checks 6.1, commit pass 2, then PLAN-hot-expert-once.md steps A and B, then 6.2/6.3 (`ROOT=I:/Kyle_Shepherd/opt-llama-sync bash toolbag/tests/sync/baseline.sh post`).

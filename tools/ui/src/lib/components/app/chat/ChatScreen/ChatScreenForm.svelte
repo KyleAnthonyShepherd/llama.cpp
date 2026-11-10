@@ -9,7 +9,6 @@
 	interface Props {
 		class?: string;
 		disabled?: boolean;
-		initialMessage?: string;
 		isLoading?: boolean;
 		onFileRemove?: (fileId: string) => void;
 		onFileUpload?: (files: File[]) => void;
@@ -26,7 +25,6 @@
 	let {
 		class: className,
 		disabled = false,
-		initialMessage = '',
 		isLoading = false,
 		onFileRemove,
 		onFileUpload,
@@ -69,14 +67,12 @@
 	let reasoningPrefill = $state('');
 	let responsePrefill = $state('');
 	let showPrefillBars = $derived(settingsStore.config.showPrefillBars !== false);
-	let message = $derived(initialMessage);
+	let message = $state('');
 	let previousIsLoading = $derived(isLoading);
-	let previousInitialMessage = $derived(initialMessage);
 
 	const { clearDraft } = useDraftMessages({
 		getChatId: () => chatId,
 		getFiles: () => uploadedFiles,
-		getInitialMessage: () => initialMessage,
 		getMessage: () => message,
 		setFiles: (f) => (uploadedFiles = f),
 		setMessage: (m) => (message = m)
@@ -148,13 +144,6 @@
 	afterNavigate((navigation) => {
 		if (navigation?.from != null && !deviceStore.isMobile) {
 			setTimeout(focusFormUnlessCaptured, 100);
-		}
-	});
-
-	$effect(() => {
-		if (initialMessage !== previousInitialMessage) {
-			message = initialMessage;
-			previousInitialMessage = initialMessage;
 		}
 	});
 
