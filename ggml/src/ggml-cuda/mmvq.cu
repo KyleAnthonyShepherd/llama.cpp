@@ -745,6 +745,15 @@ static __global__ void mul_mat_vec_q(
     const uint32_t sample_x    = fastdiv(sample_dst, sample_ratio);
     const uint32_t sample_y    = sample_dst;
 
+    // an id of -1 skips the slot: its rows of dst are zero
+    if (ncols_dst == 1 && ids && !shared_expert && ids[channel_dst] < 0) {
+        if (threadIdx.y == 0 && threadIdx.x < rows_per_cuda_block &&
+                (rows_per_cuda_block == 1 || uint32_t(row0 + threadIdx.x) < stride_col_dst)) {
+            dst[sample_dst*stride_sample_dst + channel_dst*stride_channel_dst + row0 + threadIdx.x] = 0.0f;
+        }
+        return;
+    }
+
     constexpr bool use_gate = has_gate;
     bool use_bias = false;
     bool use_gate_bias = false;
@@ -1087,6 +1096,14 @@ static __global__ void mul_mat_vec_q_moe(
     }
 
     ggml_cuda_pdl_sync();
+    // an id of -1 skips the slot: its rows of dst are zero
+    if (!shared_expert && ids[channel_dst + token_idx * ids_stride] < 0) {
+        if (threadIdx.x < c_rows_per_block && (c_rows_per_block == 1 || uint32_t(row0 + threadIdx.x) < nrows_x)) {
+            dst[channel_dst*stride_channel_dst + token_idx*stride_col_dst + row0 + threadIdx.x] = 0.0f;
+        }
+        return;
+    }
+
     const uint32_t channel_x = shared_expert ? 0 : ids[channel_dst + token_idx * ids_stride];
     const uint32_t channel_y = fastmodulo(channel_dst, nchannels_y);
 

@@ -53,7 +53,7 @@ static __global__ void mm_ids_helper(
             int iex_used = -1; // The index at which the expert is used, if any.
             for (int iex = threadIdx.x; iex < n_expert_used; iex += warp_size) {
                 const int expert_used = ids[it*si1 + iex];
-                nex_prev += expert_used < expert;
+                nex_prev += expert_used >= 0 && expert_used < expert;
                 if (expert_used == expert) {
                     iex_used = iex;
                 }
@@ -79,7 +79,7 @@ static __global__ void mm_ids_helper(
             const int expert_used = (neu_padded == n_expert_used || iex < n_expert_used) && it < n_tokens ?
                 ids[it*si1 + iex] : INT_MAX;
             const int iex_used = expert_used == expert ? iex : -1;
-            nex_prev += expert_used < expert;
+            nex_prev += expert_used >= 0 && expert_used < expert;
 
             // Whether the threads at this token position have used the expert:
             const int it_compact_add_self = warp_reduce_any<neu_padded>(iex_used != -1);
@@ -202,4 +202,28 @@ void ggml_cuda_launch_mm_ids_helper(
                 n_experts, n_tokens, n_expert_used, nchannels_y, tile_width, si1, sis1, write_inverse, stream);
             break;
     }
+}
+
+// a slot with id -1 is skipped: the matmul never writes its row of dst, so it is zeroed here
+static __global__ void mul_mat_id_zero_skipped(const int32_t * __restrict__ ids, float * __restrict__ dst,
+        const int64_t si0, const int64_t si1, const int64_t ne0, const int64_t s_slot, const int64_t s_token) {
+    const int64_t slot  = blockIdx.x;
+    const int64_t token = blockIdx.y;
+    if (ids[token*si1 + slot*si0] >= 0) {
+        return;
+    }
+    float * row = dst + token*s_token + slot*s_slot;
+    for (int64_t i = threadIdx.x; i < ne0; i += blockDim.x) {
+        row[i] = 0.0f;
+    }
+}
+
+void ggml_cuda_mul_mat_id_zero_skipped(
+        const int32_t * ids, float * dst, const int n_expert_used, const int n_tokens,
+        const int64_t si0, const int64_t si1, const int64_t ne0, const int64_t s_slot, const int64_t s_token, cudaStream_t stream) {
+    if (n_expert_used <= 0 || n_tokens <= 0) {
+        return;
+    }
+    const dim3 grid(n_expert_used, n_tokens, 1);
+    mul_mat_id_zero_skipped<<<grid, 256, 0, stream>>>(ids, dst, si0, si1, ne0, s_slot, s_token);
 }

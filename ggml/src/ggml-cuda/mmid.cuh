@@ -14,3 +14,8 @@ void ggml_cuda_launch_mm_ids_helper(
         int32_t * __restrict__ ids_src1, int32_t * __restrict__ ids_dst, ggml_cuda_mm_id_tile_spec * __restrict__ tile_spec,
         const int n_experts, const int n_tokens, const int n_expert_used, const int nchannels_y, const int tile_width,
         const int si1, const int sis1, const bool write_inverse, cudaStream_t stream);
+
+// zero the rows of dst [ne0, n_expert_used, n_tokens] whose id is -1 (strides in elements)
+void ggml_cuda_mul_mat_id_zero_skipped(
+        const int32_t * ids, float * dst, const int n_expert_used, const int n_tokens,
+        const int64_t si0, const int64_t si1, const int64_t ne0, const int64_t s_slot, const int64_t s_token, cudaStream_t stream);

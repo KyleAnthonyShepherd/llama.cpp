@@ -43,6 +43,18 @@ static __global__ void mul_mat_vec_f(
     const int sample_x    = fastdiv((uint32_t) sample_dst, sample_ratio);
     const int sample_y    = sample_dst;
 
+    // an id of -1 skips the slot: its rows of dst are zero
+    if (ids && channel_x < 0) {
+        float * dst_skip = dst + int64_t(sample_dst)*stride_sample_dst + channel_dst*stride_channel_dst;
+        if constexpr (is_multi_token_id) {
+            dst_skip += token_idx*stride_col_dst;
+        }
+        if (tid < ncols_dst) {
+            dst_skip[tid*stride_col_dst + row] = 0.0f;
+        }
+        return;
+    }
+
     constexpr int warp_size   = ggml_cuda_get_physical_warp_size();
 
     x   += int64_t(sample_x)  *stride_sample_x   + channel_x  *stride_channel_x   + row*stride_row;

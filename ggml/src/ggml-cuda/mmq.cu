@@ -367,8 +367,17 @@ void ggml_cuda_mul_mat_q(
         const int si1  = ids->nb[1] / ggml_element_size(ids);
         const int sis1 = nb12 / nb11;
 
+        // skipped slots (id -1) get no compact row: the inverse map keeps -1 for them, the forward map row 0.
+        // With fewer compact columns the helper writes fewer seam tiles, the rest stay empty (col_low == col_high)
+        CUDA_CHECK(cudaMemsetAsync(ids_src1.get(), dedup_bcast ? 0xFF : 0, ne_get_rows*sizeof(int32_t), stream));
+        CUDA_CHECK(cudaMemsetAsync(tile_spec.get(), 0, ntj*sizeof(ggml_cuda_mm_id_tile_spec), stream));
+
         ggml_cuda_launch_mm_ids_helper((const int32_t *) ids->data, ids_src1.get(), ids_dst.get(), tile_spec.get(),
             ne02, ne12, n_expert_used, ne11, J_best, si1, sis1, /*write_inverse =*/ dedup_bcast, stream);
+        CUDA_CHECK(cudaGetLastError());
+
+        ggml_cuda_mul_mat_id_zero_skipped((const int32_t *) ids->data, dst_d, n_expert_used, ne12,
+            1, si1, ne0, nb1/ts_dst, nb2/ts_dst, stream);
         CUDA_CHECK(cudaGetLastError());
     }
 

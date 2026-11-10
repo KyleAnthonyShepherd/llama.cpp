@@ -48,6 +48,12 @@ void ggml_cuda_mul_mat_f(ggml_backend_cuda_context & ctx, const ggml_tensor * sr
 
     mmf_ids_data ids_info{};
     mmf_ids_data * ids_info_ptr = nullptr;
+
+    if (ids) {
+        // a slot with id -1 is skipped, no kernel below writes its row
+        ggml_cuda_mul_mat_id_zero_skipped(ids_d, dst_d, ids->ne[0], ne2, ids_s0, ids_s1, ne0, s1, s2, ctx.stream());
+        CUDA_CHECK(cudaGetLastError());
+    }
     ggml_cuda_pool_alloc<int32_t> ids_src_compact_dev;
     ggml_cuda_pool_alloc<int32_t> ids_dst_compact_dev;
 
@@ -79,7 +85,10 @@ void ggml_cuda_mul_mat_f(ggml_backend_cuda_context & ctx, const ggml_tensor * sr
 
         ids_src_compact_dev.alloc(ctx.pool(), ne_get_rows);
         ids_dst_compact_dev.alloc(ctx.pool(), ne_get_rows);
+        CUDA_CHECK(cudaMemsetAsync(ids_src_compact_dev.get(), 0, ne_get_rows*sizeof(int32_t), ctx.stream()));
         tile_spec_dev.alloc(ctx.pool(), max_tiles);
+        // skipped slots leave fewer compact columns, so some seam tiles are never written: start them empty
+        CUDA_CHECK(cudaMemsetAsync(tile_spec_dev.get(), 0, max_tiles*sizeof(ggml_cuda_mm_id_tile_spec), ctx.stream()));
 
         const int si1  = static_cast<int>(ids_s1);
         const int sis1 = static_cast<int>(src1->nb[2] / src1->nb[1]);
