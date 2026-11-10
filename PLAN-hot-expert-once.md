@@ -118,3 +118,11 @@ Choose by M2. Option 1 is far less code and stays close to upstream. Option 2 on
 
 - Step A stays in the fork, no upstream PR (Kyle, 2026-11-06). In each later sync, check whether upstream has closed `TAG_MUL_MAT_ID_SKIP`; if so, take theirs and drop ours.
 - Still open: run M0 before the sync, or wait and do everything after it?
+
+## 10. Progress (2026-11-10, Claude)
+
+- **Step A committed** (5a4b91fc8, on the synced tree): every CUDA MUL_MAT_ID path and ADD_ID take -1. Two things the plan did not foresee: MMQ/MMF `tile_spec` seam entries are written only up to the compact column count, so with skipped slots the tail held garbage (now memset to empty tiles first); and the fork's CPU MUL_MAT_ID had lost the -1 skip in its grouping pass in the sync (9edd386f7). test-backend-ops: MUL_MAT_ID 1251/1251 (170 with skipped ids), ADD_ID 72/72, on sm_86 default and with NO_MMA + FORCE_MMQ. The home server (sm_75) is not run yet.
+- **Step B committed** (ea8c159b2): LUT -1 for cold, no `hot_d`, default limit 32, `llama_expert_tier_widen` asks the new proc `ggml_backend_cuda_mmid_tier_max_batch` (MMQ path -> any batch, else the MMVQ bound). Fit plans the same slot count as before step B (30). 4 heads with MTP n_max 1: 2.55 s/page (2.99 pre-sync, before steps A/B).
+- The "same greedy text" gate cannot be checked: with the hot store on, two runs of one build already differ (residency depends on timing, also with `LLAMA_EXPERT_SWAP=sync`); with `-ehs 0` they are identical. With limit 4, MTP texts matched before/after, non-MTP did not (same as run-to-run).
+- The 12-token gate (4 heads, n_max 2) could not run: that config dies with CUDA OOM on the synced build with or without steps A/B, see PLAN-upstream-sync-2026-11.md section 10.
+- Not done: M0-M3 measurements, path-forcing and hot-store-shape test cases, step C.
