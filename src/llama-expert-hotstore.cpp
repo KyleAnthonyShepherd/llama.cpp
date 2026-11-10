@@ -805,10 +805,9 @@ void llama_expert_hotstore::update_luts() {
         float * hot_lut_h   = all_h.data() + (size_t) il * n_experts * 2;
         float * cold_mask_h = hot_lut_h + n_experts;
 
-        // defaults: everyone cold. 0 is the pad base; the graph adds the draw position to it,
-        // so each cold draw of a token ends up on a different pad slot.
+        // defaults: everyone cold, hot id -1 (the hot matmul skips it)
         for (int e = 0; e < n_experts; e++) {
-            hot_lut_h[e]   = 0.0f;
+            hot_lut_h[e]   = -1.0f;
             cold_mask_h[e] = 1.0f;
         }
 

@@ -31,7 +31,6 @@ namespace {
         ggml_tensor * hot_lut  = nullptr;
         ggml_tensor * flat_ids = nullptr;
         ggml_tensor * ids_hot  = nullptr;
-        ggml_tensor * hot_d    = nullptr;
     };
 
     thread_local tier_memo g_memo;
@@ -60,26 +59,28 @@ bool llama_expert_tier_has(ggml_tensor * w) {
     return g_table.find(w) != g_table.end();
 }
 
-// The 4 token default is the lowest MMVQ bound over every arch table. A device can run wider batches of
-// some types on MMVQ, see ggml_backend_cuda_mmid_mmvq_max_batch
+// Raise the limit to n_tokens, or lower it to what MMVQ serves for a weight type that has no MMQ path on its
+// device (the generic per-expert fallback is correct but syncs the stream), see ggml_backend_cuda_mmid_tier_max_batch
 int32_t llama_expert_tier_widen(int32_t n_tokens) {
-    typedef int (*mmvq_max_t)(ggml_backend_dev_t dev, enum ggml_type type);
+    typedef int (*tier_max_t)(ggml_backend_dev_t dev, enum ggml_type type, int n_tokens);
 
     std::lock_guard<std::mutex> lk(g_mtx);
 
-    int32_t safe = n_tokens;
+    const int32_t cur  = g_max_tokens.load(std::memory_order_relaxed);
+    int32_t       safe = std::max(cur, n_tokens);
     for (const auto & [w, ent] : g_table) {
         ggml_backend_buffer_t      buf  = ent.dst_hot ? ent.dst_hot->buffer : nullptr;
         ggml_backend_dev_t         dev  = buf ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buf)) : nullptr;
         ggml_backend_reg_t         reg  = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
-        auto                       fn   = reg ? (mmvq_max_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_mmid_mmvq_max_batch") : nullptr;
+        auto                       fn   = reg ? (tier_max_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_mmid_tier_max_batch") : nullptr;
 
-        safe = std::min(safe, fn ? (int32_t) fn(dev, w->type) : (int32_t) LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT);
+        if (fn) {
+            safe = std::min(safe, (int32_t) fn(dev, w->type, safe));
+        }
     }
 
-    if (!g_table.empty() && safe > g_max_tokens.load(std::memory_order_relaxed)) {
-        LLAMA_LOG_INFO("%s: expert tier limit %d -> %d tokens per batch (asked for %d)\n", __func__,
-                g_max_tokens.load(std::memory_order_relaxed), safe, n_tokens);
+    if (!g_table.empty() && safe != cur) {
+        LLAMA_LOG_INFO("%s: expert tier limit %d -> %d tokens per batch (asked for %d)\n", __func__, cur, safe, n_tokens);
         g_max_tokens.store(safe, std::memory_order_relaxed);
     }
 
@@ -161,18 +162,14 @@ ggml_tensor * llama_expert_tier_build(ggml_context * ctx,
         ggml_tensor * flat_ids = ggml_reshape_1d(ctx,
             ggml_cont(ctx, ids), n_expert_used * n_tokens);
 
-        // hot_lut[e] = the expert's slot, 0 for a cold one - a real slot whose contribution
-        // hot_d removes below. Slot 0 always exists whenever the store is registered, so the
-        // index is always in range. Small integers, exact in f32, so the cast back is exact.
+        // hot_lut[e] = the expert's slot, -1 for a cold one, which mul_mat_id skips (its rows are 0).
+        // Small integers, exact in f32, so the cast back is exact.
         ggml_tensor * base = gather_per_draw(ctx, ent.hot_lut, flat_ids, n_experts, n_expert_used, n_tokens);
-
-        ggml_tensor * cold_d = gather_per_draw(ctx, ent.cold_mask, flat_ids, n_experts, n_expert_used, n_tokens);
 
         g_memo.selected = ids;
         g_memo.hot_lut  = ent.hot_lut;
         g_memo.flat_ids = flat_ids;
         g_memo.ids_hot  = ggml_cast(ctx, ggml_reshape_2d(ctx, base, n_expert_used, n_tokens), GGML_TYPE_I32);
-        g_memo.hot_d    = ggml_scale_bias(ctx, cold_d, -1.0f, 1.0f); // 1 - cold
     }
 
     // hot path: GPU tier tensor, indexed by hot slot.
@@ -183,17 +180,13 @@ ggml_tensor * llama_expert_tier_build(ggml_context * ctx,
     // as integer-zero-check (0.0f = hot = skip, non-zero = cold = compute).
     ggml_tensor * cold = ggml_mul_mat_id_cold(ctx, w, cur, ids, ent.cold_mask);
 
-    // A cold draw read a real expert, so its contribution has to go. Where there is a
-    // per-expert quant scale, ride the mask on that instead of multiplying the matmul output
-    // twice: [1, n_eu, n_tok] * [1, n_eu, n_tok] is nothing next to a pass over [n_ff, n_eu, n_tok].
-    if (w_s) {
-        ggml_tensor * s = gather_per_draw(ctx, w_s, g_memo.flat_ids, n_experts, n_expert_used, n_tokens);
+    // each draw is non-zero in only one of the two, so the sum is exact
+    ggml_tensor * res = ggml_add(ctx, hot, cold);
 
-        hot  = ggml_mul(ctx, hot,  ggml_mul(ctx, s, g_memo.hot_d));
-        cold = ggml_mul(ctx, cold, s);
-    } else {
-        hot = ggml_mul(ctx, hot, g_memo.hot_d);
+    // the per-expert quant scale, once on the sum instead of on each part
+    if (w_s) {
+        res = ggml_mul(ctx, res, gather_per_draw(ctx, w_s, g_memo.flat_ids, n_experts, n_expert_used, n_tokens));
     }
 
-    return ggml_add(ctx, hot, cold);
+    return res;
 }

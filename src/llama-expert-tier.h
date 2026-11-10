@@ -4,19 +4,12 @@
 
 // Default max tokens per batch for which the tiered path is used.
 //
-// 4 is a correctness bound, not a tuning knob. The cold remap sends every cold draw of a token to
-// slot 0, so a token's id list holds duplicates, and MMQ/MMF id compaction miscounts those. MMVQ
-// has no compaction, and 4 is the lowest per-type bound of get_mmvq_mmid_max_batch() over every
-// arch table, so staying inside MMVQ needs no device query. --expert-tier-max-tokens overrides the
-// limit, but only a batch that stays within MMVQ is safe.
-constexpr int64_t LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT = 4;
-
-// TODO: teach the MMQ/MMF id compaction to count duplicate ids inside one token's list. That is
-// what a wide verify batch needs. The landing pad bought the same thing by making the ids distinct
-// and it cost n_expert_used reserved slices per layer - 29 experts instead of 36 in a 2688 MiB
-// store on a 6 GB card. Dropped in 448744c89; the kernel fix is the way back.
-// Above ~32 tokens there is a second trade on top: the tier takes the MoE away from op-offload and
-// pins it to the CPU. See PLAN-ngram-mod-expert-cache.md sections 1.3 and 16.
+// A cold draw has hot id -1, which every MUL_MAT_ID path skips, so the hot ids hold no duplicates
+// and MMQ/MMF serve any batch. 32 stays below the 128-token op-offload threshold: above ~32 tokens
+// the tier takes the MoE away from op-offload and pins it to the CPU (PLAN-ngram-mod-expert-cache.md
+// sections 1.3 and 16). llama_expert_tier_widen lowers the limit to the MMVQ bound for a weight type
+// that has no MMQ path on the device. --expert-tier-max-tokens overrides it.
+constexpr int64_t LLAMA_EXPERT_TIER_MAX_TOKENS_DEFAULT = 32;
 
 // current limit, and the setter the context calls at init
 void llama_expert_tier_set_max_tokens(int32_t n);
@@ -35,16 +28,10 @@ void llama_expert_tier_set_max_tokens(int32_t n);
 //   caller's downstream ops (bias add, activation, second build_lora_mm_id
 //   call for down, routing-weight mul).
 //
-// GPU sentinel slot (index S of dst_hot) is zero-filled once at allocate
-// time and never written again, so cold experts routed to it return zero.
-// On the CPU side, we cannot grow a mmap'd expert tensor, so hot experts
-// are routed to a real dummy (expert 0) on the cold path; the dummy's
-// contribution is zeroed by cold_mask before the result is used.
-//
-// Masking happens at every mul_mat_id output, BEFORE bias add and BEFORE
-// activation. That lifts the no-biases constraint: at a hot slot the cold
-// mask zeroes the dummy contribution pre-activation, so the bias and
-// activation run on the correct real value for that slot.
+// A cold expert has hot id -1, so the hot mul_mat_id skips it and its rows
+// are 0. The cold op computes only the cold experts and leaves 0 at the hot
+// ones. Each draw is non-zero in exactly one of the two, so their sum is the
+// stock result, before any bias add or activation.
 
 // register one expert weight tensor -> its GPU hot tensor and per-layer LUTs.
 // Called by llama_expert_hotstore::allocate() after creating dst_hot and

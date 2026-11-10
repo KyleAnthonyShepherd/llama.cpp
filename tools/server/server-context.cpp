@@ -2567,8 +2567,8 @@ private:
             model_dft = nullptr;
         }
 
-        // all heads generating are one batch of n_heads x (1 + draft) tokens. The expert hot store serves only small
-        // batches (4 tokens by default, an id compaction bound of MMQ), so widen it as far as the device allows
+        // all heads generating are one batch of n_heads x (1 + draft) tokens. The expert hot store serves batches up to
+        // 32 tokens by default, so widen it to that batch where the device has an MMQ path for the weights
         if (n_heads > 0 && params_base.expert_hot_s != 0 && params_base.expert_tier_max_tokens == 0) {
             const int32_t n_want = n_heads * (1 + (spec ? common_speculative_n_max(&params_base.speculative) : 0));
             const int32_t n_tier = llama_expert_tier_widen(n_want);

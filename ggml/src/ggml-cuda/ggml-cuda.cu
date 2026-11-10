@@ -7128,10 +7128,21 @@ static bool ggml_backend_cuda_fattn_uses_mma(ggml_backend_dev_t dev, const ggml_
 
 // largest MUL_MAT_ID batch (tokens) that the device runs on MMVQ for this weight type. MMVQ has no id compaction,
 // so ids repeated inside one token's list are fine there
-static int ggml_backend_cuda_mmid_mmvq_max_batch(ggml_backend_dev_t dev, enum ggml_type type) {
+// the largest MUL_MAT_ID batch, up to n_tokens, that runs without the per-expert fallback: any batch with an
+// MMQ path for the type, else the MMVQ bound
+static int ggml_backend_cuda_mmid_tier_max_batch(ggml_backend_dev_t dev, enum ggml_type type, int n_tokens) {
     ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *) dev->context;
 
-    return ggml_is_quantized(type) ? get_mmvq_mmid_max_batch(type, ggml_cuda_info().devices[ctx->device].cc) : 0;
+    if (!ggml_is_quantized(type)) {
+        return 0;
+    }
+
+    const int cc = ggml_cuda_info().devices[ctx->device].cc;
+    if (ggml_cuda_should_use_mmq(type, cc, n_tokens, /*n_experts =*/ 1)) {
+        return n_tokens;
+    }
+
+    return std::min(n_tokens, get_mmvq_mmid_max_batch(type, cc));
 }
 
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
@@ -7139,8 +7150,8 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     if (strcmp(name, "ggml_backend_dev_free_vram") == 0) {
         return (void *)ggml_backend_cuda_device_free_vram;
     }
-    if (strcmp(name, "ggml_backend_cuda_mmid_mmvq_max_batch") == 0) {
-        return (void *)ggml_backend_cuda_mmid_mmvq_max_batch;
+    if (strcmp(name, "ggml_backend_cuda_mmid_tier_max_batch") == 0) {
+        return (void *)ggml_backend_cuda_mmid_tier_max_batch;
     }
     if (strcmp(name, "ggml_backend_cuda_fattn_uses_mma") == 0) {
         return (void *)ggml_backend_cuda_fattn_uses_mma;

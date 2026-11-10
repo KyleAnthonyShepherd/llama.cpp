@@ -3115,7 +3115,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--expert-tier-max-tokens"}, "N",
         "largest batch the expert hot store serves; above it the stock matmul runs instead "
-        "(0 = built-in default of 4). a speculative verify batch is 1 + the draft width",
+        "(0 = built-in default of 32). a speculative verify batch is 1 + the draft width",
         [](common_params & params, int value) {
             if (value < 0) {
                 throw std::invalid_argument("invalid value");
