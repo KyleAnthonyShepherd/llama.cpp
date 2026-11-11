@@ -1468,6 +1468,28 @@ static int encode_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch,
     return 0;
 }
 
+// a media decode can grow the target's KV inside llama_decode (n_ctx_max). The draft then has to follow before it
+// decodes the same batch: grown inside its own decode it cannot make room, the expert hot store belongs to the target.
+// refresh_n_ctx() does the same for normal decodes, and the server's bookkeeping after this one
+static void draft_follow_target(llama_context * ctx_tgt, llama_context * ctx_dft) {
+    if (ctx_dft == nullptr || ctx_dft == ctx_tgt) {
+        return;
+    }
+
+    const uint32_t n_tgt = llama_n_ctx_seq(ctx_tgt);
+    if ((uint32_t) llama_n_ctx_seq(ctx_dft) >= n_tgt) {
+        return;
+    }
+
+    const size_t need = llama_resize_peak_bytes(ctx_dft, n_tgt);
+    if (need > 0) {
+        llama_expert_hotstore_free_bytes(ctx_tgt, need);
+    }
+
+    // a failure leaves the draft as it was, and its decode below grows it or fails as before
+    llama_set_n_ctx(ctx_dft, n_tgt);
+}
+
 // returns 0 on success
 // caller need to update prompt.tokens after a successful call to keep track of the processing progress
 // note: this is not a member of server_slot because we want to run it inside yield_to_queue
@@ -1487,10 +1509,13 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
                 struct cb_data_t {
                     common_speculative * spec;
                     llama_context * ctx;
-                } cb_data = { slot.spec, slot.ctx_tgt };
+                    llama_context * ctx_dft;
+                } cb_data = { slot.spec, slot.ctx_tgt, slot.ctx_dft };
 
                 static auto cb = [](const mtmd_helper_embd_batch * b, void * user_data) {
                     const auto * data = static_cast<cb_data_t *>(user_data);
+
+                    draft_follow_target(data->ctx, data->ctx_dft);
 
                     common_batch batch(data->ctx);
                     for (int32_t i = 0; i < b->n_tokens; ++i) {
@@ -1752,6 +1777,7 @@ static int process_mtmd_run(const server_slot & slot, size_t idx, size_t idx_end
         SLT_ERR(slot, "failed to decode the media run idx = [%zu, %zu), res = %d\n", idx, idx_end, res);
         return -1;
     }
+    draft_follow_target(slot.ctx_tgt, slot.ctx_dft);
     if (!common_speculative_process(slot.spec, batch)) {
         SLT_ERR(slot, "%s", "failed to process the media run in the draft\n");
         return -1;
@@ -1939,6 +1965,7 @@ static int process_mtmd_group(const std::vector<const server_slot *> & heads, si
             SLT_ERR(slot0, "failed to decode the images of a group of %zu heads, res = %d\n", heads.size(), res);
             return -1;
         }
+        draft_follow_target(ctx, slot0.ctx_dft);
         if (!common_speculative_process(slot0.spec, batch)) {
             SLT_ERR(slot0, "%s", "failed to process the images of a head group in the draft\n");
             return -1;
