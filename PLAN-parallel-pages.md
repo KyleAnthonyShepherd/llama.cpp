@@ -395,6 +395,35 @@ at every K (165 + 75 pages).
 For geoui: groups of 4 on this laptop. A box with more VRAM would move wall 2, but wall 1 stays until the tier serves
 more than 8 tokens (the MMQ id compaction TODO in llama-expert-tier.h).
 
+### 8.1 Again after the upstream sync (2026-11-11, master b32a74da9 + the draft fix below)
+
+Same sweep, same server command (`--hydra-heads 16`), data in `toolbag/tests/hydra/data/sweep_master_n*.json`. The tier
+now serves 32 tokens (PLAN-hot-expert-once.md step B) and the large-ubatch buffers are smaller (main 1.29 GiB, MTP draft
+0.58 GiB). Every boring id right at every K.
+
+| K | MTP n_max 1: s/page | n_max 2: s/page |
+|---|---|---|
+| 1 | 7.08 | |
+| 2 | 3.99 | 3.32 |
+| 3 | 3.13 | 2.70 |
+| **4** | 2.67 | **2.42** |
+| 5 | 2.79 | 3.29 |
+| 6 | 2.77 | 3.18 |
+| 8 | 2.76 | 3.82 |
+| 10 | 2.96 | 5.23 |
+| 12 | 5.07 | |
+| 16 | 4.93 | |
+
+- Wall 1 is gone: with n_max 1, 4 to 8 heads are flat (2.7-2.8 s/page, the old 5-8 were 3.7-3.9). 12+ still fall off:
+  no room for the 4096-token ubatch (`set_n_ubatch: failed to allocate compute pp buffers`), images in 512 ubatches.
+- n_max 2 at 4 heads is the best (2.42 s/page, 24.8 pages/min, 1.10x n_max 1): triage answers are short JSON and the
+  second draft is accepted often. Past 4 heads n_max 2 loses (each head's state cells are 1.5x with 3 rollback rows).
+- 8 heads first failed with HTTP 500: the image group grew the target's KV inside llama_decode, then the MTP draft grew
+  itself inside its own decode and could not make room (the hot store is the target's). Fixed in the server:
+  `draft_follow_target()` grows the draft, with room from the target's hot store, before every media draft step.
+- For geoui triage: 4 heads; n_max 2 if the server is only doing triage, n_max 1 is within 10% and the better default
+  for long generations (section 9).
+
 ## 9. Boring log transcription with heads (2026-11-05)
 
 `toolbag/tests/hydra/trans_hydra.py`: 4 Micron CME sheets of different borings (p397, p219, p269, p325, exact truth),
