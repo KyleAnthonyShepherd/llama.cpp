@@ -235,6 +235,63 @@ void ggml_print_backtrace(void) {
         waitpid(child_pid, NULL, 0);
     }
 }
+#elif defined(_WIN32)
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
+
+// module!symbol+offset (file:line) per frame, from the PDBs next to the binaries when there are any
+void ggml_print_backtrace(void) {
+    if (getenv("GGML_NO_BACKTRACE")) {
+        return;
+    }
+
+    void * trace[64];
+    const USHORT n = CaptureStackBackTrace(0, 64, trace, NULL);
+
+    HANDLE proc = GetCurrentProcess();
+    static bool sym_ready = false;
+    if (!sym_ready) {
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+        sym_ready = SymInitialize(proc, NULL, TRUE);
+    }
+
+    char buf[sizeof(SYMBOL_INFO) + 256];
+    for (USHORT i = 0; i < n; i++) {
+        const DWORD64 addr = (DWORD64) (uintptr_t) trace[i];
+
+        HMODULE mod = NULL;
+        char    path[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                (LPCSTR) trace[i], &mod)) {
+            GetModuleFileNameA(mod, path, MAX_PATH);
+        }
+        const char * name = strrchr(path, '\\');
+        name = name ? name + 1 : path;
+
+        SYMBOL_INFO * sym = (SYMBOL_INFO *) buf;
+        memset(buf, 0, sizeof(buf));
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen   = 255;
+
+        DWORD64         disp  = 0;
+        DWORD           ldisp = 0;
+        IMAGEHLP_LINE64 line;
+        memset(&line, 0, sizeof(line));
+        line.SizeOfStruct = sizeof(line);
+
+        if (sym_ready && SymFromAddr(proc, addr, &disp, sym)) {
+            if (SymGetLineFromAddr64(proc, addr, &ldisp, &line)) {
+                fprintf(stderr, "%2d: %s!%s+0x%llx (%s:%lu)\n", i, name, sym->Name, (unsigned long long) disp,
+                        line.FileName, (unsigned long) line.LineNumber);
+            } else {
+                fprintf(stderr, "%2d: %s!%s+0x%llx\n", i, name, sym->Name, (unsigned long long) disp);
+            }
+        } else {
+            fprintf(stderr, "%2d: %s+0x%llx\n", i, name, (unsigned long long) (addr - (DWORD64) (uintptr_t) mod));
+        }
+    }
+    fflush(stderr);
+}
 #else
 void ggml_print_backtrace(void) {
     // platform not supported
