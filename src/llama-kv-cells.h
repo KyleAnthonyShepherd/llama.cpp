@@ -124,6 +124,9 @@ public:
         shift.resize(n, 0);
         seq.resize(n);
 
+        // the cell bitmaps of the sequences cover the new cells too (the new bits are 0)
+        seq_bits_resize();
+
         // used, seq_pos are unaffected: they only reference existing (now still valid) indices
     }
 
@@ -137,6 +140,9 @@ public:
         ext.resize(n);
         shift.resize(n);
         seq.resize(n);
+
+        // the dropped cells are empty, so only zero bits go
+        seq_bits_resize();
 
         // used, seq_pos are unaffected: no index they hold is dropped here
     }
@@ -671,11 +677,22 @@ private:
     void seq_pos_inc(llama_seq_id s, uint32_t i) {
         seq_pos[s].insert({ pos[i], i });
 
-        if (seq_bits[s].empty()) {
-            seq_bits[s].assign((pos.size() + 63)/64, 0);
+        // allocated on the first cell of the sequence, and sized again if the cells grew since (--ctx-max)
+        if (seq_bits[s].size() <= i/64) {
+            seq_bits[s].resize((pos.size() + 63)/64, 0);
         }
 
         seq_bits[s][i/64] |= 1ull << (i%64);
+    }
+
+    // bitmaps in use follow the cell count, unused ones stay empty
+    void seq_bits_resize() {
+        const size_t n_words = (pos.size() + 63)/64;
+        for (uint32_t s = 0; s < LLAMA_MAX_SEQ; ++s) {
+            if (!seq_bits[s].empty()) {
+                seq_bits[s].resize(n_words, 0);
+            }
+        }
     }
 
     // remove cell i

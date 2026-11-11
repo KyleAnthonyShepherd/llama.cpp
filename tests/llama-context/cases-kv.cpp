@@ -10,6 +10,7 @@
 #include "../../src/llama-ext.h" // llama_model_set_attn_rot, llama_arch_from_string
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <functional>
@@ -819,6 +820,67 @@ struct case_comp_padding : ctx_test {
     }
 };
 
+// a unified cache that grows on its own (n_ctx_max) while two sequences fill it, against one that has all the cells
+// from the start: the cells past the first size must take part in attention like the others
+struct case_grow : ctx_test {
+    const char * name() const override { return "grow"; }
+
+    const char * description() const override {
+        return "a KV cache grown by llama_decode decodes like one made at the larger size";
+    }
+
+    case_result run(model_run & mr) const override {
+        const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(mr.model));
+
+        constexpr uint32_t  n_small  = 256;
+        constexpr uint32_t  n_big    = 1024;
+        constexpr llama_pos n_prompt = 200; // per sequence, so the second prompt grows the cache
+
+        const auto make = [&](uint32_t n_ctx, uint32_t n_ctx_max) {
+            auto cparams = common_context_params_to_llama(mr.params);
+            cparams.n_seq_max  = 2;
+            cparams.n_ctx      = n_ctx;
+            cparams.n_ctx_max  = n_ctx_max;
+            cparams.n_batch    = 256;
+            cparams.n_ubatch   = 64;
+            cparams.kv_unified = true;
+            return init_ctx(mr.model, cparams, mr.fill);
+        };
+
+        llama_context_ptr ctx_grow_ptr = make(n_small, n_big);
+        llama_context_ptr ctx_ref_ptr  = make(n_big, 0);
+        llama_context * ctx_grow = ctx_grow_ptr.get();
+        llama_context * ctx_ref  = ctx_ref_ptr.get();
+        CTX_REQUIRE(ctx_grow != nullptr && ctx_ref != nullptr, "failed to init the contexts");
+
+        for (llama_context * ctx : { ctx_grow, ctx_ref }) {
+            CTX_REQUIRE(decode_gen(ctx, n_vocab, 0, 0, n_prompt) && decode_gen(ctx, n_vocab, 1, 0, n_prompt),
+                    "prompt decode failed");
+        }
+        CTX_REQUIRE(llama_n_ctx(ctx_grow) > n_small, "the cache did not grow, n_ctx = " + std::to_string(llama_n_ctx(ctx_grow)));
+
+        // steps on both sequences: each attends to cells from before and after the growth
+        float diff = 0.0f;
+        for (llama_pos pos = n_prompt; pos < n_prompt + 8; ++pos) {
+            for (llama_seq_id seq_id : { 0, 1 }) {
+                const llama_token tok = gen_token(n_vocab, seq_id, pos);
+                CTX_REQUIRE(decode_one(ctx_grow, tok, pos, seq_id) && decode_one(ctx_ref, tok, pos, seq_id), "step decode failed");
+
+                const float * a = llama_get_logits_ith(ctx_grow, -1);
+                const float * b = llama_get_logits_ith(ctx_ref,  -1);
+                CTX_REQUIRE(a != nullptr && b != nullptr, "missing logits");
+                for (int t = 0; t < n_vocab; ++t) {
+                    diff = std::max(diff, std::fabs(a[t] - b[t]));
+                }
+            }
+        }
+        TLOG_INF("%s: max logit diff %g, n_ctx %u\n", __func__, (double) diff, llama_n_ctx(ctx_grow));
+        CTX_REQUIRE(diff <= 1e-3f, "logits differ after the growth, max diff " + std::to_string(diff));
+
+        return case_result::pass();
+    }
+};
+
 std::vector<ctx_test_ptr> make_kv_cases() {
     std::vector<ctx_test_ptr> cases;
 
@@ -836,6 +898,7 @@ std::vector<ctx_test_ptr> make_kv_cases() {
     cases.push_back(std::make_unique<case_state_restore_fragmented>());
     cases.push_back(std::make_unique<case_noalloc>());
     cases.push_back(std::make_unique<case_comp_padding>());
+    cases.push_back(std::make_unique<case_grow>());
 
     return cases;
 }
