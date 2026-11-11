@@ -5558,30 +5558,21 @@ private:
                             break;
                         }
 
-                        // the draft runs in its own context, so it needs its own file. A restore
-                        // works without it (the draft is re-primed), this just saves that work.
-                        // its token list is never read back, so the media chunks are not written twice
-                        if (ctx_dft && ctx_dft != ctx_tgt) {
-                            const std::string filepath_dft = filepath + ".dft";
-                            const llama_tokens tokens_dft = slot->prompt.tokens.get_text_tokens();
-
-                            const size_t nwrite_dft = llama_state_seq_save_file(ctx_dft, filepath_dft.c_str(), slot->id, tokens_dft.data(), tokens_dft.size());
-                            if (nwrite_dft == 0) {
-                                SLT_WRN(*slot, "failed to save the draft state to '%s'\n", filepath_dft.c_str());
-                            }
-
-                            nwrite += nwrite_dft;
-                        }
+                        // the draft state goes into the save file itself (save_slot_draft below). A companion
+                        // .dft file left by an older save would not match this state, so it is removed
+                        std::remove((filepath + ".dft").c_str());
                     }
 
+                    // the appendices go after the llama state payload in the save file. A RAM save has no
+                    // file (filepath is empty): its state already holds the checkpoints and the draft context
                     size_t nwrite_ckpt = 0;
-                    if (!save_slot_checkpoints(filepath, *slot, nwrite_ckpt)) {
+                    if (!task.slot_action.use_ram && !save_slot_checkpoints(filepath, *slot, nwrite_ckpt)) {
                         send_error(task, "Unable to save slot: incomplete context checkpoints", ERROR_TYPE_SERVER);
                         break;
                     }
 
                     size_t nwrite_dft = 0;
-                    if (!save_slot_draft(filepath, *slot, nwrite_dft)) {
+                    if (!task.slot_action.use_ram && !save_slot_draft(filepath, *slot, nwrite_dft)) {
                         send_error(task, "Unable to save slot: incomplete draft state", ERROR_TYPE_SERVER);
                         break;
                     }
@@ -5678,29 +5669,29 @@ private:
                             break;
                         }
 
-                        // the companion draft file, written by action=save. It is optional: files
-                        // saved before it existed, or by another tool, restore without it
-                        if (ctx_dft && ctx_dft != ctx_tgt) {
-                            const std::string filepath_dft = filepath + ".dft";
+                    }
 
-                            std::ifstream file_dft(filepath_dft, std::ios::binary);
-                            if (file_dft.good()) {
-                                file_dft.close();
+                    // nread is the end offset of the llama state payload within the file. A RAM restore has
+                    // no file, and load_slot_draft would clear the draft context ram_store_restore just set
+                    size_t nread_ckpt = 0;
+                    size_t nread_dft  = 0;
+                    if (!task.slot_action.use_ram) {
+                        nread_ckpt = load_slot_checkpoints(filepath, nread, *slot);
+                        nread_dft  = load_slot_draft(filepath, nread + nread_ckpt, *slot);
 
-                                llama_tokens tokens_dft;
-                                const size_t nread_dft = load_file(ctx_dft, filepath_dft, tokens_dft);
-                                if (nread_dft == 0) {
-                                    SLT_WRN(*slot, "failed to restore the draft state from '%s' - it is re-primed on the next request\n", filepath_dft.c_str());
-                                }
-
-                                nread += nread_dft;
+                        // files saved before the draft state was appended keep it in a companion .dft file.
+                        // It is optional: without it the draft is re-primed on the next request
+                        const std::string filepath_dft = filepath + ".dft";
+                        if (nread_dft == 0 && ctx_dft && ctx_dft != ctx_tgt && std::ifstream(filepath_dft, std::ios::binary).good()) {
+                            size_t n_tokens_dft = 0;
+                            llama_tokens tokens_dft(std::max<size_t>(1, slot->prompt.tokens.size()));
+                            nread_dft = llama_state_seq_load_file(ctx_dft, filepath_dft.c_str(), slot->id, tokens_dft.data(), tokens_dft.size(), &n_tokens_dft);
+                            if (nread_dft == 0) {
+                                llama_memory_seq_rm(llama_get_memory(ctx_dft), slot->id, -1, -1);
+                                SLT_WRN(*slot, "failed to restore the draft state from '%s' - it is re-primed on the next request\n", filepath_dft.c_str());
                             }
                         }
                     }
-
-                    // nread is the end offset of the llama state payload within the file
-                    const size_t nread_ckpt = load_slot_checkpoints(filepath, nread, *slot);
-                    const size_t nread_dft  = load_slot_draft(filepath, nread + nread_ckpt, *slot);
 
                     const int64_t t_end = ggml_time_us();
                     const double t_restore_ms = (t_end - t_start) / 1000.0;
