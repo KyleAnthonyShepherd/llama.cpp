@@ -3910,6 +3910,7 @@ struct ggml_cuda_moe_weighted_reduction_match {
     const ggml_tensor * experts      = nullptr;
     const ggml_tensor * expert_scale = nullptr;
     const ggml_tensor * weights      = nullptr;
+    ggml_tensor *       weighted     = nullptr; // the last MUL, the one the views read
     ggml_tensor *       dst          = nullptr;
     int                 node_count   = 0;
 };
@@ -4041,6 +4042,7 @@ static bool ggml_cuda_match_moe_weighted_reduction(
     match.experts      = experts;
     match.expert_scale = expert_scale;
     match.weights      = weights;
+    match.weighted     = const_cast<ggml_tensor *>(weighted);
     match.dst          = cgraph->nodes[output_idx];
     match.node_count   = node_count;
     return true;
@@ -5822,7 +5824,11 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
 
             ggml_cuda_moe_weighted_reduction_match match;
             if (ggml_cuda_match_moe_weighted_reduction(cgraph, i, match)) {
-                params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(match.experts), match.dst);
+                // keep the weighted experts until dst, not the experts: the MULs before it then take the memory of the
+                // experts in place. The fused kernel never writes them, so it still reads the experts there, and dst
+                // cannot alias them. Kept the other way, the weighted copy is a second [n_embd, n_expert_used, n_tokens]
+                // buffer (256 MiB at 4096 tokens on Qwen3.6-35B-A3B)
+                params->add_alloc_dep(params->user_data, match.weighted, match.dst);
                 params->add_alloc_dep(params->user_data, const_cast<ggml_tensor *>(match.weights), match.dst);
                 if (match.expert_scale != nullptr) {
                     params->add_alloc_dep(
